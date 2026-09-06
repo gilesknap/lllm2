@@ -39,24 +39,37 @@ class Ledger{index}:
 
 
 def suite(s):
-    # Every candidate differs by exactly one switch from this explicit baseline.
-    base = replace(s, speculation='none', cache='f16', effort='default')
+    # The selected (normally inherited or saved) configuration is the baseline.
+    # Every candidate changes exactly one setting, and invalid combinations skip.
+    base = replace(s)
     caps = capabilities(base)
     variants = [('baseline',base)]
     skipped = []
-    for mode in ['draft-mtp','draft-dflash','ngram-simple']:
-        if caps[mode]['status'] == 'available' and (mode != 'draft-dflash' or base.flash == 'on'):
-            variants.append((mode,replace(base,speculation=mode)))
+    def candidate(label, **changes):
+        v = replace(base, **changes)
+        if v == base:
+            return
+        try:
+            launch_args(v, config.ENGINE_PORT)
+        except ValueError as e:
+            skipped.append(dict(option=label,reason=str(e)))
         else:
-            skipped.append(dict(option=mode,reason=caps[mode]['reason'] if caps[mode]['status'] != 'available' else 'Baseline flash attention must be on.'))
-    if caps['cache']['status'] == 'available' and base.flash == 'on':
-        for cache in ['q8_0','q4_0']:
-            variants.append((cache,replace(base,cache=cache)))
+            variants.append((label,v))
+    for mode in ['none','draft-mtp','draft-dflash','ngram-simple']:
+        if mode == base.speculation:
+            continue
+        if mode == 'none' or caps[mode]['status'] == 'available':
+            candidate('speculation-' + mode,speculation=mode)
+        else:
+            skipped.append(dict(option=mode,reason=caps[mode]['reason']))
+    if caps['cache']['status'] == 'available':
+        for cache in ['f16','q8_0','q4_0']:
+            candidate('cache-' + cache,cache=cache)
     if caps['flash']['status'] == 'available':
-        variants.append(('flash-' + ('off' if base.flash == 'on' else 'on'), replace(base,flash='off' if base.flash == 'on' else 'on')))
+        candidate('flash-' + ('off' if base.flash == 'on' else 'on'),flash='off' if base.flash == 'on' else 'on')
     if caps['effort']['status'] == 'available':
-        for effort in ['low','high']:
-            variants.append(('effort-' + effort,replace(base,effort=effort)))
+        for effort in ['default','low','high']:
+            candidate('effort-' + effort,effort=effort)
     return variants, skipped
 
 
@@ -80,7 +93,7 @@ class Bench:
         s = Settings.parse(data['settings'])
         opts = dict(workloads=data.get('workloads',['generate','edit','long-code']),
                     prompt_tokens=data.get('prompt_tokens',1024), output_tokens=data.get('output_tokens',256),
-                    search_context=data.get('search_context',True), max_context=data.get('max_context',131072),
+                    search_context=data.get('search_context',True), max_context=data.get('max_context',metadata(s.model)['context'] or 131072),
                     timeout=data.get('timeout',180), repeats=data.get('repeats',1))
         if not opts['workloads'] or not isinstance(opts['workloads'],list) or any(w not in WORKLOADS for w in opts['workloads']):
             raise ValueError('Select coding workloads.')
@@ -94,7 +107,7 @@ class Bench:
         if opts['prompt_tokens'] + opts['output_tokens'] + 32 > s.context // s.slots:
             raise ValueError('Shared prompt and output budgets must fit context per slot, with 32 tokens of margin.')
         mode = data.get('mode','baseline')
-        variants, skipped = suite(s) if mode == 'suite' else ([('baseline' if mode == 'baseline' else 'custom',replace(s,speculation='none',cache='f16',effort='default') if mode == 'baseline' else s)],[])
+        variants, skipped = suite(s) if mode == 'suite' else ([('baseline' if mode == 'baseline' else 'custom',replace(s))],[])
         if mode not in ['baseline','suite','custom','combinations']:
             raise ValueError('Unknown benchmark mode')
         if mode == 'combinations':

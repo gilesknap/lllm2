@@ -19,6 +19,8 @@ class Settings:
     pair_confirmed: bool = False
     draft_length: int = 15
     effort: str = 'default'
+    draft_cache: str = 'default'
+    chat_template: str = ''
 
     @classmethod
     def parse(cls, data):
@@ -31,7 +33,7 @@ class Settings:
                 raise ValueError(f'{key} must be an integer in {low}..{high}')
         if s.context % s.slots or s.context // s.slots < 512:
             raise ValueError('Total context must divide evenly into slots, each at least 512 tokens.')
-        for key, choices in dict(backend=['CUDA','Vulkan'],flash=['auto','on','off'],cache=['f16','q8_0','q4_0'],speculation=['none','draft-mtp','draft-dflash','ngram-simple'],effort=['default','minimal','low','medium','high','xhigh','max']).items():
+        for key, choices in dict(draft_cache=['default','f16','q8_0','q4_0'],backend=['CUDA','Vulkan'],flash=['auto','on','off'],cache=['f16','q8_0','q4_0'],speculation=['none','draft-mtp','draft-dflash','ngram-simple'],effort=['default','minimal','low','medium','high','xhigh','max']).items():
             if getattr(s,key) not in choices:
                 raise ValueError(f'Invalid {key}')
         if type(s.pair_confirmed) is not bool:
@@ -54,7 +56,8 @@ def capabilities(s):
         if name == 'cache' and '--cache-type-v' not in flags:
             status = 'unsupported'
         out[name] = dict(status=status, reason=f'Binary probe: {flag}. Actual model/backend behavior is validated on launch.')
-    if out['effort']['status'] == 'available' and 'reasoning_effort' not in m['template']:
+    template = Path(s.chat_template).expanduser().read_text() if s.chat_template else m['template']
+    if out['effort']['status'] == 'available' and 'reasoning_effort' not in template:
         out['effort'] = dict(status='unknown', reason='Binary accepts effort; checkpoint template does not explicitly reference reasoning_effort. Verify with a launch.')
     for mode in ['draft-mtp','draft-dflash','ngram-simple']:
         status = flag_status('--spec-type')
@@ -100,6 +103,11 @@ def launch_args(s, port):
     for flag, value in [('--model',str(Path(s.model).expanduser().resolve())),('--host','127.0.0.1'),('--port',port),('--ctx-size',s.context),('--parallel',s.slots),('--gpu-layers',s.gpu_layers),('--device',s.device)]:
         add(flag,value)
     add('--jinja')
+    if s.chat_template:
+        template = Path(s.chat_template).expanduser().resolve()
+        if not template.is_file():
+            raise ValueError('Chat template file does not exist.')
+        add('--chat-template-file', template)
     if '--perf' in p['flags']:
         add('--perf')
     if '--no-context-shift' in p['flags']:
@@ -120,6 +128,9 @@ def launch_args(s, port):
         if c['status'] != 'available':
             raise ValueError(c['reason'])
         add('--spec-type',s.speculation)
+        if s.draft_cache != 'default' and s.speculation in ['draft-mtp','draft-dflash']:
+            add('--spec-draft-type-k',s.draft_cache)
+            add('--spec-draft-type-v',s.draft_cache)
         if '--spec-draft-n-max' in p['flags']:
             add('--spec-draft-n-max',s.draft_length)
         if s.speculation == 'draft-dflash':

@@ -13,6 +13,7 @@ from .discovery import CATALOG, engines, hardware, models, probe
 from .engine import Cancelled, Engine
 from .settings import Settings, capabilities, launch_args
 from .store import Store
+from .defaults import starting_defaults
 
 
 class App:
@@ -31,6 +32,14 @@ class App:
         if path == '/api/capabilities':
             s = Settings.parse(data['settings'])
             return dict(features=capabilities(s),engine={k:v for k,v in probe(s.engine).items() if k != 'help'})
+        if path == '/api/default/resolve':
+            s = Settings.parse(data['settings'])
+            saved = self.store.get('default',self.default_key(s))
+            if saved and not data.get('inherited_only',False):
+                resolved = Settings.parse(saved)
+                resolved.engine, resolved.device = s.engine, s.device
+                return dict(settings=resolved.dict(), source='Saved lllm2 defaults', notes=[])
+            return starting_defaults(s)
         if path == '/api/default/load':
             s = Settings.parse(data['settings'])
             return self.store.get('default',self.default_key(s))

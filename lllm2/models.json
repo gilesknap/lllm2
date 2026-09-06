@@ -6,7 +6,10 @@
     "file": "Qwen3.8-27B-UD-Q4_K_S.gguf",
     "size_gb": 15.36,
     "max_ctx": 262144,
-    "kv_kib_per_token": 64
+    "kv_kib_per_token": 64,
+    "full_attention_layers": 16,
+    "mtp": true,
+    "chat_template": "qwen3.8-27b.jinja"
   },
   {
     "id": "qwen3.6-35b-a3b",
@@ -24,7 +27,9 @@
     "file": "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
     "size_gb": 18.21,
     "max_ctx": 262144,
-    "kv_kib_per_token": 20
+    "kv_kib_per_token": 20,
+    "full_attention_layers": 10,
+    "mtp": true
   },
   {
     "id": "qwen3.6-35b-a3b-q4ks",
@@ -60,7 +65,9 @@
     "file": "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf",
     "size_gb": 17.01,
     "max_ctx": 262144,
-    "kv_kib_per_token": 20
+    "kv_kib_per_token": 20,
+    "mmproj": "mmproj-F16.gguf",
+    "mmproj_gb": 1.19
   },
   {
     "id": "muse-glimmer-30b",
@@ -69,7 +76,9 @@
     "file": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
     "size_gb": 15.88,
     "max_ctx": 131072,
-    "kv_kib_per_token": 13
+    "kv_kib_per_token": 13,
+    "mmproj": "mmproj-Muse-Glimmer-30B-Q8_0.gguf",
+    "mmproj_gb": 2.05
   },
   {
     "id": "gemma-4-12b-qat",
@@ -78,6 +87,8 @@
     "file": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
     "size_gb": 6.72,
     "max_ctx": 262144,
-    "kv_kib_per_token": 16
+    "kv_kib_per_token": 16,
+    "mmproj": "mmproj-F16.gguf",
+    "mmproj_gb": 0.18
   }
 ]
