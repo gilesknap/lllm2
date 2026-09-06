@@ -297,14 +297,15 @@ an engine upgrade with a settings change.
 
 ## Starting a fresh context
 
-Copy this prompt, adjusting the slice number:
+Copy this prompt:
 
 > Read HANDOFF.md and PERFORMANCE_PLAN.md, then inspect the current code and git
-> changes. Implement slice 1 only: tooltips for launch settings and clearer feature
-> availability. Reuse the existing tooltip behavior and keep novice explanations
-> concise. Preserve launch behavior and all existing defaults. Run appropriate
-> lightweight checks, update the slice status and handoff, and stop at the slice
-> boundary. RTX_PERFORMANCE_REVIEW.md is dated research, not measured local gains.
+> changes. Implement the next unfinished slice only, following its scope and
+> validation criteria above. Keep novice explanations concise and preserve existing
+> behavior except for changes explicitly required by that slice. Run appropriate
+> checks and bounded measurements, update the slice status and handoff, and stop
+> at the slice boundary. RTX_PERFORMANCE_REVIEW.md is dated research, not measured
+> local gains.
 
 At each boundary record changed files, checks, result IDs/evidence where relevant,
 remaining uncertainties, and the next slice. Prefer a new context at a completed
