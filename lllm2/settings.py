@@ -1,7 +1,7 @@
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 import re
-from .discovery import batch_defaults, metadata, probe, cuda_graph_support, engine_environment, EXECUTION_ENV_KEYS
+from .discovery import batch_defaults, metadata, probe, cuda_graph_support, cache_kernel_support, engine_environment, EXECUTION_ENV_KEYS
 
 
 MTP_MODES = ('draft-mtp', 'draft-mtp,ngram-simple')
@@ -19,6 +19,8 @@ class Settings:
     gpu_layers: int = 999
     flash: str = 'auto'
     cache: str = 'f16'
+    cache_k: str | None = None
+    cache_v: str | None = None
     speculation: str = 'none'
     drafter: str = ''
     pair_confirmed: bool = False
@@ -40,6 +42,11 @@ class Settings:
         if set(data) - {f.name for f in fields(cls)}:
             raise ValueError('Unknown launch setting.')
         s = cls(**data)
+        for key in ('cache_k', 'cache_v'):
+            if getattr(s, key) == '':
+                setattr(s, key, None)
+            if getattr(s, key) not in (None, 'f16', 'q8_0', 'q4_0'):
+                raise ValueError(f'Invalid {key}')
         if type(s.backend_sampling) is not bool:
             raise ValueError('backend_sampling must be boolean')
         if s.cuda_graph_opt not in ('default', 'on', 'off'):
@@ -78,6 +85,17 @@ class Settings:
     def dict(self):
         return asdict(self)
 
+    def cache_pair(self):
+        return self.cache_k or self.cache, self.cache_v or self.cache
+
+
+def cache_settings(s):
+    k, v = s.cache_pair()
+    return dict(requested=dict(cache=s.cache, cache_k=s.cache_k, cache_v=s.cache_v),
+                resolved=dict(k=k, v=v), kernel=cache_kernel_support(s.engine, s.backend),
+                context_evidence='Inherited planner is calibrated for q8_0/q8_0 only; it is not a measured capacity for this pair.',
+                state_scope='K/V choices apply to attention cache; hybrid recurrent states retain engine-selected precision. Draft cache is unchanged.')
+
 
 def capabilities(s):
     p = probe(s.engine)
@@ -102,6 +120,11 @@ def capabilities(s):
         if name == 'cache' and '--cache-type-v' not in flags:
             status = 'unsupported'
         out[name] = dict(status=status, reason=f'Binary probe: {flag}. Actual model/backend behavior is validated on launch.')
+    pair = cache_settings(s)
+    k, v = s.cache_pair()
+    out['cache_pair'] = dict(status=out['cache']['status'] if k == v or out['cache']['status'] != 'available' else 'experimental',
+                            reason=pair['kernel']['reason'] if k != v else 'Resolved attention cache: K ' + k + ', V ' + v + '. Equal types still require a successful engine/model/backend launch.',
+                            evidence=pair)
     defaults = batch_defaults(help_text) if not p['error'] else {}
     for name, flag in [('cache_ram_mib', '--cache-ram'), ('context_checkpoints', '--ctx-checkpoints')]:
         block = re.search(r'(?m)^[^\n]*(?<!\S)' + re.escape(flag) +
@@ -255,11 +278,12 @@ def launch_args(s, port):
         add('--no-context-shift')
     if s.flash != 'auto':
         add('--flash-attn',s.flash)
-    if s.cache != 'f16':
+    cache_k, cache_v = s.cache_pair()
+    if (cache_k, cache_v) != ('f16', 'f16'):
         if s.flash != 'on':
             raise ValueError('Quantized KV experiments require flash attention on.')
-        for flag in ['--cache-type-k','--cache-type-v']:
-            add(flag,s.cache)
+        add('--cache-type-k', cache_k)
+        add('--cache-type-v', cache_v)
     elif '--cache-type-k' in p['flags'] and '--cache-type-v' in p['flags']:
         add('--cache-type-k','f16'); add('--cache-type-v','f16')
     if s.effort != 'default':

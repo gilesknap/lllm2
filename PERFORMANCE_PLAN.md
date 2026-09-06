@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: slices 1–6 complete; slices 7–8 not started.
+Status: slices 1–7 complete; slice 8 not started.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -479,6 +479,43 @@ old q8-specific memory planner off as a measured estimate for new pairs.
 
 Done when new pairs have clear evidence, backward-compatible settings, and honest
 context labels. Do not switch the default to q4 merely because allocation fits.
+
+Slice 7 complete (6 September 2026). Independent nullable K/V overrides preserve
+legacy shared-cache settings and draft cache. Explicit common selection relinks
+both; form, running settings and results display the resolved pair. Quantized
+pairs retain the flash-attention guard. Exact adjacent CUDA library identity and
+compiled-kernel limitations are recorded separately from unobserved dispatch;
+other builds remain unverified. Hybrid recurrent states are not re-quantized.
+
+Four cold CUDA runtime probes used identical 4096-token long-code input and32
+output tokens at16K allocation, one slot, MTP3, batch2048/512, sampling off and
+streams off. Baseline q8/q8 versus q8/q4:
+
+| Checkpoint | Prefill tok/s | Decode tok/s | Wall seconds | Peak total GPU MiB |
+|---|---:|---:|---:|---:|
+| Dense q8/q8 |1037.2|47.10|4.61|17199|
+| Dense q8/q4 |90.1|18.22|47.16|17155|
+| MoE q8/q8 |2278.4|130.94|2.04|19201|
+| MoE q8/q4 |236.9|64.32|17.77|19070|
+
+Dense result IDs: `6e720118-fe93-46ff-92c0-4540f52be03f` baseline and
+`b1a9e8f8-1aec-47a9-a997-40eb21a1c0d2` mixed. MoE IDs:
+`35b8b2dd-a2e5-4b39-9e8c-6d3ff8b18328` baseline and
+`13c6271c-417d-4d69-a698-3dcb0fa0394c` mixed. All completed. One screening
+sample each establishes a severe regression, not a precise repeatable percentage.
+The slowdown is consistent with missing mixed CUDA kernels; runtime dispatch was
+not instrumented. No useful finalist, so no larger-capacity or quality trial was
+warranted. Mixed-pair quality and maximum capacity remain unassessed. Keep q8/q8.
+
+Temporary compatibility tests covered all nine type pairs, legacy defaults,
+invalid overrides, flash guards, draft isolation, suite variants clearing overrides,
+provenance and changed-library hash invalidation. Independent review passed. Live
+390px LAN browser verified collapsed controls, resolved pair, experimental warning,
+common/legacy reset, actual result rows, experiment-reset isolation and no overflow.
+The transient Unknown launch setting error came from new static HTML with the old
+running parser; an idle restart and user hard refresh resolved it. LAN8082 remains
+available with the original environment and bind. No default changes or engine
+upgrade. Detailed negative evidence is in the four stored results.
 
 ### Slice 8: ship useful recommendations
 

@@ -423,3 +423,22 @@ output budgets, elapsed time, host RSS and speculative settings in promotion
 provenance, excluding raw source/output. Old/new provenance checks passed. Final
 idle panel restart loaded this helper and verified LAN HTTP200 with environment
 and0.0.0.0:8082 preserved.
+
+PR12 merged slice6 and experiment reset (`2654eab`). CodeRabbit skipped its
+hourly quota; independent review and local UI/GPU checks passed. Slice7 is now
+in progress on performance-slice7; no mixed-cache runtime claim yet.
+
+## Slice 7 boundary — independent cache precision
+
+Nullable K/V overrides, legacy/common reset, resolved-pair UI and provenance are
+complete. Known installed CUDA library lacks mixed GPU attention kernels; flags
+are not support proof and actual dispatch remains unobserved. Both real q8/q4
+probes completed but wall time regressed severely (dense47.16vs4.61sec, MoE17.77
+vs2.04sec), saving only44/131MiB total GPU respectively. Four result IDs and full
+conditions are in PERFORMANCE_PLAN.md. Keep q8/q8; mixed quality/capacity remain
+unassessed because no useful finalist. No engine upgrade or saved-default change.
+Independent code review, lightweight compatibility tests and live narrow LAN UI
+checks passed, including experiment reset preserving launch cache overrides.
+A development-time new-page/old-parser mismatch caused Unknown launch setting;
+idle restart plus user Ctrl-F5 fixed it, and live new settings now work.
+Next: slice8 final recommendations, bounded context/headroom and quality evidence.
