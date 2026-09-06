@@ -501,3 +501,26 @@ Final delivery is PR16. CodeRabbit completed review with one minor documentation
 clarification:65,248 input+256 output occupies65,504 tokens, leaving the explicit
 32-token margin within65,536 allocation. Clarified the plan; measurements and
 code are unchanged. Independent review and final live checks already passed.
+
+
+## Launch-first UI boundary
+
+UI_IMPROVEMENTS_PLAN is implemented after rebasing onto main's completed slice8.
+Launch now automatically chooses verified Qwen3.8 first or the tested Qwen3.6 MTP
+variant next, with the final compatible 65K profile/build. Start is on the first
+screen; configuration and evidence are collapsed. Existing saved settings are
+preserved and loaded only through the explicit saved-settings action in Launch;
+the legacy resolver's saved-first `auto` behavior remains unchanged.
+
+Experiments has a separate view and draft. Navigating, resetting experiments and
+previewing results do not save defaults or change the running model. Explicit
+restart/experiment replacement checks the observed engine PID; startup requests
+are deduplicated and Ready follows health/template validation. `static/panel.js`
+is now served through an explicit route; restart the panel when adopting this code.
+
+Temporary isolated-browser/backend checks and real short launches of both Qwen
+profiles passed, including running-page reload, duplicate Start no-op, Stop and
+legacy saved Vulkan159744 restoration. One real 1024+16 baseline exercised explicit
+serving-to-experiment replacement and read-only result preview. Full scope, evidence
+and limits are in UI_IMPROVEMENTS_PLAN.md. No performance defaults were changed.
+The original LAN panel was not restarted or used for mutations during validation.

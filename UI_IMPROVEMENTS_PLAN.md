@@ -1,7 +1,8 @@
 # UI improvements: open the panel, start a recommended model
 
-Status: proposed; implementation not started.
-Requested 6 September 2026. This PR contains this plan only.
+Status: all four implementation slices complete; awaiting user review.
+Requested 6 September 2026; implementation authorized after the performance work finished.
+Rebased onto main at `09e50aa` before implementation.
 
 ## Outcome and scope
 
@@ -18,9 +19,9 @@ secondary navigation. The user is happy with the UI's general appearance.
 
 This request establishes a launch-first direction beyond the historical workbench
 emphasis in PLAN.md. It explicitly authorizes this root planning artifact and its
-PR. It does not implement the plan or authorize a new performance sweep. Another
-agent owns the remaining PERFORMANCE_PLAN work; consume its final recommendations
-when implementing this plan and leave its code, measurements, and handoffs alone.
+PR. The initial request was planning only. The subsequent request authorizes executing
+this plan and preparing a reviewable PR. PERFORMANCE_PLAN is now complete; this
+implementation consumes its final profiles without changing tuning or measurements.
 
 ## Review basis and limits
 
@@ -347,3 +348,70 @@ Experiments. For a small observed walkthrough, record click count, accidental
 experiment entry, need for explanation and whether the user can identify the
 running model. Time from **Ready to start** to the click measures UI friction;
 model load time is separate. No production telemetry is required.
+
+
+## Implementation completion and evidence
+
+All four slices are implemented. The UI retains the existing controls, help and
+comparison evidence in a separate Experiments view. A single settings editor moves
+between views while independent drafts retain their values and provenance; no
+framework or duplicate control IDs were introduced. The browser script now lives in
+`lllm2/static/panel.js`, served by an explicit static route.
+
+- Slice 1: additive ranked catalogue metadata and `launch.py` select exact verified
+  checkpoints and compatible engines. Size/architecture/MTP shortlisting bounds
+  fingerprint work; renamed directories work and identical-basename variants do
+  not inherit measured identity. Settings come from the final portable 65K profiles.
+  Custom engine paths and explicitly selected unverified variants remain usable.
+- Slice 2: Launch is the initial view. Recommended models, source/context and Start
+  are visible together, with saved preferences available explicitly and all tuning
+  under Customize. Start's bottom edge measured 585px at 1440×900 and 690px at
+  390×844 in the normal resolved state, versus its old top edge at 1460px/2026px.
+- Slice 3: current-snapshot validation, stale-response guards, immediate submission
+  protection, server request deduplication, explicit PID-checked replacement and
+  health-qualified readiness cover start/restart/switch. Known GPU conflicts are
+  checked before stopping an owned service. Download completion rescans/resolves;
+  unavailable or unverified installs expose a corrective path. Ready offers the
+  correctly scoped workstation API address. Process exit and disconnect are visible.
+- Slice 4: experiment drafts and parameters survive view changes; launch model changes
+  do not reset an existing experiment ceiling. Starting an experiment over serving
+  requires an explicit replacement action and matching PID. Result preview copies
+  to Launch without saving; explicit saving retains eligible result provenance.
+
+Validation used an isolated panel on loopback 8083, engine port 1921, temporary
+state with a copy of the original saved preferences, and headless Chrome. The
+original LAN panel and its preferences were preserved. Temporary checks/artifacts
+are under `/tmp/lllm2-ui-*` and `/tmp/lllm2-launch-*`; they are not a new test suite.
+
+Checks passed:
+
+- Backend checks for renamed/changed/same-basename checkpoint identities, ranked
+  model/build selection, rank-2-only and no-model cases, concurrent/duplicate start,
+  stale/implicit replacement rejection, conflict preservation, exit readiness and
+  read-only result-preview eligibility.
+- Browser checks for delayed/default/validation responses, manual edits superseding
+  late responses, saved/recommended source separation, duplicate clicks, loading
+  versus Ready, restart wording, draft/reset isolation, disconnect/reconnect,
+  persistent failure, download completion without automatic start, and DOM structure.
+- Desktop/narrow light and dark layouts, no page overflow, unique IDs after help
+  rendering, keyboard focus/Start ordering, hidden views, tooltip click/Escape,
+  emulated touch, and 720 CSS-pixel reflow at 2× density. Dark primary-button text
+  uses the dark foreground against green (7.07:1 contrast; light theme 5.57:1).
+- Real normal Start → health/template readiness → short chat response → reload →
+  duplicate Start no-op → Stop for both recommended checkpoints at 65,536 context.
+  Dense generated 28 tokens; MoE generated 32 under a 32-token cap. Requested and
+  applied settings matched; reload kept the same running model and PID.
+- The copied legacy Vulkan preference restored its exact 159,744 context; returning
+  to Recommended selected the final 65,536 CUDA profile without saving preferences.
+- One bounded real experiment explicitly replaced a serving model and completed a
+  single 1024-input/16-output sample. Temporary result
+  `ecaf9162-a873-4277-b05e-3f793f5154df` previewed in Launch; interception of the
+  subsequent explicit Save verified its result reference without writing preferences.
+  This was a functional smoke check, not a new performance recommendation.
+- Python compilation, JavaScript syntax and `git diff --check` passed.
+
+Limits: no physical touch device, screen reader user study, actual large download,
+new non-3090/Vulkan GPU launch, exhaustive performance run or new quality claim.
+Download transitions and unavailable setups were simulated; actual CUDA launches
+and restored saved Vulkan settings were checked as described above. Restart the
+panel after adopting the PR so its HTML, script and new API routes match.

@@ -5,17 +5,19 @@ import secrets
 import signal
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 from . import config, downloads
 from .bench import Bench, WORKLOADS
-from .discovery import CATALOG, engines, hardware, models, probe
+from .discovery import CATALOG, engines, hardware, probe
 from .engine import Cancelled, Engine
 from .settings import Settings, capabilities, launch_args
 from .store import Store
 from .defaults import starting_defaults
 from .recommendations import promotion_provenance, saved_qualifications
+from .launch import installed_models, choose_launch
 
 
 class App:
@@ -24,6 +26,7 @@ class App:
         self.engine = Engine()
         self.bench = Bench(self.engine,self.store)
         self.token = secrets.token_urlsafe(32)
+        self.start_requests = {}
 
     def default_key(self,s):
         return str(Path(s.model).expanduser().resolve()) + '|' + s.backend
@@ -50,7 +53,36 @@ class App:
             return dict(directory=str(directory), parent=str(directory.parent), entries=entries,
                         home=str(Path.home()), models=str(config.MODELS_DIR))
         if path == '/api/discover':
-            return dict(models=models(),engines=engines(),catalog=CATALOG)
+            return dict(models=installed_models(),engines=engines(),catalog=CATALOG)
+        if path == '/api/launch/select':
+            return choose_launch(data.get('model', ''), data.get('engine', ''),
+                                 data.get('backend', ''), data.get('device', ''))
+        if path == '/api/launch/check':
+            s = Settings.parse(data['settings'])
+            error = None
+            try:
+                if not hardware()['gpus']:
+                    raise ValueError('No NVIDIA GPU detected. Check GPU availability before starting.')
+                launch_args(s, config.ENGINE_PORT)
+            except (OSError, ValueError) as e:
+                error = str(e)
+            return dict(valid=error is None, error=error,
+                        saved_exists=self.store.get('default', self.default_key(s)) is not None)
+        if path == '/api/result/preview':
+            r = self.store.get('result', data['result_id'])
+            if not r or r['status'] != 'complete' or not r['samples']:
+                raise ValueError('Choose a completed result with samples.')
+            if r.get('measurement_mode') == 'warm-conversation' or r.get('quality_status') == 'failed':
+                raise ValueError('This result cannot be used as a general measured configuration.')
+            s = Settings.parse(r['settings'])
+            if data.get('use_context'):
+                if not r.get('recommended_context'):
+                    raise ValueError('This result has no successful context probe.')
+                s.context = r['recommended_context'] * s.slots
+            return dict(settings=s.dict(), source='Experiment result · for next launch',
+                        notes=['Review before starting or saving. Saved preferences are unchanged.'],
+                        evidence=promotion_provenance(r, s, data.get('use_context')),
+                        result_id=r['id'], use_context=bool(data.get('use_context')))
         if path == '/api/capabilities':
             s = Settings.parse(data['settings'])
             return dict(features=capabilities(s),engine={k:v for k,v in probe(s.engine).items() if k != 'help'})
@@ -108,18 +140,39 @@ class App:
         if path == '/api/benchmark':
             return self.bench.submit(data)
         if path in ['/api/cancel','/api/stop']:
-            self.bench.cancel.set()
-            self.engine.stop()
+            with self.bench.lock:
+                self.bench.cancel.set()
+                self.engine.stop()
+                if not self.bench.active:
+                    self.bench.progress = dict(status='stopped', kind='launch')
             return dict(ok=True)
         if path == '/api/start':
             s = Settings.parse(data['settings'])
+            request_id = data.get('request_id')
+            if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 128):
+                raise ValueError('Invalid start request identity.')
             launch_args(s,config.ENGINE_PORT)
             with self.bench.lock:
+                if request_id in self.start_requests:
+                    if self.start_requests[request_id] != s.dict():
+                        raise ValueError('Start request identity already used for different settings.')
+                    return dict(ok=True)
                 if self.bench.active:
                     raise ValueError('Wait for the current operation or cancel it first.')
+                running = self.engine.state()
+                if running.get('ready') and running['settings'] == s.dict():
+                    return dict(ok=True)
+                if running['running']:
+                    if data.get('replace_running') is not True or data.get('expected_pid') != running['pid']:
+                        raise ValueError('A model is running or has changed. Refresh status and explicitly switch or restart it.')
                 self.bench.active = True
                 self.bench.cancel.clear()
-                self.bench.progress = dict(status='starting',phase='Loading model')
+                if request_id:
+                    self.start_requests[request_id] = s.dict()
+                    if len(self.start_requests) > 128:
+                        del self.start_requests[next(iter(self.start_requests))]
+                self.bench.progress = dict(kind='launch', status='starting', phase='Loading model',
+                                           started_at=time.time(), settings=s.dict(), request_id=request_id)
             def start():
                 try:
                     self.engine.start(s,self.bench.cancel)
@@ -187,6 +240,8 @@ def main():
             path = urlparse(self.path).path
             if path == '/':
                 self.send(200,Path(__file__).with_name('static').joinpath('index.html').read_bytes(),'text/html; charset=utf-8')
+            elif path == '/static/panel.js':
+                self.send(200,Path(__file__).with_name('static').joinpath('panel.js').read_bytes(),'text/javascript; charset=utf-8')
             elif path == '/api/status':
                 self.send(200,dict(token=app.token,engine=app.engine.state(),job=app.bench.snapshot(),hardware=hardware(),
                                    downloads=downloads.all_downloads(),endpoint=app.engine.base+'/v1',

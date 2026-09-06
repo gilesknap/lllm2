@@ -151,11 +151,12 @@ class Bench:
         with self.lock:
             if self.active:
                 raise ValueError('An operation is already running.')
-            if self.engine.state()['running']:
-                raise ValueError('Stop normal serving before starting an experiment.')
+            running = self.engine.state()
+            if running['running'] and (data.get('replace_running') is not True or data.get('expected_pid') != running['pid']):
+                raise ValueError('A model is serving or has changed. Refresh status and choose Stop model and run experiment to replace it.')
             self.active = True
             self.cancel.clear()
-            self.progress = dict(status='queued', total=len(variants), completed=0, skipped=skipped)
+            self.progress = dict(kind='experiment', status='queued', total=len(variants), completed=0, skipped=skipped)
         threading.Thread(target=self._run,args=(variants,opts),daemon=True).start()
         return self.snapshot()
 

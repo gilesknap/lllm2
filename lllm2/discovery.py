@@ -157,8 +157,9 @@ def probe(path):
     return _probe(**identity(p))
 
 
-def engines():
-    _probe.cache_clear()
+def engines(refresh=True):
+    if refresh:
+        _probe.cache_clear()
     paths = set()
     for root in config.ENGINE_ROOTS:
         if root.is_file():

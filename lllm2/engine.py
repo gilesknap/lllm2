@@ -74,6 +74,7 @@ class Engine:
     def __init__(self):
         self.process = None
         self.settings = None
+        self.ready = False
         self.argv = []
         self.execution_environment = None
         self.attempt_environment = None
@@ -89,9 +90,13 @@ class Engine:
     def state(self):
         with self.log_lock:
             logs = list(self.lines)[-200:]
-        return dict(running=self.process is not None and self.process.poll() is None,
-                    pid=self.process.pid if self.process else None,
-                    settings=self.settings.dict() if self.settings else None, argv=self.argv, logs=logs,
+        process, settings = self.process, self.settings
+        exit_code = process.poll() if process is not None else None
+        running = process is not None and exit_code is None
+        return dict(running=running, ready=running and self.ready and self.process is process,
+                    pid=process.pid if process else None,
+                    error=f'Engine exited with code {exit_code}. See the engine log, then retry.' if process is not None and exit_code is not None else None,
+                    settings=settings.dict() if settings else None, argv=self.argv, logs=logs,
                     execution_environment=self.execution_environment)
 
     def request(self, path, body=None, timeout=30):
@@ -106,6 +111,7 @@ class Engine:
 
     def stop(self):
         with self.guard:
+            self.ready = False
             p = self.process
             if p is None:
                 return
@@ -130,26 +136,30 @@ class Engine:
     def start(self, s, cancel, timeout=180):
         self.attempt_environment = None
         argv = launch_args(s, config.ENGINE_PORT)
-        self.stop()
         if cancel.is_set():
             raise Cancelled()
         hw = hardware()
         if not hw['gpus']:
             raise GPUUnavailable('NVIDIA GPU unavailable: ' + str(hw['error']))
+        rc, processes = command(['nvidia-smi','--query-compute-apps=pid,process_name','--format=csv,noheader'],4)
+        if rc != 0:
+            raise GPUUnavailable('Cannot check GPU ownership: ' + processes[:300])
+        # Exclude only this app's owned process before deciding whether a switch is safe.
+        owned_pid = self.process.pid if self.process and self.process.poll() is None else None
+        processes = "\n".join(line for line in processes.splitlines()
+                              if line.split(",", 1)[0].strip() != str(owned_pid))
+        desktop, competing = gpu_processes(processes)
+        if competing:
+            raise ResourceConflict('Other GPU compute processes detected; stop the old model/server first: ' + '; '.join(competing)[:500])
+        if desktop:
+            self.log('Allowing desktop GPU processes: ' + '; '.join(desktop) + '. Their VRAM and activity remain part of this workstation benchmark.')
+        self.stop()
         with socket.socket() as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(('127.0.0.1', config.ENGINE_PORT))
             except OSError as e:
                 raise ResourceConflict(f'Port {config.ENGINE_PORT} is occupied by another process. Stop it yourself or change LLLM2_ENGINE_PORT.') from e
-        rc, processes = command(['nvidia-smi','--query-compute-apps=pid,process_name','--format=csv,noheader'],4)
-        if rc != 0:
-            raise GPUUnavailable('Cannot check GPU ownership: ' + processes[:300])
-        desktop, competing = gpu_processes(processes)
-        if competing:
-            raise ResourceConflict('Other GPU compute processes detected; stop the old model/server first: ' + '; '.join(competing)[:500])
-        if desktop:
-            self.log('Allowing desktop GPU processes: ' + '; '.join(desktop) + '. Their VRAM and activity remain part of this workstation benchmark.')
         with self.guard:
             if cancel.is_set():
                 raise Cancelled()
@@ -182,6 +192,10 @@ class Engine:
             if s.effort != 'default':
                 body['reasoning_effort'] = s.effort
             self.guarded_request('/apply-template',body,cancel,min(timeout,30))
+            with self.guard:
+                if cancel.is_set() or self.process is not p or p.poll() is not None:
+                    raise Cancelled()
+                self.ready = True
         except BaseException:
             self.stop()
             raise
