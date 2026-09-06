@@ -121,10 +121,67 @@ cannot establish vLLM's benefit for concurrency. Benchmark 1/2/4/8 requests,
 shared-prefix and independent prompts, per-request latency, aggregate throughput
 and usable context before adding another backend. It is not implemented yet.
 
+## Preference for future documentation
+
+When documentation work begins, record experiments in docs: what was tried,
+exact configurations, results, caveats, decisions, and links to raw benchmark
+data in the existing database. Keep a small experiment log for interpretations.
+Skills should contain reusable working procedures (such as running fair
+comparisons and finding previous results), link to the experiment docs, and avoid
+duplicating findings. Promote a finding into a skill only when it becomes a
+reusable procedure. This is a reminder for the docs phase, not a request to start
+documentation infrastructure now.
+
+## Current work plan — Qwen performance and UI clarity
+
+The user requested saving the research and planning small implementation slices
+before continuing in fresh contexts. Read [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md)
+for the current order and status, and [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md)
+for the dated, source-linked research. These root Markdown artifacts are explicitly
+authorized; general documentation infrastructure remains deferred.
+
+Prioritize Qwen3.8-27B dense and Qwen3.6-35B-A3B MoE on the RTX 3090. Keep the
+normal UI understandable to a novice and ship portable defaults backed by actual
+measurements, distinguishing inherited estimates and user-saved preferences.
+The next slice is launch-setting tooltips and clearer feature availability,
+reusing existing experiment tooltip behavior without changing launch defaults.
+No performance implementation or new GPU benchmarks have been done for this plan.
+
+The user authorized detached background panel management and restarts after code
+changes, with LAN exposure on `0.0.0.0:8082`. PID file: `/tmp/lllm2-panel.pid`;
+log: `/tmp/lllm2-panel.log`; LAN URL: `http://192.168.1.10:8082/`. Recheck live
+process identity/job state before restarting. Preserve that bind setting.
+
+## Launching VS Code as agents on the desktop
+
+User-confirmed working on 6 September 2026. In a terminal belonging to the
+desktop user (`giles`), grant local X11 access and preserve DISPLAY when switching:
+
+```bash
+xhost +SI:localuser:agents
+su --whitelist-environment=DISPLAY - agents
+```
+
+Then, as `agents`:
+
+```bash
+code --ozone-platform=x11 --disable-gpu ~/code/lllm2
+```
+
+Without `--disable-gpu`, VS Code displayed a blank window; the user confirmed
+this command fixes it. Close existing VS Code windows belonging to `agents`
+before relaunching with the flag. This disables editor GPU rendering, not CUDA
+for the LLM. No persistent shell or VS Code configuration was changed.
+
+Repeat the xhost grant after a new desktop login. For an already-open agents
+shell, run `echo "$DISPLAY"` as the desktop user and export that exact value in
+the agents shell; do not assume `:0`. To revoke the grant, run
+`xhost -SI:localuser:agents` as the desktop user.
+
 ## Suggested next-session starting prompt
 
 Read PLAN.md and HANDOFF.md, inspect this checkout and my actual GPU/engine setup,
-then continue iteration two with me. Preserve the agreed scope and existing
-installations. Start by reviewing outstanding CodeRabbit findings and the current
-workstation benchmark results; do not assume the cloud session validated CUDA,
-DFlash or the final usable context limit.
+then read PERFORMANCE_PLAN.md and implement the next unfinished slice only.
+Preserve the agreed scope and existing installations. Keep unresolved review
+findings in mind; do not assume the cloud session validated CUDA, DFlash or the
+final usable context limit. Update the plan and this handoff at the slice boundary.
