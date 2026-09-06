@@ -8,7 +8,8 @@ from pathlib import Path
 from .discovery import CATALOG, command, hardware, metadata, probe
 from .settings import Settings, capabilities
 
-SOURCE = 'lllm3090 e56c8d0'
+# Built-in tuning was previously benchmarked on an RTX 3090.
+SOURCE = 'Built-in defaults'
 
 
 def catalogue_entry(path):

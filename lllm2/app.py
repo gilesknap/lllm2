@@ -3,6 +3,7 @@ import fcntl
 import json
 import secrets
 import signal
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,8 +38,6 @@ class App:
                 raise ValueError('Choose a directory.')
             entries = []
             for child in directory.iterdir():
-                if child.name.startswith('.'):
-                    continue
                 try:
                     is_dir = child.is_dir()
                     if is_dir or (child.is_file() and child.suffix.lower() == '.gguf'):
@@ -56,11 +55,16 @@ class App:
             return dict(features=capabilities(s),engine={k:v for k,v in probe(s.engine).items() if k != 'help'})
         if path == '/api/default/resolve':
             s = Settings.parse(data['settings'])
+            source = data.get('source','auto')
+            if source not in ['auto','saved','built-in']:
+                raise ValueError('Unknown defaults source.')
             saved = self.store.get('default',self.default_key(s))
-            if saved and not data.get('inherited_only',False):
+            if saved and source != 'built-in':
                 resolved = Settings.parse(saved)
                 resolved.engine, resolved.device = s.engine, s.device
-                return dict(settings=resolved.dict(), source='Saved lllm2 defaults', notes=[])
+                return dict(settings=resolved.dict(), source='Saved defaults', notes=[])
+            if source == 'saved':
+                raise ValueError('No saved defaults for this model and backend yet. Choose “Use as default” on a completed benchmark, or save the current settings.')
             return starting_defaults(s)
         if path == '/api/default/load':
             s = Settings.parse(data['settings'])
@@ -121,6 +125,7 @@ class App:
 def main():
     parser = argparse.ArgumentParser(description='lllm2 local LLM workbench')
     parser.add_argument('--port',type=int,default=8082)
+    parser.add_argument('--host',default='0.0.0.0',help='IPv4 bind address (default: all interfaces; use 127.0.0.1 for localhost only)')
     args = parser.parse_args()
     config.STATE_DIR.mkdir(parents=True,exist_ok=True)
     lock = (config.STATE_DIR/'panel.lock').open('w')
@@ -129,7 +134,8 @@ def main():
     except BlockingIOError:
         parser.error('Another lllm2 panel owns this state directory.')
     app = App()
-    allowed_hosts = {f'127.0.0.1:{args.port}',f'localhost:{args.port}'}
+    hostnames = {'127.0.0.1','localhost',socket.gethostname().lower(),socket.getfqdn().lower()}
+    allowed_hosts = {f'{host}:{args.port}' for host in hostnames}
 
     class Handler(BaseHTTPRequestHandler):
         def send(self,status,body,kind='application/json'):
@@ -146,8 +152,11 @@ def main():
                 pass
 
         def valid_host(self):
-            if self.headers.get('Host') not in allowed_hosts:
-                self.send(403,dict(error='Use the local panel address.'))
+            # The accepted socket identifies the local interface used by this
+            # request, including LAN addresses on multi-interface workstations.
+            local_host = f'{self.connection.getsockname()[0]}:{args.port}'
+            if self.headers.get('Host','').lower() not in allowed_hosts | {local_host}:
+                self.send(403,dict(error='Use this workstation’s panel address or hostname.'))
                 return False
             return True
 
@@ -171,8 +180,8 @@ def main():
             if not self.valid_host():
                 return
             origin = self.headers.get('Origin')
-            if self.headers.get('X-LLLM2-Token') != app.token or (origin and origin not in {f'http://{h}' for h in allowed_hosts}):
-                self.send(403,dict(error='Reload the local panel to renew its session.'))
+            if self.headers.get('X-LLLM2-Token') != app.token or (origin and origin.lower() != f'http://{self.headers.get("Host","").lower()}'):
+                self.send(403,dict(error='Reload the panel to renew its session.'))
                 return
             try:
                 size = int(self.headers.get('Content-Length','0'))
@@ -189,12 +198,14 @@ def main():
         def log_message(self,*args):
             pass
 
-    server = ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
+    server = ThreadingHTTPServer((args.host,args.port),Handler)
     def shutdown(*_):
         threading.Thread(target=server.shutdown,daemon=True).start()
     signal.signal(signal.SIGTERM,shutdown)
     signal.signal(signal.SIGINT,shutdown)
     print(f'lllm2: http://127.0.0.1:{args.port}',flush=True)
+    if args.host != '127.0.0.1':
+        print(f'LAN panel: http://{socket.gethostname() if args.host == "0.0.0.0" else args.host}:{args.port} (listening on {args.host})',flush=True)
     try:
         server.serve_forever()
     finally:

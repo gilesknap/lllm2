@@ -19,6 +19,17 @@ WORKLOADS = {
 }
 
 
+def prompt_sizes(s, opts):
+    upper = s.context // s.slots - opts['output_tokens'] - 32
+    if opts.get('sweep_prompts', True):
+        sizes = {min(tokens, upper) for tokens in [1024, 16384, 65536]}
+    else:
+        sizes = {opts['prompt_tokens']}
+    if opts.get('full_window', False):
+        sizes.add(upper)
+    return sorted(sizes)
+
+
 def stamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -91,20 +102,22 @@ class Bench:
 
     def submit(self, data):
         s = Settings.parse(data['settings'])
-        opts = dict(workloads=data.get('workloads',['generate','edit','long-code']),
+        opts = dict(sweep_prompts=data.get('sweep_prompts',True), full_window=data.get('full_window',False),
+                    workloads=data.get('workloads',['long-code']),
                     prompt_tokens=data.get('prompt_tokens',1024), output_tokens=data.get('output_tokens',256),
-                    search_context=data.get('search_context',True), max_context=data.get('max_context',metadata(s.model)['context'] or 131072),
-                    timeout=data.get('timeout',180), context_timeout=data.get('context_timeout',900), repeats=data.get('repeats',1))
+                    search_context=data.get('search_context',False), max_context=data.get('max_context',metadata(s.model)['context'] or 131072),
+                    timeout=data.get('timeout',900), context_timeout=data.get('context_timeout',900), repeats=data.get('repeats',1))
         if not opts['workloads'] or not isinstance(opts['workloads'],list) or any(w not in WORKLOADS for w in opts['workloads']):
             raise ValueError('Select coding workloads.')
         for k, lo, hi in [('prompt_tokens',128,131072),('output_tokens',16,4096),('max_context',512,1048576),('timeout',10,1800),('context_timeout',10,3600),('repeats',1,5)]:
             if type(opts[k]) is not int or not lo <= opts[k] <= hi:
                 raise ValueError(f'{k} must be in {lo}..{hi}')
-        if type(opts['search_context']) is not bool:
-            raise ValueError('search_context must be boolean')
+        for k in ['search_context','sweep_prompts','full_window']:
+            if type(opts[k]) is not bool:
+                raise ValueError(f'{k} must be boolean')
         if opts['search_context'] and opts['max_context'] < opts['output_tokens'] + 160:
             raise ValueError('Context ceiling must fit the output budget plus a real prompt.')
-        if opts['prompt_tokens'] + opts['output_tokens'] + 32 > s.context // s.slots:
+        if (128 if opts['sweep_prompts'] else opts['prompt_tokens']) + opts['output_tokens'] + 32 > s.context // s.slots:
             raise ValueError('Shared prompt and output budgets must fit context per slot, with 32 tokens of margin.')
         mode = data.get('mode','baseline')
         variants, skipped = suite(s) if mode == 'suite' else ([('baseline' if mode == 'baseline' else 'custom',replace(s))],[])
@@ -148,17 +161,20 @@ class Bench:
                 self.store.put('result',r['id'],r)
                 self.update(status='running', current=label, completed=i, result_id=r['id'], phase='loading',context_probe_started=None)
                 try:
-                    # Restart each workload/repeat to make cold prefill unambiguous.
+                    sizes = prompt_sizes(s,opts)
+                    r['prompt_sizes'] = sizes
+                    # Restart every sample to keep cold prefill unambiguous.
                     for workload in opts['workloads']:
                         for repetition in range(opts['repeats']):
-                            self.update(phase=f'{workload}: cold run {repetition+1}')
-                            self.engine.start(s,self.cancel,opts['timeout'])
-                            r['argv'] = self.engine.argv
-                            sample = self.measure(s,workload,opts['prompt_tokens'],opts['output_tokens'],opts['timeout'])
-                            sample['repetition'] = repetition + 1
-                            r['samples'].append(sample)
-                            self.store.put('result',r['id'],r)
-                            self.engine.stop()
+                            for point,tokens in enumerate(sizes,1):
+                                self.update(phase=f'{workload}: prompt {point}/{len(sizes)}, {tokens:,} tokens; repeat {repetition+1}/{opts["repeats"]}')
+                                self.engine.start(s,self.cancel,opts['timeout'])
+                                r['argv'] = self.engine.argv
+                                sample = self.measure(s,workload,tokens,opts['output_tokens'],opts['timeout'])
+                                sample['repetition'] = repetition + 1
+                                r['samples'].append(sample)
+                                self.store.put('result',r['id'],r)
+                                self.engine.stop()
                     if opts['search_context']:
                         self.context_search(s,opts,r)
                     r['status'] = 'complete'
@@ -252,17 +268,31 @@ class Bench:
         floor = math.ceil(floor/256)*256
         ceiling = ceiling//256*256
         good, bad = 0, ceiling+256
-        # Probe the selected launch context first, then bisect the remaining
-        # interval. The ceiling+256 sentinel keeps the ceiling itself testable.
-        attempt = min(max(floor,s.context//s.slots),ceiling)
+        # Reuse a completed full-window speed sample, without another restart.
+        selected = s.context // s.slots
+        if floor <= selected <= ceiling and any(
+            sample['input_tokens'] + opts['output_tokens'] + 32 >= selected
+            and sample['context_per_slot'] == selected for sample in r['samples']
+        ):
+            good = selected
+            r['context_seed_from_speed_sample'] = selected
+        # Test the ceiling directly after a success, then bisect only as needed.
+        attempt = ceiling if good else min(max(floor,selected),ceiling)
+        def resolution():
+            return max(1024, math.ceil(good * .1 / 256) * 256)
+        r['largest_observed_context'] = good or None
+        recommended = math.floor(good*.9/256)*256
+        r['recommended_context'] = recommended if recommended >= floor else None
+        r['recommended_context_is_estimate'] = True
+        r['context_ceiling'] = ceiling
         attempts = 0
         context_timeout = opts.get('context_timeout',900)
         r['context_search_status'] = 'running'
-        while floor <= attempt <= ceiling and attempts < 24:
+        while good < ceiling and floor <= attempt <= ceiling and attempts < 8:
             if self.cancel.is_set():
                 raise Cancelled()
             attempts += 1
-            self.update(phase=f'Context probe {attempts} (up to 24): {attempt:,} tokens per slot; {context_timeout}s timeout per operation',context_probe_started=time.time())
+            self.update(phase=f'Context probe {attempts} (up to 8): {attempt:,} tokens per slot; {context_timeout}s timeout per operation',context_probe_started=time.time())
             entry = dict(context_per_slot=attempt,status='running',started=stamp(),timeout_seconds=context_timeout)
             r['probes'].append(entry)
             self.store.put('result',r['id'],r)
@@ -298,13 +328,20 @@ class Bench:
                 self.store.put('result',r['id'],r)
             lower = max(good//256*256,floor-256)
             upper = math.ceil(bad/256)*256
-            if good >= ceiling or upper-lower <= 256:
+            if good >= ceiling or (good and upper-lower <= resolution()) or upper-lower <= 256:
                 break
-            attempt = ((lower+upper)//2)//256*256
+            attempt = ceiling if bad > ceiling else ((lower+upper)//2)//256*256
             if attempt < floor:
                 break
         if r['context_search_status'] == 'running':
-            resolved = math.ceil(bad/256)*256 - max(good//256*256,floor-256) <= 256
+            gap = math.ceil(bad/256)*256 - max(good//256*256,floor-256)
+            resolved = gap <= (resolution() if good else 256)
             r['context_search_status'] = 'complete' if good >= ceiling or resolved else 'inconclusive_probe_limit'
-        r['context_search_resolution'] = 256
+        if floor > ceiling:
+            r['context_search_status'] = 'skipped'
+            r['context_search_stop_reason'] = 'Context ceiling cannot fit the minimum prompt and output budget.'
+        elif r['context_search_status'] == 'inconclusive_probe_limit':
+            r['context_search_stop_reason'] = 'Stopped after 8 probes; earlier successes remain valid, but the usable-context limit is unresolved.'
+        r['context_search_resolution'] = resolution()
+        r['context_failed_upper_bound'] = bad if bad <= ceiling else None
         r['context_ceiling_reached'] = good == ceiling
