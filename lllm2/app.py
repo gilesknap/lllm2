@@ -88,6 +88,8 @@ class App:
                 r = self.store.get('result',data['result_id'])
                 if not r or r['status'] != 'complete' or not r['samples']:
                     raise ValueError('Only a completed measured configuration can be promoted.')
+                if r.get('measurement_mode') == 'warm-conversation':
+                    raise ValueError('Warm conversation results cannot be promoted as a general cold baseline. Save launch preferences manually if desired.')
                 s = Settings.parse(r['settings'])
                 if data.get('use_context'):
                     if not r['recommended_context']:

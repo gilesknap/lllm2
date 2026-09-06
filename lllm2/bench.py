@@ -102,6 +102,7 @@ class Bench:
 
     def submit(self, data):
         s = Settings.parse(data['settings'])
+        mode = data.get('mode','baseline')
         opts = dict(sweep_prompts=data.get('sweep_prompts',True), full_window=data.get('full_window',False),
                     workloads=data.get('workloads',['long-code']),
                     prompt_tokens=data.get('prompt_tokens',1024), output_tokens=data.get('output_tokens',256),
@@ -115,14 +116,24 @@ class Bench:
         for k in ['search_context','sweep_prompts','full_window']:
             if type(opts[k]) is not bool:
                 raise ValueError(f'{k} must be boolean')
+        if mode == 'warm-conversation':
+            if s.slots != 1 or any(opts[k] for k in ['search_context','sweep_prompts','full_window']):
+                raise ValueError('Warm conversations require one slot, a fixed prompt size and no context search or full-window sweep.')
+            if opts['prompt_tokens'] + 2 * opts['output_tokens'] + 160 > s.context:
+                raise ValueError('Warm conversation needs room for the first prompt, two output budgets and 160 continuation/margin tokens.')
+            opts['workloads'] = ['long-code']
+            s = replace(s, cache_ram_mib=2048 if s.cache_ram_mib is None else s.cache_ram_mib,
+                        context_checkpoints=4 if s.context_checkpoints is None else s.context_checkpoints)
         if opts['search_context'] and opts['max_context'] < opts['output_tokens'] + 160:
             raise ValueError('Context ceiling must fit the output budget plus a real prompt.')
         if (128 if opts['sweep_prompts'] else opts['prompt_tokens']) + opts['output_tokens'] + 32 > s.context // s.slots:
             raise ValueError('Shared prompt and output budgets must fit context per slot, with 32 tokens of margin.')
-        mode = data.get('mode','baseline')
         variants, skipped = suite(s) if mode == 'suite' else ([('baseline' if mode == 'baseline' else 'custom',replace(s))],[])
-        if mode not in ['baseline','suite','custom','combinations']:
+        if mode not in ['baseline','suite','custom','combinations','warm-conversation']:
             raise ValueError('Unknown benchmark mode')
+        if mode == 'warm-conversation':
+            opts['measurement_mode'] = mode
+            variants = [('warm-conversation', s)]
         if mode == 'combinations':
             choices = data.get('combinations',[])
             if not choices or len(choices)>20:
@@ -157,12 +168,19 @@ class Bench:
                          execution_settings=execution_settings(s),
                          hardware=hardware(),samples=[],probes=[],largest_observed_context=None,recommended_context=None,
                          note='Cold, uncached single-request coding probes; no quality or long-term stability claim. Context numbers are per slot.')
+                if opts.get('measurement_mode') == 'warm-conversation':
+                    r.update(measurement_mode='warm-conversation', note='Controlled token-prefix conversation, six turns plus identical uncached replays. First-token event timing is client-observed. Exact generated IDs are validated; engines that omit byte tokens while buffering UTF-8 fail with partial evidence. Reuse is measured, not assumed; larger-context reuse is unverified. No quality claim or cold-baseline promotion.')
                 if s.drafter and s.speculation == 'draft-dflash':
                     r['drafter'] = identity(s.drafter)
                     r['pair_evidence'] = 'User-declared target-specific ordinary DFlash pair; successful runs verify execution only.'
                 self.store.put('result',r['id'],r)
                 self.update(status='running', current=label, completed=i, result_id=r['id'], phase='loading',context_probe_started=None)
                 try:
+                    if opts.get('measurement_mode') == 'warm-conversation':
+                        from .warm import run_conversation
+                        run_conversation(self, s, opts, r)
+                        r['status'] = 'complete'
+                        continue
                     sizes = prompt_sizes(s,opts)
                     r['prompt_sizes'] = sizes
                     # Restart every sample to keep cold prefill unambiguous.
