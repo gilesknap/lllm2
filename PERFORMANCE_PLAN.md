@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: slices 1–5 complete; slices 6–8 not started.
+Status: slices 1–6 complete; slices 7–8 not started.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -400,6 +400,64 @@ offer “Copying existing code” only if a measured profile earns that label.
 
 Done when gains and regressions are recorded for both targets. A copy win must
 not replace a general default if generation/editing regresses materially.
+
+Slice 6 completion — 6 September 2026:
+- Added one explicit `draft-mtp,ngram-simple` combination, paired nullable lookup
+  match N/draft M in Advanced, MTP/draft-cache eligibility and provenance. Legacy
+  modes omit new flags; the explicit combination resolves blank N/M to3/3. The
+  verified build prioritizes lookup, with MTP fallback, rather than concatenating
+  drafts. Ordinary HTTP acceptance counters aggregate methods, not MTP alone.
+- Chose controllable `ngram-simple`: `ngram-cache` hardcodes8 independently of MTP
+  width; simple N must not exceed M. Do not expose its ineffective min-hits flag.
+- Added complete fixed-source copy and single-condition edit tasks, preserving
+  the entire excerpt/instructions and padding only unrelated reference context.
+  Source tasks use at least2048 output tokens as a cap and stop naturally; raw
+  reasoning/output is retained. Exact final source is checked after optional
+  thinking/fence removal; wrong/truncated results cannot establish a copy win or
+  be promoted. Existing generation budgets/EOS and all defaults remain unchanged.
+- User-requested **Reset experiment settings** restores experiment HTML defaults
+  and the selected model's context ceiling. It makes no API call and preserves
+  launch settings, saved defaults, results, queued comparisons and current jobs.
+
+Two initial MTP source-task pilot records passed four adherence checks:
+dense`90c673b3-f031-4b71-b4e0-3696bb3d7053` (705/643 output tokens),
+MoE`f938a920-1fba-43f5-918c-f04f7a92f8dc` (1896/1671 output tokens).
+Then24 equal-width samples compared MTP3 with MTP3+N3/M3, followed by six dense
+N3/M6 samples after the small-edit signal. All34 samples completed; all24 source
+answers passed exact adherence. Same exact input vectors within each workload
+and checkpoint:4096 tokens, context16384, one slot, logical2048/micro512,
+q8_0 main/draft, flash on, default effort, target sampling omitted, streams off.
+Generate output256 fixed; source cap2048 with natural completion. Each screen/
+width point repeated twice with a fresh engine for every sample.
+
+| Model / method | Result ID | Generate median decode (actual outputs) | Copy median decode (actual outputs) | Small-edit median decode (actual outputs) | Peak GPU / sampled process RSS MiB |
+|---|---|---|---|---|---|
+|Dense / MTP3 + lookup N3/M3|`e0934ddb-20d1-4d00-8b67-7cbf57f4570a`|47.96 (256/256)|70.85 (705/705)|76.33 (644/644)|17239 / 1683|
+|Dense / MTP3|`1f5b40fc-91ec-430b-a192-ba512bc4bdfd`|50.33 (256/256)|69.42 (705/705)|69.72 (643/643)|17316 / 1682|
+|MTP MoE / MTP3 + lookup N3/M3|`4265ba41-aca4-4b07-aaf1-200571619d35`|147.38 (256/256)|180.58 (1609/1609)|180.46 (1670/1670)|19153 / 1584|
+|MTP MoE / MTP3|`b41bc78f-050a-4c59-9667-49f41a9d2383`|154.49 (256/256)|189.82 (1896/1896)|185.87 (1671/1671)|19158 / 1583|
+|Dense / MTP3 + lookup N3/M6|`ca37264c-c2f6-4d35-8bab-ac25e194e6f2`|46.43 (256/256)|65.69 (994/994)|63.82 (640/640)|17316 / 1833|
+
+Decision: preserve ordinary MTP3 and all profiles/saved preferences. Dense N3/M3
+small-edit median decode improved~9.5% (643 versus644 output tokens), but generate
+fell~4.7%; copy's~2.1% median change was within observed variation. Keep only a
+narrow small-edit candidate for slice8, not a copying/general recommendation.
+Dense M6 widened lookup while holding MTP3: generation and both source decode
+rates regressed, and copy emitted substantially more reasoning. Stop that path.
+MoE N3/M3 median decode regressed~4.6% generate,~4.9% copy and~2.9% small edit.
+MoE copy completed sooner because it emitted1609 instead of1896 tokens; that is
+not an equal-work lookup speedup. Final copied source matched in both cases.
+Do not promote these shorter-reasoning results as a general performance gain.
+
+Independent review, temporary capability/legacy/pair/prompt/extraction/limit/
+promotion checks, full stored-vector/argv/adherence verification and live narrow
+browser controls/help/reset/results checks passed. Reset covered every experiment
+parameter, source checkboxes, model ceiling, dependent disabled states, no network
+calls and preserved simulated running-job/launch/results state. Source tasks no
+longer inherit the old fixed-output time estimate. Saved preferences unchanged.
+Idle panel restart preserved environment and0.0.0.0:8082; final LAN browser check
+passed and no engine remains serving. Source evidence: pinned [speculative selection](https://github.com/ggml-org/llama.cpp/blob/662a0b0/common/speculative.cpp)
+and [lookup implementation](https://github.com/ggml-org/llama.cpp/blob/662a0b0/common/ngram-map.cpp).
 
 ### Slice 7: context through independent cache precision
 
