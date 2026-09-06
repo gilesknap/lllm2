@@ -5,7 +5,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
-from .discovery import hardware, identity, metadata, probe, engine_environment
+from .discovery import hardware, identity, metadata, probe, engine_environment, cache_kernel_support
 from .settings import Settings, launch_args
 
 PROFILES = json.loads(Path(__file__).with_name('recommendations.json').read_text())
@@ -78,6 +78,11 @@ def measured_defaults(selection):
             changed.append('GPU driver')
         if p['sha256'] != record['engine']['sha256']:
             changed.append('engine build')
+        library = record['engine'].get('adjacent_cuda_library')
+        if library and selection.backend == 'CUDA':
+            current_library = cache_kernel_support(selection.engine, selection.backend).get('library') or {}
+            if current_library.get('sha256') != library['sha256']:
+                changed.append('adjacent CUDA library')
         if template_hash != template['sha256']:
             changed.append('chat template')
         settings = Settings.parse(values)
@@ -96,9 +101,17 @@ def measured_defaults(selection):
             notes.append('Changed ' + ' and '.join(changed) + ': settings pass capability checks, but performance and runtime behavior need revalidation.')
             if 'engine build' in changed and (settings.batch_size is None or settings.ubatch_size is None):
                 notes.append('Omitted batch controls use the selected engine defaults, which may differ from the measured build.')
+        if record.get('summary'):
+            notes.append(record['summary'])
         notes.extend(record['limitations'])
-        notes.append(f"Tested starting allocation: {settings.context:,} total tokens / {settings.slots} slot(s). This is not a searched maximum or a headroom recommendation.")
-        return dict(settings=settings.dict(), source='Measured built-in baseline' + (' · qualified' if changed else ''),
+        context = record['context']
+        reserve = context.get('minimum_observed_free_gpu_mib')
+        if reserve is not None and context.get('validated_recommendation'):
+            notes.append(f"Tested recommendation: {settings.context:,} total tokens / {settings.slots} slot(s); at least {reserve:,} MiB GPU memory remained free in these probes, including the running desktop. This is an observed reserve, not a searched maximum or a guarantee for other workloads.")
+        else:
+            notes.append(f"Tested starting allocation: {settings.context:,} total tokens / {settings.slots} slot(s). This is not a searched maximum or a headroom recommendation.")
+        source = 'Measured built-in recommendation' if context.get('validated_recommendation') else 'Measured built-in baseline'
+        return dict(settings=settings.dict(), source=source + (' · qualified' if changed else ''),
                     notes=notes, evidence=record, qualification=dict(changed=changed, capability_check='passed')), []
     except (OSError, ValueError, KeyError) as e:
         return None, ['Measured built-in cannot be applied: ' + str(e) + ' Using inherited/generic fallback.']

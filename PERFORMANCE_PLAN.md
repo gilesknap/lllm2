@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: slices 1–7 complete; slice 8 not started.
+Status: all eight slices complete.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -534,6 +534,82 @@ not received new Vulkan measurements.
 Done when a new 3090 installation gets the intended compatible defaults, existing
 users keep their choices, and every claimed improvement links to reproducible
 evidence. Document regressions and no-gain experiments alongside successful ones.
+
+Slice 8 complete (6 September 2026). Fresh occupied-context CUDA runs hold65,536 total
+allocation, one slot, q8/q8 main and draft cache, MTP3, default effort, flash on,
+batch2048, streams explicitly off,65,248 input+256 generated tokens, two fresh
+engine starts per configuration. Frozen16K baseline records remain unchanged.
+
+| Configuration | Prefill tok/s (two runs) | Decode tok/s (two runs) | Peak total GPU MiB |
+|---|---|---|---:|
+| Dense baseline, micro512/sampling off |898.51 /893.42|52.12 /52.39|19459|
+| MoE baseline, micro512/sampling off |2197.24 /2199.28|132.03 /131.62|19955|
+| MoE candidate, micro1024/sampling on |2297.61 /2276.38|118.34 /111.46|20218|
+
+IDs: dense `22f82ddb-fa99-47d2-9a3f-0ea90eff3084`, MoE baseline
+`ba337bef-b73e-4d2f-bb4b-e892898550ec`, MoE combination
+`60400368-f8c6-4b41-9e87-89fdbada91a0`. The four MoE samples have identical
+stored input vectors and output budgets. Combined median prefill+4.04%, decode
+-12.84%, elapsed-2.74%; candidate uses263MiB more peak device memory. Reject as
+a general recommendation. Prior isolated gains did not add together. Dense stays
+with ordinary MTP3; its lookup small-edit gain did not earn a general/copy profile.
+No mixed-cache finalist or new Vulkan measurements.
+
+The new reproducible context-retrieval-edit task disperses three fixed facts early,
+middle and late, then asks for a complete precise source edit. It uses natural EOS,
+at least2048 output cap and exact adherence, never executes generated code, and
+retains token vectors/fact offsets/raw output. Its first wording ambiguously asked
+to replace variables with values: dense preliminary `cb396cd0-7a63-412d-afae-0079daaf5300`
+passed, MoE `63a072f8-0eae-4473-8298-a8c7817ee2b8` exhausted2048 output tokens
+while discussing that ambiguity. This is not a measured memory failure or a pass.
+Version2 explicitly changes only assignment right-hand-side zeros, preserving
+variable names. Both checkpoints were rerun; preliminary evidence stays recorded.
+
+Version2 passed exact source adherence on both checkpoints with61,440 input tokens
+and natural EOS below the2048 output cap. Dense
+`4a578132-a306-4ab7-8fa2-5de33c6756fc` generated414 tokens; MoE
+`80edb2bb-a987-446c-b8c3-3dd969793c68` generated1099. Fact offsets are recorded
+near the beginning,30.7K and61.3K tokens. This validates only three fixed facts and
+one small exact edit amid repeated reference text, not general accuracy/stability.
+
+Final short-conversation validation completed at65K allocation, one slot and
+normal installed cache policy explicitly requested as8192MiB/32 checkpoints. The
+profile leaves those normal launch flags omitted; the warm experiment's separate
+blank2048/4 policy is unchanged. Each model ran six turns plus six exact uncached
+replays,4096 initial/4240 subsequent input and128 generated tokens. Dense
+`b32af64c-f21b-492e-a30a-0576846abb3d`; MoE
+`4a61cbcd-940b-465b-989e-141df4c1dd1c`. Both reused4223 tokens on append,
+3580 on suffix edit and4236 on switch-back; early-history edits reused zero.
+All controls reused zero; stored vectors matched each paired turn exactly.
+Dense peak process RSS2338MiB; MoE1517MiB. This checks short multi-turn operation
+at the new allocation; warm reuse near a full65K conversation remains unverified.
+
+Across all baseline-setting final/preliminary requests, minimum sampled free GPU
+memory was4975MiB dense and4595MiB MoE, including the running desktop. The rejected
+MoE combination is excluded from the general-profile reserve. Sampling covers
+request execution, not startup peaks; repeated fresh startup succeeded. Recommend
+65,536 total tokens with one slot for these exact CUDA checkpoints/build. This is
+a useful tested allocation with observed reserve, not a searched maximum or a
+promise for other apps/workloads. No general speedup is claimed. Preserve q8/q8,
+MTP3,2048/512 and target sampling off; explicit streams off reproduces the trials.
+
+There were34 completed requests in nine slice8 records, including the retained
+preliminary MoE adherence failure. The final v2 quality checks and all24 streamed
+warm/control requests passed. Portable general-profile identities preserve the
+original16K records unchanged under baseline, with compact final measurements,
+actual budgets, prompt digests/fact offsets, observed reserve and rejected trials.
+Changed engine/driver/template/adjacent CUDA library qualifies the evidence.
+Saved preferences and inherited Vulkan guidance remain separate and unchanged.
+
+Final validation: temporary workload/adversarial, compatibility, portable identity,
+saved-default precedence and experiment-reset checks passed; Python/JavaScript
+syntax and diff checks passed. Independent reviewer reconciled every compact
+sample, settings/options, prompt digest, adherence and decision median against
+read-only SQLite records. Live390px Chrome checked both65K CUDA profiles, frozen
+baseline/observed-reserve evidence, the existing159744 Vulkan saved preference,
+all four quality rows including the unpromotable preliminary failure, experiment
+reset isolation and no horizontal overflow. Idle restart preserved environment
+and0.0.0.0:8082; LAN HTTP200 verified. All eight slices are complete; stop here.
 
 ## Common validation and stopping rules
 

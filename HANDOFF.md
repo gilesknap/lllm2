@@ -5,6 +5,19 @@ that implementation has not started is historical. Giles has approved merging
 iteration one (PR #1) and will continue locally in Codex. This handoff is an
 explicit exception to the deferred-project-documentation rule.
 
+## Current boundary: performance plan complete
+
+All eight PERFORMANCE_PLAN.md slices are implemented and validated. Giles later
+explicitly authorized PR/merge per slice and continuation with subagents; that
+supersedes the original slice1-only/no-push planning boundary. Slice8 concludes the
+work: two exact-checkpoint CUDA65K general recommendations, portable measured
+reserve/quality/reuse evidence, frozen16K baselines retained and saved preferences
+untouched. No general speedup claim, no new Vulkan measurement, no engine upgrade
+or sudo. The experiments reset button shipped in slice6. CUDA works with the
+matching installed binary; transient Unknown launch setting was resolved by an
+idle parser restart and user hard refresh. Read the final boundary below and
+PERFORMANCE_PLAN.md for exact records/limits. Do not begin later research work.
+
 ## Scope and working preferences
 
 - Keep the local web panel and rapid uv/Python iteration. Priorities are coding
@@ -442,3 +455,44 @@ checks passed, including experiment reset preserving launch cache overrides.
 A development-time new-page/old-parser mismatch caused Unknown launch setting;
 idle restart plus user Ctrl-F5 fixed it, and live new settings now work.
 Next: slice8 final recommendations, bounded context/headroom and quality evidence.
+
+PR14 merged slice7 (`70e7be0`). CodeRabbit skipped its hourly quota; independent
+review plus actual UI/runtime checks passed. Slice8 is in progress on
+performance-slice8: final context/headroom/quality and bounded candidate checks.
+
+## Slice 8 boundary — tested general recommendations
+
+Final CUDA profiles for the exact dense/MTP-MoE checkpoints use65,536 total context,
+one slot, q8 main/draft cache, MTP3, explicit2048/512 and streams off, sampling off.
+Normal conversation cache flags remain omitted. Old16K profiles are frozen inside
+portable evidence; no saved defaults were overwritten. Minimum sampled free GPU
+memory across baseline-setting trials including preliminary runs:4975MiB dense,
+4595MiB MoE. Includes desktop, excludes unsampled startup spikes; this is not a
+searched maximum or an application-memory guarantee. No general speedup earned.
+
+34 requests in nine records: six occupied-context comparison requests, four
+retrieval/edit requests (including retained v1 MoE cap/adherence failure) and24
+warm/control requests. Final v2 quality passed both at61,440 input tokens; exact
+three-fact retrieval plus a single source edit is deliberately narrow. Clarified
+instruction changes assignment zeros, not variable names; generator version
+distinguishes the preliminary ambiguous wording. Short4K conversations at65K
+allocation passed both with normal8192/32 explicitly requested; switch-back reused
+4236 tokens, uncached controls zero, early-history edits still miss. Near-full65K
+warm reuse remains unverified. Full IDs/conditions are in PERFORMANCE_PLAN.md.
+
+MoE combined micro1024/sampling-on improved prefill4.04% but regressed decode12.84%
+against fresh equal-vector baselines; rejected. Dense lookup retains its earlier
+narrow small-edit tradeoff without a general/copy profile. Mixed q8/q4 regressed
+severely in slice7; q8/q8 stays recommended. Historical and rejected trial metrics
+live in expanded evidence. Adjacent CUDA library identity now also qualifies
+changed builds, without claiming observed runtime dispatch. Research is dated
+hypothesis material, not newly measured local gains.
+
+Independent data reconciliation and code review passed. Temporary compatibility,
+identity, adversarial adherence, reset, syntax and diff checks passed. Final narrow
+live Chrome confirmed both new profiles, explicit saved Vulkan159744 restoration,
+measured evidence, failed-quality promotion exclusion and experiment reset with no
+launch/result/job changes or overflow. The test explicitly selects backends rather
+than assuming the initial selector. Final idle panel restart preserved environment
+and0.0.0.0:8082, with LAN HTTP200 at192.168.1.10:8082. No engine left serving.
+All eight slices complete; stop at this boundary.

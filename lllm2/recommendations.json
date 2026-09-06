@@ -1,6 +1,6 @@
 [
   {
-    "id": "qwen38-dense-3090-cuda-baseline-20260906",
+    "id": "qwen38-dense-3090-cuda-general-65k-20260906",
     "model": {
       "file": "Qwen3.8-27B-UD-Q4_K_S.gguf",
       "size": 15358213024,
@@ -18,7 +18,13 @@
     "engine": {
       "build": "b10715-cuda-sm86",
       "version": "version: 0.3.0-dev (build 1, commit 662a0b0)\nbuilt with GNU 15.2.0 for Linux x86_64",
-      "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026"
+      "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026",
+      "adjacent_cuda_library": {
+        "resource": "libggml-cuda.so",
+        "size": 45306872,
+        "sha256": "b81f5da083d4c25345569268819bce5f7e14b45de19d055f634db3e22bbcef61",
+        "qualification": "Adjacent library identity; not instrumentation of runtime dispatch."
+      }
     },
     "template": {
       "resource": "qwen3.8-27b.jinja",
@@ -26,153 +32,1644 @@
       "source": "bundled override"
     },
     "settings": {
-      "context": 16384,
+      "backend": "CUDA",
+      "context": 65536,
       "slots": 1,
       "gpu_layers": 999,
       "flash": "on",
       "cache": "q8_0",
+      "cache_k": null,
+      "cache_v": null,
       "speculation": "draft-mtp",
       "drafter": "",
       "pair_confirmed": false,
       "draft_length": 3,
       "effort": "default",
-      "draft_cache": "q8_0"
+      "draft_cache": "q8_0",
+      "batch_size": 2048,
+      "ubatch_size": 512,
+      "backend_sampling": false,
+      "cuda_graph_opt": "off",
+      "cache_ram_mib": null,
+      "context_checkpoints": null,
+      "lookup_ngram_n": null,
+      "lookup_ngram_m": null
     },
     "date": "2026-09-06",
     "context": {
-      "allocated_total": 16384,
+      "allocated_total": 65536,
       "slots": 1,
-      "largest_successful_occupied_tokens": 16352,
+      "largest_successful_occupied_tokens": 65504,
       "searched_maximum": null,
-      "headroom_estimate": null
+      "headroom_estimate": null,
+      "validated_recommendation": true,
+      "minimum_observed_free_gpu_mib": 4975,
+      "required_free_gpu_mib": 3072,
+      "reserve_basis": "Total GPU memory minus the largest sampled total device use across final and preliminary baseline-setting probes; includes the desktop, does not sample all startup spikes or reserve memory against other applications."
     },
     "runs": [
       {
-        "result_id": "685605f4-33a5-4560-8a58-0df38ce8dfe1",
-        "started": "2026-09-06T18:49:55.652968+00:00",
+        "result_id": "22f82ddb-fa99-47d2-9a3f-0ea90eff3084",
+        "started": "2026-09-06T20:51:15.149048+00:00",
+        "status": "complete",
+        "mode": "cold",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": null,
+          "context_checkpoints": null,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
         "options": {
           "sweep_prompts": false,
           "full_window": false,
           "workloads": [
-            "generate",
-            "edit",
             "long-code"
           ],
-          "prompt_tokens": 1024,
+          "prompt_tokens": 65248,
           "output_tokens": 256,
           "search_context": false,
           "max_context": 262144,
-          "timeout": 180,
+          "timeout": 600,
           "context_timeout": 900,
           "repeats": 2
         },
-        "sampling": {
-          "temperature": 0,
-          "seed": 42,
-          "ignore_eos": true,
-          "cache_prompt": false
-        },
         "samples": [
           {
-            "workload": "generate",
-            "input_tokens": 1024,
-            "output_tokens": 256,
+            "workload": "long-code",
             "repetition": 1,
-            "prefill_tok_s": 1040.8661958373484,
-            "decode_tok_s": 65.15720004946837,
-            "peak_total_gpu_used_mib": 17225
-          },
-          {
-            "workload": "generate",
-            "input_tokens": 1024,
+            "input_tokens": 65248,
             "output_tokens": 256,
-            "repetition": 2,
-            "prefill_tok_s": 1080.833466150597,
-            "decode_tok_s": 65.30506042510777,
-            "peak_total_gpu_used_mib": 17223
-          },
-          {
-            "workload": "edit",
-            "input_tokens": 1024,
-            "output_tokens": 256,
-            "repetition": 1,
-            "prefill_tok_s": 1077.9571448873355,
-            "decode_tok_s": 79.84814448568714,
-            "peak_total_gpu_used_mib": 17223
-          },
-          {
-            "workload": "edit",
-            "input_tokens": 1024,
-            "output_tokens": 256,
-            "repetition": 2,
-            "prefill_tok_s": 1075.0960919627119,
-            "decode_tok_s": 79.79307621396559,
-            "peak_total_gpu_used_mib": 17223
+            "output_budget": 256,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 77.53429526090622,
+            "prefill_tok_s": 898.5105804550759,
+            "decode_tok_s": 52.12339467609603,
+            "peak_total_gpu_used_mib": 19431,
+            "peak_engine_rss_mib": 1522.58984375,
+            "prompt": {
+              "generator": "ledger-v1",
+              "workload": "long-code",
+              "source_sha256": "bd8a25ee2274b0102f55bcc1cc7718b87ae5628b5078c5e30e7192f6db100f5c",
+              "input_token_sha256": "12c6abb2d0c6955528e427fc0ef141e65b2e0b8d19e2ee9d1c7164778a11e2cb"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false
+            }
           },
           {
             "workload": "long-code",
-            "input_tokens": 1024,
-            "output_tokens": 256,
-            "repetition": 1,
-            "prefill_tok_s": 1072.6803810529448,
-            "decode_tok_s": 71.37059531473034,
-            "peak_total_gpu_used_mib": 17223
-          },
-          {
-            "workload": "long-code",
-            "input_tokens": 1024,
-            "output_tokens": 256,
             "repetition": 2,
-            "prefill_tok_s": 1071.6251656100414,
-            "decode_tok_s": 71.26938317606556,
-            "peak_total_gpu_used_mib": 17223
+            "input_tokens": 65248,
+            "output_tokens": 256,
+            "output_budget": 256,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 77.91969909286126,
+            "prefill_tok_s": 893.4159239174622,
+            "decode_tok_s": 52.38985033966087,
+            "peak_total_gpu_used_mib": 19459,
+            "peak_engine_rss_mib": 1831.80859375,
+            "prompt": {
+              "generator": "ledger-v1",
+              "workload": "long-code",
+              "source_sha256": "bd8a25ee2274b0102f55bcc1cc7718b87ae5628b5078c5e30e7192f6db100f5c",
+              "input_token_sha256": "12c6abb2d0c6955528e427fc0ef141e65b2e0b8d19e2ee9d1c7164778a11e2cb"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false
+            }
           }
         ]
       },
       {
-        "result_id": "a2b4390a-ba5e-4460-ac29-5cf5977dbd6a",
-        "started": "2026-09-06T18:50:50.061060+00:00",
+        "result_id": "4a578132-a306-4ab7-8fa2-5de33c6756fc",
+        "started": "2026-09-06T21:02:15.315274+00:00",
+        "status": "complete",
+        "mode": "cold",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": null,
+          "context_checkpoints": null,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "context-retrieval-edit"
+          ],
+          "prompt_tokens": 61440,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 600,
+          "context_timeout": 900,
+          "repeats": 1
+        },
+        "samples": [
+          {
+            "workload": "context-retrieval-edit",
+            "repetition": 1,
+            "input_tokens": 61440,
+            "output_tokens": 414,
+            "output_budget": 2048,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 83.73305484605953,
+            "prefill_tok_s": 805.7048836508512,
+            "decode_tok_s": 55.433815916243134,
+            "peak_total_gpu_used_mib": 19459,
+            "peak_engine_rss_mib": 1863.80859375,
+            "prompt": {
+              "generator": "dispersed-retrieval-edit-v2",
+              "workload": "context-retrieval-edit",
+              "source_sha256": "af5b2204886e092bf5682e9daca5f049284f40d02ee8e1f66709a27f8ec5f4c3",
+              "reference_sha256": "b6985fd55e30b09eafa5c3162d12355ac2a2ecd3ec3fef7f1ea4ae8bd96c9d98",
+              "padding_tokens": 61157,
+              "fact_token_offsets": [
+                {
+                  "name": "DEPLOY_RETRY_BUDGET",
+                  "start_token": 147,
+                  "end_token": 169
+                },
+                {
+                  "name": "BATCH_ITEM_CEILING",
+                  "start_token": 30747,
+                  "end_token": 30768
+                },
+                {
+                  "name": "REQUEST_DEADLINE_SECONDS",
+                  "start_token": 61347,
+                  "end_token": 61366
+                }
+              ],
+              "limitation": "Three fixed facts dispersed early, middle and late in repeated unrelated reference text, followed by one exact source edit; not general long-context accuracy or stability.",
+              "input_token_sha256": "90d3496b2c8813236f18cca1c9e95c2171394d129e0093211647d6ab6462bcf8"
+            },
+            "adherence": {
+              "status": "passed",
+              "exact_payload_match": true,
+              "output_limit_reached": false,
+              "expected_sha256": "ec065f6d2eab76c4542c6ad7b7846c4898e875742e42babffab052db87dfbe00",
+              "actual_sha256": "ec065f6d2eab76c4542c6ad7b7846c4898e875742e42babffab052db87dfbe00",
+              "thinking_characters": 1545,
+              "policy": "Compare complete source after final </think> and optional single Python code fence; ignore only outer whitespace. Raw output retained. No code execution or semantic scoring."
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": false,
+              "cache_prompt": false
+            }
+          }
+        ]
+      },
+      {
+        "result_id": "b32af64c-f21b-492e-a30a-0576846abb3d",
+        "started": "2026-09-06T21:05:59.686997+00:00",
+        "status": "complete",
+        "mode": "warm-conversation",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": 8192,
+          "context_checkpoints": 32,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
         "options": {
           "sweep_prompts": false,
           "full_window": false,
           "workloads": [
             "long-code"
           ],
-          "prompt_tokens": 16096,
-          "output_tokens": 256,
+          "prompt_tokens": 4096,
+          "output_tokens": 128,
           "search_context": false,
           "max_context": 262144,
-          "timeout": 180,
+          "timeout": 600,
           "context_timeout": 900,
-          "repeats": 1
-        },
-        "sampling": {
-          "temperature": 0,
-          "seed": 42,
-          "ignore_eos": true,
-          "cache_prompt": false
+          "repeats": 1,
+          "measurement_mode": "warm-conversation"
         },
         "samples": [
           {
-            "workload": "long-code",
-            "input_tokens": 16096,
-            "output_tokens": 256,
+            "workload": "warm-conversation",
+            "turn": "cold",
+            "control": false,
             "repetition": 1,
-            "prefill_tok_s": 1030.9801331358142,
-            "decode_tok_s": 48.702377669176784,
-            "peak_total_gpu_used_mib": 17291
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 5.971017442177981,
+            "decode_tok_s": 63.884231711629596,
+            "processed_prefill_tok_s": 1031.3148584623589,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 3.977120126131922,
+            "first_text_seconds": 3.977120126131922,
+            "completion_seconds": 5.969481952954084,
+            "peak_total_gpu_used_mib": 19457,
+            "peak_engine_rss_mib": 994.99609375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "0304922adf0770fb1f8ac32c6f1cce4245f55d92bec4684f9da45d4612a5dbfe"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "append",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.5376146249473095,
+            "decode_tok_s": 55.722577033172044,
+            "processed_prefill_tok_s": 66.56798941177392,
+            "processed_tokens": 17,
+            "reused_tokens": 4223,
+            "first_token_event_seconds": 0.2576455269008875,
+            "first_text_seconds": 0.2576455269008875,
+            "completion_seconds": 2.537286296952516,
+            "peak_total_gpu_used_mib": 19461,
+            "peak_engine_rss_mib": 1156.0703125,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "f5fb1df21d94244d46aaf56b55e8a895d4ba1478e460201edb9521e39dcbbcc8"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "suffix-edit",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 3.3590277172625065,
+            "decode_tok_s": 51.44014169936356,
+            "processed_prefill_tok_s": 744.3715361347267,
+            "processed_tokens": 660,
+            "reused_tokens": 3580,
+            "first_token_event_seconds": 0.8888256112113595,
+            "first_text_seconds": 0.8888256112113595,
+            "completion_seconds": 3.3586321431212127,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 1159.94140625,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "de525c03ea90ddba34a48a6a1a85b744436a49790570363b1bc77ea158ba6beb"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-away",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.369233392644674,
+            "decode_tok_s": 61.81284918784244,
+            "processed_prefill_tok_s": 1047.2084965015924,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.313566867727786,
+            "first_text_seconds": 4.313566867727786,
+            "completion_seconds": 6.368845462799072,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 1788.57421875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "ebf182ef951b2a7aab0d353c9cc85c5bd449cef353425a7fead8c22f072e8ae0"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-back",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.9793115691281855,
+            "decode_tok_s": 51.757492915947864,
+            "processed_prefill_tok_s": 25.364616360177553,
+            "processed_tokens": 4,
+            "reused_tokens": 4236,
+            "first_token_event_seconds": 0.5222257431596518,
+            "first_text_seconds": 0.5222257431596518,
+            "completion_seconds": 2.9788452610373497,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 1841.0859375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "de525c03ea90ddba34a48a6a1a85b744436a49790570363b1bc77ea158ba6beb"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "history-edit",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.590952218975872,
+            "decode_tok_s": 57.29495623928539,
+            "processed_prefill_tok_s": 1042.190527176347,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.373843787703663,
+            "first_text_seconds": 4.373843787703663,
+            "completion_seconds": 6.590484298765659,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 2256.3984375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "5754a9d26c102f6d7478fab81e6b26e223f646616857a041a225aa12dfe47406"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "cold",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.226085600908846,
+            "decode_tok_s": 64.46173688343237,
+            "processed_prefill_tok_s": 1053.401218046594,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.254852021113038,
+            "first_text_seconds": 4.254852021113038,
+            "completion_seconds": 6.225513324141502,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 2306.546875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "0304922adf0770fb1f8ac32c6f1cce4245f55d92bec4684f9da45d4612a5dbfe"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "append",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.385029926896095,
+            "decode_tok_s": 54.97937840401359,
+            "processed_prefill_tok_s": 1041.2292398780976,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.074247136712074,
+            "first_text_seconds": 4.074247136712074,
+            "completion_seconds": 6.384472017642111,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 2286.33984375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "f5fb1df21d94244d46aaf56b55e8a895d4ba1478e460201edb9521e39dcbbcc8"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "suffix-edit",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.384411522187293,
+            "decode_tok_s": 55.2262515160041,
+            "processed_prefill_tok_s": 1038.8574332331962,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.083607527893037,
+            "first_text_seconds": 4.083607527893037,
+            "completion_seconds": 6.383747912943363,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 2288.28515625,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "de525c03ea90ddba34a48a6a1a85b744436a49790570363b1bc77ea158ba6beb"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-away",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.397237742319703,
+            "decode_tok_s": 61.17760629849952,
+            "processed_prefill_tok_s": 1043.3388064468963,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.313631962053478,
+            "first_text_seconds": 4.313631962053478,
+            "completion_seconds": 6.396531894337386,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 2332.38671875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "ebf182ef951b2a7aab0d353c9cc85c5bd449cef353425a7fead8c22f072e8ae0"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-back",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.753577784169465,
+            "decode_tok_s": 55.62017812471533,
+            "processed_prefill_tok_s": 1036.4649894837917,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.469266192056239,
+            "first_text_seconds": 4.469266192056239,
+            "completion_seconds": 6.752929673995823,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 2316.55078125,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "de525c03ea90ddba34a48a6a1a85b744436a49790570363b1bc77ea158ba6beb"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "history-edit",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 6.694987582042813,
+            "decode_tok_s": 56.92494155108364,
+            "processed_prefill_tok_s": 1037.4306952253721,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 4.462926581967622,
+            "first_text_seconds": 4.462926581967622,
+            "completion_seconds": 6.694274912122637,
+            "peak_total_gpu_used_mib": 19463,
+            "peak_engine_rss_mib": 2337.8359375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "5754a9d26c102f6d7478fab81e6b26e223f646616857a041a225aa12dfe47406"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
           }
         ]
       }
     ],
     "limitations": [
-      "Cold uncached single-request synthetic coding workloads; no measured gain, quality or long-term stability claim.",
-      "Short workloads repeated twice; occupied-context workload run once. No context search was performed.",
-      "Peak GPU memory includes desktop usage; timings depend on this engine, template, GPU and driver."
-    ]
+      "One fixed retrieval/edit check passed at 61,440 input tokens; this is not general answer-quality or long-term stability validation.",
+      "Conversation reuse was checked only around 4K occupied tokens. Normal engine cache defaults remain unchanged; larger conversations may use more RAM or lose reuse."
+    ],
+    "baseline": {
+      "id": "qwen38-dense-3090-cuda-baseline-20260906",
+      "model": {
+        "file": "Qwen3.8-27B-UD-Q4_K_S.gguf",
+        "size": 15358213024,
+        "sha256": "75bc9c8adba2842e72f0ab5201aaa07133c5010b566305c09187fcbdcd364017",
+        "architecture": "qwen35",
+        "mtp": true,
+        "context_metadata": 262144
+      },
+      "backend": "CUDA",
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 3090",
+        "total_mib": 24576,
+        "driver": "595.84"
+      },
+      "engine": {
+        "build": "b10715-cuda-sm86",
+        "version": "version: 0.3.0-dev (build 1, commit 662a0b0)\nbuilt with GNU 15.2.0 for Linux x86_64",
+        "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026"
+      },
+      "template": {
+        "resource": "qwen3.8-27b.jinja",
+        "sha256": "7ee117933b2be2d181ea5d85bcdff5bba7b70aa3a3ad21b46f2004d552a571cd",
+        "source": "bundled override"
+      },
+      "settings": {
+        "context": 16384,
+        "slots": 1,
+        "gpu_layers": 999,
+        "flash": "on",
+        "cache": "q8_0",
+        "speculation": "draft-mtp",
+        "drafter": "",
+        "pair_confirmed": false,
+        "draft_length": 3,
+        "effort": "default",
+        "draft_cache": "q8_0"
+      },
+      "date": "2026-09-06",
+      "context": {
+        "allocated_total": 16384,
+        "slots": 1,
+        "largest_successful_occupied_tokens": 16352,
+        "searched_maximum": null,
+        "headroom_estimate": null
+      },
+      "runs": [
+        {
+          "result_id": "685605f4-33a5-4560-8a58-0df38ce8dfe1",
+          "started": "2026-09-06T18:49:55.652968+00:00",
+          "options": {
+            "sweep_prompts": false,
+            "full_window": false,
+            "workloads": [
+              "generate",
+              "edit",
+              "long-code"
+            ],
+            "prompt_tokens": 1024,
+            "output_tokens": 256,
+            "search_context": false,
+            "max_context": 262144,
+            "timeout": 180,
+            "context_timeout": 900,
+            "repeats": 2
+          },
+          "sampling": {
+            "temperature": 0,
+            "seed": 42,
+            "ignore_eos": true,
+            "cache_prompt": false
+          },
+          "samples": [
+            {
+              "workload": "generate",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 1040.8661958373484,
+              "decode_tok_s": 65.15720004946837,
+              "peak_total_gpu_used_mib": 17225
+            },
+            {
+              "workload": "generate",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 2,
+              "prefill_tok_s": 1080.833466150597,
+              "decode_tok_s": 65.30506042510777,
+              "peak_total_gpu_used_mib": 17223
+            },
+            {
+              "workload": "edit",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 1077.9571448873355,
+              "decode_tok_s": 79.84814448568714,
+              "peak_total_gpu_used_mib": 17223
+            },
+            {
+              "workload": "edit",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 2,
+              "prefill_tok_s": 1075.0960919627119,
+              "decode_tok_s": 79.79307621396559,
+              "peak_total_gpu_used_mib": 17223
+            },
+            {
+              "workload": "long-code",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 1072.6803810529448,
+              "decode_tok_s": 71.37059531473034,
+              "peak_total_gpu_used_mib": 17223
+            },
+            {
+              "workload": "long-code",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 2,
+              "prefill_tok_s": 1071.6251656100414,
+              "decode_tok_s": 71.26938317606556,
+              "peak_total_gpu_used_mib": 17223
+            }
+          ]
+        },
+        {
+          "result_id": "a2b4390a-ba5e-4460-ac29-5cf5977dbd6a",
+          "started": "2026-09-06T18:50:50.061060+00:00",
+          "options": {
+            "sweep_prompts": false,
+            "full_window": false,
+            "workloads": [
+              "long-code"
+            ],
+            "prompt_tokens": 16096,
+            "output_tokens": 256,
+            "search_context": false,
+            "max_context": 262144,
+            "timeout": 180,
+            "context_timeout": 900,
+            "repeats": 1
+          },
+          "sampling": {
+            "temperature": 0,
+            "seed": 42,
+            "ignore_eos": true,
+            "cache_prompt": false
+          },
+          "samples": [
+            {
+              "workload": "long-code",
+              "input_tokens": 16096,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 1030.9801331358142,
+              "decode_tok_s": 48.702377669176784,
+              "peak_total_gpu_used_mib": 17291
+            }
+          ]
+        }
+      ],
+      "limitations": [
+        "Cold uncached single-request synthetic coding workloads; no measured gain, quality or long-term stability claim.",
+        "Short workloads repeated twice; occupied-context workload run once. No context search was performed.",
+        "Peak GPU memory includes desktop usage; timings depend on this engine, template, GPU and driver."
+      ]
+    },
+    "summary": "General coding with q8 conversation memory and MTP3; no general speedup established.",
+    "validation": {
+      "cold_start": "Every cold sample launched a fresh engine.",
+      "context_quality": {
+        "result_id": "4a578132-a306-4ab7-8fa2-5de33c6756fc",
+        "generator": "dispersed-retrieval-edit-v2",
+        "status": "passed",
+        "output_cap": 2048,
+        "scope": "Three dispersed integer facts and one exact source edit, without executing generated code."
+      },
+      "conversation": {
+        "result_id": "b32af64c-f21b-492e-a30a-0576846abb3d",
+        "scope": "Six controlled turns and six exact uncached replays, one repetition at 65,536 allocation and about 4K occupied input.",
+        "cache_policy": "Evidence explicitly requests 8192 MiB and 32 checkpoints, matching this installed engine's advertised normal defaults. The recommended launch leaves both flags omitted; changed engines need revalidation."
+      },
+      "sampling_scope": "GPU peaks cover sampled request execution, including the running desktop. Successful startup is observed; startup memory peaks are not fully sampled."
+    },
+    "preliminary_validation": {
+      "note": "Initial instruction wording was revised after the MoE reached its 2048-token output cap. Both checkpoints were rerun with explicit right-hand-side assignment edits. This was not a context-memory failure.",
+      "run": {
+        "result_id": "cb396cd0-7a63-412d-afae-0079daaf5300",
+        "started": "2026-09-06T20:57:06.858120+00:00",
+        "status": "complete",
+        "mode": "cold",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": null,
+          "context_checkpoints": null,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "context-retrieval-edit"
+          ],
+          "prompt_tokens": 61440,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 600,
+          "context_timeout": 900,
+          "repeats": 1
+        },
+        "samples": [
+          {
+            "workload": "context-retrieval-edit",
+            "repetition": 1,
+            "input_tokens": 61440,
+            "output_tokens": 1172,
+            "output_budget": 2048,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 103.42218664009124,
+            "prefill_tok_s": 791.001380840708,
+            "decode_tok_s": 45.520007189906515,
+            "peak_total_gpu_used_mib": 19601,
+            "peak_engine_rss_mib": 1559.47265625,
+            "prompt": {
+              "generator": "dispersed-retrieval-edit-v1",
+              "workload": "context-retrieval-edit",
+              "source_sha256": "af5b2204886e092bf5682e9daca5f049284f40d02ee8e1f66709a27f8ec5f4c3",
+              "reference_sha256": "b6985fd55e30b09eafa5c3162d12355ac2a2ecd3ec3fef7f1ea4ae8bd96c9d98",
+              "padding_tokens": 61184,
+              "fact_token_offsets": [
+                {
+                  "name": "DEPLOY_RETRY_BUDGET",
+                  "start_token": 120,
+                  "end_token": 142
+                },
+                {
+                  "name": "BATCH_ITEM_CEILING",
+                  "start_token": 30734,
+                  "end_token": 30755
+                },
+                {
+                  "name": "REQUEST_DEADLINE_SECONDS",
+                  "start_token": 61347,
+                  "end_token": 61366
+                }
+              ],
+              "limitation": "Three fixed facts dispersed early, middle and late in repeated unrelated reference text, followed by one exact source edit; not general long-context accuracy or stability.",
+              "input_token_sha256": "16afbd3bcb0f18870edcf79f43630d69283afeeb42e9411fd5654a2fca532225"
+            },
+            "adherence": {
+              "status": "passed",
+              "exact_payload_match": true,
+              "output_limit_reached": false,
+              "expected_sha256": "ec065f6d2eab76c4542c6ad7b7846c4898e875742e42babffab052db87dfbe00",
+              "actual_sha256": "ec065f6d2eab76c4542c6ad7b7846c4898e875742e42babffab052db87dfbe00",
+              "thinking_characters": 5128,
+              "policy": "Compare complete source after final </think> and optional single Python code fence; ignore only outer whitespace. Raw output retained. No code execution or semantic scoring."
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": false,
+              "cache_prompt": false
+            }
+          }
+        ]
+      }
+    },
+    "decisions": [
+      {
+        "setting": "batch",
+        "decision": "Keep physical batch512; the short1024 comparison did not establish a useful dense gain.",
+        "evidence": [
+          {
+            "result_id": "85a890c7-5bc8-4a1e-b331-c83b38a93735",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": null,
+              "cuda_graph_opt": null
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1058.8277362600193,
+                "median_decode_tok_s": 54.820356829628935,
+                "median_wall_seconds": 8.524836572119966,
+                "peak_total_gpu_used_mib": 17172,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "7f304562-1ee1-42d9-afac-e317cb440d66",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 1024,
+              "backend_sampling": null,
+              "cuda_graph_opt": null
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1073.6791595375291,
+                "median_decode_tok_s": 55.72389867197752,
+                "median_wall_seconds": 8.393623378593475,
+                "peak_total_gpu_used_mib": 17400,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "execution",
+        "decision": "Target sampling and concurrent streams did not establish a useful dense gain.",
+        "evidence": [
+          {
+            "result_id": "795c6c15-fcd3-47eb-81da-197879184434",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1056.5093075515656,
+                "median_decode_tok_s": 55.11065319989524,
+                "median_wall_seconds": 8.508789237588644,
+                "peak_total_gpu_used_mib": 17169,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "f2f4940d-39ac-4173-9af9-052149409439",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": true,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1039.99985606009,
+                "median_decode_tok_s": 54.71838986393026,
+                "median_wall_seconds": 8.601395776029676,
+                "peak_total_gpu_used_mib": 17183,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "f289aa2b-b172-4065-a770-cd6f2fd8acda",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "on"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1046.4691480919923,
+                "median_decode_tok_s": 54.45701767805978,
+                "median_wall_seconds": 8.599137621931732,
+                "peak_total_gpu_used_mib": 17165,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "lookup",
+        "decision": "Do not promote lookup as general or copy guidance: small-edit decode improved, generation regressed and copying was variable. Wider lookup also regressed. Source output counts differ; compare wall time and actual output too.",
+        "evidence": [
+          {
+            "result_id": "1f5b40fc-91ec-430b-a192-ba512bc4bdfd",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "generate",
+                "source-copy",
+                "source-small-edit"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "generate": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1045.7098282951126,
+                "median_decode_tok_s": 50.330843601111006,
+                "median_wall_seconds": 8.990190402371809,
+                "peak_total_gpu_used_mib": 17165,
+                "adherence": []
+              },
+              "source-copy": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  705,
+                  705
+                ],
+                "median_prefill_tok_s": 1019.0739668961521,
+                "median_decode_tok_s": 69.41503333319983,
+                "median_wall_seconds": 14.16681188205257,
+                "peak_total_gpu_used_mib": 17241,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              },
+              "source-small-edit": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  643,
+                  643
+                ],
+                "median_prefill_tok_s": 1032.537212355938,
+                "median_decode_tok_s": 69.71973595614284,
+                "median_wall_seconds": 13.180765674682334,
+                "peak_total_gpu_used_mib": 17316,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              }
+            }
+          },
+          {
+            "result_id": "e0934ddb-20d1-4d00-8b67-7cbf57f4570a",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "generate",
+                "source-copy",
+                "source-small-edit"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp,ngram-simple",
+              "draft_length": 3,
+              "lookup_ngram_n": 3,
+              "lookup_ngram_m": 3,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "generate": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1032.26969663009,
+                "median_decode_tok_s": 47.95919467374475,
+                "median_wall_seconds": 9.287539103301242,
+                "peak_total_gpu_used_mib": 17239,
+                "adherence": []
+              },
+              "source-copy": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  705,
+                  705
+                ],
+                "median_prefill_tok_s": 1033.3009914055424,
+                "median_decode_tok_s": 70.85092841446772,
+                "median_wall_seconds": 13.915935060475022,
+                "peak_total_gpu_used_mib": 17238,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              },
+              "source-small-edit": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  644,
+                  644
+                ],
+                "median_prefill_tok_s": 1026.6515571505322,
+                "median_decode_tok_s": 76.331511778097,
+                "median_wall_seconds": 12.416435468941927,
+                "peak_total_gpu_used_mib": 17236,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              }
+            }
+          },
+          {
+            "result_id": "ca37264c-c2f6-4d35-8bab-ac25e194e6f2",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "generate",
+                "source-copy",
+                "source-small-edit"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp,ngram-simple",
+              "draft_length": 3,
+              "lookup_ngram_n": 3,
+              "lookup_ngram_m": 6,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "generate": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1037.4767639731313,
+                "median_decode_tok_s": 46.43149526264438,
+                "median_wall_seconds": 9.445143700344488,
+                "peak_total_gpu_used_mib": 17274,
+                "adherence": []
+              },
+              "source-copy": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  994,
+                  994
+                ],
+                "median_prefill_tok_s": 1040.4288019373214,
+                "median_decode_tok_s": 65.69447890958185,
+                "median_wall_seconds": 19.054995289538056,
+                "peak_total_gpu_used_mib": 17316,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              },
+              "source-small-edit": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  640,
+                  640
+                ],
+                "median_prefill_tok_s": 1026.3234666236376,
+                "median_decode_tok_s": 63.8150484307273,
+                "median_wall_seconds": 14.00726000382565,
+                "peak_total_gpu_used_mib": 17260,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "mixed-cache",
+        "decision": "Keep q8/q8. Mixed q8/q4 was much slower with a small memory reduction on this installed build.",
+        "evidence": [
+          {
+            "result_id": "6e720118-fe93-46ff-92c0-4540f52be03f",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 32,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 1
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 1,
+                "input_tokens": [
+                  4096
+                ],
+                "output_tokens": [
+                  32
+                ],
+                "median_prefill_tok_s": 1037.1684087010733,
+                "median_decode_tok_s": 47.10007855077616,
+                "median_wall_seconds": 4.609913459047675,
+                "peak_total_gpu_used_mib": 17199,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "b1a9e8f8-1aec-47a9-a997-40eb21a1c0d2",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 32,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 1
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": "q8_0",
+              "cache_v": "q4_0",
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 1,
+                "input_tokens": [
+                  4096
+                ],
+                "output_tokens": [
+                  32
+                ],
+                "median_prefill_tok_s": 90.11340847257443,
+                "median_decode_tok_s": 18.21914338289528,
+                "median_wall_seconds": 47.15801632916555,
+                "peak_total_gpu_used_mib": 17155,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "evidence_policy": "Portable summaries retain source result IDs, budgets, actual counts and measured tradeoffs. Input token hashes use SHA256 of compact JSON integer arrays. Full raw records remain in the originating workbench; dated research is not local evidence."
   },
   {
-    "id": "qwen36-moe-mtp-3090-cuda-baseline-20260906",
+    "id": "qwen36-moe-mtp-3090-cuda-general-65k-20260906",
     "model": {
       "file": "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
       "size": 18209036576,
@@ -190,7 +1687,13 @@
     "engine": {
       "build": "b10715-cuda-sm86",
       "version": "version: 0.3.0-dev (build 1, commit 662a0b0)\nbuilt with GNU 15.2.0 for Linux x86_64",
-      "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026"
+      "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026",
+      "adjacent_cuda_library": {
+        "resource": "libggml-cuda.so",
+        "size": 45306872,
+        "sha256": "b81f5da083d4c25345569268819bce5f7e14b45de19d055f634db3e22bbcef61",
+        "qualification": "Adjacent library identity; not instrumentation of runtime dispatch."
+      }
     },
     "template": {
       "resource": null,
@@ -198,149 +1701,1712 @@
       "source": "GGUF embedded"
     },
     "settings": {
-      "context": 16384,
+      "backend": "CUDA",
+      "context": 65536,
       "slots": 1,
       "gpu_layers": 999,
       "flash": "on",
       "cache": "q8_0",
+      "cache_k": null,
+      "cache_v": null,
       "speculation": "draft-mtp",
       "drafter": "",
       "pair_confirmed": false,
       "draft_length": 3,
       "effort": "default",
-      "draft_cache": "q8_0"
+      "draft_cache": "q8_0",
+      "batch_size": 2048,
+      "ubatch_size": 512,
+      "backend_sampling": false,
+      "cuda_graph_opt": "off",
+      "cache_ram_mib": null,
+      "context_checkpoints": null,
+      "lookup_ngram_n": null,
+      "lookup_ngram_m": null
     },
     "date": "2026-09-06",
     "context": {
-      "allocated_total": 16384,
+      "allocated_total": 65536,
       "slots": 1,
-      "largest_successful_occupied_tokens": 16352,
+      "largest_successful_occupied_tokens": 65504,
       "searched_maximum": null,
-      "headroom_estimate": null
+      "headroom_estimate": null,
+      "validated_recommendation": true,
+      "minimum_observed_free_gpu_mib": 4595,
+      "required_free_gpu_mib": 3072,
+      "reserve_basis": "Total GPU memory minus the largest sampled total device use across final and preliminary baseline-setting probes; includes the desktop, does not sample all startup spikes or reserve memory against other applications."
     },
     "runs": [
       {
-        "result_id": "5687730a-2582-4ad6-ac79-c71472898ee2",
-        "started": "2026-09-06T18:51:17.356127+00:00",
+        "result_id": "ba337bef-b73e-4d2f-bb4b-e892898550ec",
+        "started": "2026-09-06T20:54:07.522968+00:00",
+        "status": "complete",
+        "mode": "cold",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": null,
+          "context_checkpoints": null,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
         "options": {
           "sweep_prompts": false,
           "full_window": false,
           "workloads": [
-            "generate",
-            "edit",
             "long-code"
           ],
-          "prompt_tokens": 1024,
+          "prompt_tokens": 65248,
           "output_tokens": 256,
           "search_context": false,
           "max_context": 262144,
-          "timeout": 180,
+          "timeout": 600,
           "context_timeout": 900,
           "repeats": 2
         },
-        "sampling": {
-          "temperature": 0,
-          "seed": 42,
-          "ignore_eos": true,
-          "cache_prompt": false
-        },
         "samples": [
           {
-            "workload": "generate",
-            "input_tokens": 1024,
-            "output_tokens": 256,
+            "workload": "long-code",
             "repetition": 1,
-            "prefill_tok_s": 1647.6214074934596,
-            "decode_tok_s": 169.52758313499714,
-            "peak_total_gpu_used_mib": 19119
-          },
-          {
-            "workload": "generate",
-            "input_tokens": 1024,
+            "input_tokens": 65248,
             "output_tokens": 256,
-            "repetition": 2,
-            "prefill_tok_s": 1849.52723266294,
-            "decode_tok_s": 171.61016093668192,
-            "peak_total_gpu_used_mib": 19119
-          },
-          {
-            "workload": "edit",
-            "input_tokens": 1024,
-            "output_tokens": 256,
-            "repetition": 1,
-            "prefill_tok_s": 1885.7153380107914,
-            "decode_tok_s": 175.15973881278788,
-            "peak_total_gpu_used_mib": 19119
-          },
-          {
-            "workload": "edit",
-            "input_tokens": 1024,
-            "output_tokens": 256,
-            "repetition": 2,
-            "prefill_tok_s": 1834.5829638189425,
-            "decode_tok_s": 175.19993404237778,
-            "peak_total_gpu_used_mib": 19119
+            "output_budget": 256,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 31.655878375284374,
+            "prefill_tok_s": 2197.242448603914,
+            "decode_tok_s": 132.02946897747577,
+            "peak_total_gpu_used_mib": 19955,
+            "peak_engine_rss_mib": 1136.85546875,
+            "prompt": {
+              "generator": "ledger-v1",
+              "workload": "long-code",
+              "source_sha256": "bd8a25ee2274b0102f55bcc1cc7718b87ae5628b5078c5e30e7192f6db100f5c",
+              "input_token_sha256": "451b9ba33b2d0b88dbb6b16ae6457cc64a01868728b61a05d0b48fb8247ed837"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false
+            }
           },
           {
             "workload": "long-code",
-            "input_tokens": 1024,
-            "output_tokens": 256,
-            "repetition": 1,
-            "prefill_tok_s": 1859.9041713436716,
-            "decode_tok_s": 180.03782912503735,
-            "peak_total_gpu_used_mib": 19119
-          },
-          {
-            "workload": "long-code",
-            "input_tokens": 1024,
-            "output_tokens": 256,
             "repetition": 2,
-            "prefill_tok_s": 1852.2739194767328,
-            "decode_tok_s": 165.81084428931197,
-            "peak_total_gpu_used_mib": 19119
+            "input_tokens": 65248,
+            "output_tokens": 256,
+            "output_budget": 256,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 31.624850808642805,
+            "prefill_tok_s": 2199.2785403731323,
+            "decode_tok_s": 131.61956062809887,
+            "peak_total_gpu_used_mib": 19955,
+            "peak_engine_rss_mib": 1727.87109375,
+            "prompt": {
+              "generator": "ledger-v1",
+              "workload": "long-code",
+              "source_sha256": "bd8a25ee2274b0102f55bcc1cc7718b87ae5628b5078c5e30e7192f6db100f5c",
+              "input_token_sha256": "451b9ba33b2d0b88dbb6b16ae6457cc64a01868728b61a05d0b48fb8247ed837"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false
+            }
           }
         ]
       },
       {
-        "result_id": "1af11620-f398-4cc1-a132-28c7e37c6659",
-        "started": "2026-09-06T18:52:20.892276+00:00",
+        "result_id": "80edb2bb-a987-446c-b8c3-3dd969793c68",
+        "started": "2026-09-06T21:04:00.551764+00:00",
+        "status": "complete",
+        "mode": "cold",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": null,
+          "context_checkpoints": null,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "context-retrieval-edit"
+          ],
+          "prompt_tokens": 61440,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 600,
+          "context_timeout": 900,
+          "repeats": 1
+        },
+        "samples": [
+          {
+            "workload": "context-retrieval-edit",
+            "repetition": 1,
+            "input_tokens": 61440,
+            "output_tokens": 1099,
+            "output_budget": 2048,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 38.52467989875004,
+            "prefill_tok_s": 2004.8489673918366,
+            "decode_tok_s": 139.825907830531,
+            "peak_total_gpu_used_mib": 19977,
+            "peak_engine_rss_mib": 1346.359375,
+            "prompt": {
+              "generator": "dispersed-retrieval-edit-v2",
+              "workload": "context-retrieval-edit",
+              "source_sha256": "af5b2204886e092bf5682e9daca5f049284f40d02ee8e1f66709a27f8ec5f4c3",
+              "reference_sha256": "b6985fd55e30b09eafa5c3162d12355ac2a2ecd3ec3fef7f1ea4ae8bd96c9d98",
+              "padding_tokens": 61199,
+              "fact_token_offsets": [
+                {
+                  "name": "DEPLOY_RETRY_BUDGET",
+                  "start_token": 105,
+                  "end_token": 127
+                },
+                {
+                  "name": "BATCH_ITEM_CEILING",
+                  "start_token": 30726,
+                  "end_token": 30747
+                },
+                {
+                  "name": "REQUEST_DEADLINE_SECONDS",
+                  "start_token": 61347,
+                  "end_token": 61366
+                }
+              ],
+              "limitation": "Three fixed facts dispersed early, middle and late in repeated unrelated reference text, followed by one exact source edit; not general long-context accuracy or stability.",
+              "input_token_sha256": "d053639ae22afc8cb8f5a00259007117cd3565565422127ad3eec9bc16b60e1e"
+            },
+            "adherence": {
+              "status": "passed",
+              "exact_payload_match": true,
+              "output_limit_reached": false,
+              "expected_sha256": "ec065f6d2eab76c4542c6ad7b7846c4898e875742e42babffab052db87dfbe00",
+              "actual_sha256": "ec065f6d2eab76c4542c6ad7b7846c4898e875742e42babffab052db87dfbe00",
+              "thinking_characters": 3996,
+              "policy": "Compare complete source after final </think> and optional single Python code fence; ignore only outer whitespace. Raw output retained. No code execution or semantic scoring."
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": false,
+              "cache_prompt": false
+            }
+          }
+        ]
+      },
+      {
+        "result_id": "4a61cbcd-940b-465b-989e-141df4c1dd1c",
+        "started": "2026-09-06T21:07:18.520176+00:00",
+        "status": "complete",
+        "mode": "warm-conversation",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": 8192,
+          "context_checkpoints": 32,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
         "options": {
           "sweep_prompts": false,
           "full_window": false,
           "workloads": [
             "long-code"
           ],
-          "prompt_tokens": 16096,
-          "output_tokens": 256,
+          "prompt_tokens": 4096,
+          "output_tokens": 128,
           "search_context": false,
           "max_context": 262144,
-          "timeout": 180,
+          "timeout": 600,
           "context_timeout": 900,
-          "repeats": 1
-        },
-        "sampling": {
-          "temperature": 0,
-          "seed": 42,
-          "ignore_eos": true,
-          "cache_prompt": false
+          "repeats": 1,
+          "measurement_mode": "warm-conversation"
         },
         "samples": [
           {
-            "workload": "long-code",
-            "input_tokens": 16096,
-            "output_tokens": 256,
+            "workload": "warm-conversation",
+            "turn": "cold",
+            "control": false,
             "repetition": 1,
-            "prefill_tok_s": 2399.8953922336486,
-            "decode_tok_s": 154.09987242947815,
-            "peak_total_gpu_used_mib": 19125
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.6605287408456206,
+            "decode_tok_s": 156.4995366627891,
+            "processed_prefill_tok_s": 2228.7784487571403,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.8431433397345245,
+            "first_text_seconds": 1.8431433397345245,
+            "completion_seconds": 2.65948551800102,
+            "peak_total_gpu_used_mib": 19975,
+            "peak_engine_rss_mib": 922.6171875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "b599e28a3f1fd780d197c709d95a5509cb90c3307de41593fbee45833b867c1a"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "append",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 0.9726183549501002,
+            "decode_tok_s": 152.42859560453542,
+            "processed_prefill_tok_s": 124.7239565373695,
+            "processed_tokens": 17,
+            "reused_tokens": 4223,
+            "first_token_event_seconds": 0.13836489710956812,
+            "first_text_seconds": 0.13836489710956812,
+            "completion_seconds": 0.972266293130815,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1004.08984375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "28b1b101ef9437bf5b87fb548fa4d24f7c13990b664c60b49ef7f7f56ccd6b6e"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "suffix-edit",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 1.2855756427161396,
+            "decode_tok_s": 148.01485276601298,
+            "processed_prefill_tok_s": 1554.0893742671058,
+            "processed_tokens": 660,
+            "reused_tokens": 3580,
+            "first_token_event_seconds": 0.4268688247539103,
+            "first_text_seconds": 0.4268688247539103,
+            "completion_seconds": 1.2852080706506968,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1015.19921875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "bbbfd518ec4a76582a14be7345137d85e9253fe0a66da3f7740bec69b48a0909"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-away",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.4294077111408114,
+            "decode_tok_s": 172.07972575640557,
+            "processed_prefill_tok_s": 2688.4031764638703,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.690519514027983,
+            "first_text_seconds": 1.690519514027983,
+            "completion_seconds": 2.4289677129127085,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1272.7109375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "2603423d5858c3f9cece2ce07dc9b12e9559bad494958ca1678d4925058751ed"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-back",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 1.0908192838542163,
+            "decode_tok_s": 149.02639996808253,
+            "processed_prefill_tok_s": 51.08622076910305,
+            "processed_tokens": 4,
+            "reused_tokens": 4236,
+            "first_token_event_seconds": 0.23794755479320884,
+            "first_text_seconds": 0.23794755479320884,
+            "completion_seconds": 1.0904090516269207,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1321.91796875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "bbbfd518ec4a76582a14be7345137d85e9253fe0a66da3f7740bec69b48a0909"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "history-edit",
+            "control": false,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.7481612828560174,
+            "decode_tok_s": 148.01226520534664,
+            "processed_prefill_tok_s": 2391.6454859383657,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.8893956849351525,
+            "first_text_seconds": 1.8893956849351525,
+            "completion_seconds": 2.7477079299278557,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1452.53125,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "331ba035be41494871d5c91140603e108bc46162f7516847fdb85a81fdaeefee"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": true,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "cold",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.5694545418955386,
+            "decode_tok_s": 170.45378286603943,
+            "processed_prefill_tok_s": 2444.5383427271404,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.8235838981345296,
+            "first_text_seconds": 1.8235838981345296,
+            "completion_seconds": 2.568966143298894,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1507.9375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "b599e28a3f1fd780d197c709d95a5509cb90c3307de41593fbee45833b867c1a"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "append",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.6725370441563427,
+            "decode_tok_s": 145.6473796660202,
+            "processed_prefill_tok_s": 2358.6506293258153,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.7998684062622488,
+            "first_text_seconds": 1.7998684062622488,
+            "completion_seconds": 2.6719780419953167,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1453.9921875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "28b1b101ef9437bf5b87fb548fa4d24f7c13990b664c60b49ef7f7f56ccd6b6e"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "suffix-edit",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.5121700577437878,
+            "decode_tok_s": 172.71180655189718,
+            "processed_prefill_tok_s": 2390.309325194255,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.77601147769019,
+            "first_text_seconds": 1.77601147769019,
+            "completion_seconds": 2.511583154089749,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1454.08203125,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "bbbfd518ec4a76582a14be7345137d85e9253fe0a66da3f7740bec69b48a0909"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-away",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4096,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.398064075037837,
+            "decode_tok_s": 179.14852258893595,
+            "processed_prefill_tok_s": 2662.3490160163433,
+            "processed_tokens": 4096,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.688182215206325,
+            "first_text_seconds": 1.688182215206325,
+            "completion_seconds": 2.397475698031485,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1513.48046875,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "2603423d5858c3f9cece2ce07dc9b12e9559bad494958ca1678d4925058751ed"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "switch-back",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.707039619795978,
+            "decode_tok_s": 168.37963110276726,
+            "processed_prefill_tok_s": 2350.5176128054427,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.9520660289563239,
+            "first_text_seconds": 1.9520660289563239,
+            "completion_seconds": 2.7064687558449805,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1516.578125,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "bbbfd518ec4a76582a14be7345137d85e9253fe0a66da3f7740bec69b48a0909"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
+          },
+          {
+            "workload": "warm-conversation",
+            "turn": "history-edit",
+            "control": true,
+            "repetition": 1,
+            "status": "complete",
+            "input_tokens": 4240,
+            "output_tokens": 128,
+            "output_budget": 128,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 2.7946977699175477,
+            "decode_tok_s": 146.47198579106407,
+            "processed_prefill_tok_s": 2381.251909494456,
+            "processed_tokens": 4240,
+            "reused_tokens": 0,
+            "first_token_event_seconds": 1.926764763891697,
+            "first_text_seconds": 1.926764763891697,
+            "completion_seconds": 2.7940586977638304,
+            "peak_total_gpu_used_mib": 19981,
+            "peak_engine_rss_mib": 1509.5234375,
+            "prompt": {
+              "generator": "token-conversation-v1",
+              "input_token_sha256": "331ba035be41494871d5c91140603e108bc46162f7516847fdb85a81fdaeefee"
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": true,
+              "cache_prompt": false,
+              "stream": true,
+              "return_tokens": true
+            }
           }
         ]
       }
     ],
     "limitations": [
-      "Cold uncached single-request synthetic coding workloads; no measured gain, quality or long-term stability claim.",
-      "Short workloads repeated twice; occupied-context workload run once. No context search was performed.",
-      "Peak GPU memory includes desktop usage; timings depend on this engine, template, GPU and driver."
-    ]
+      "One fixed retrieval/edit check passed at 61,440 input tokens; this is not general answer-quality or long-term stability validation.",
+      "Conversation reuse was checked only around 4K occupied tokens. Normal engine cache defaults remain unchanged; larger conversations may use more RAM or lose reuse."
+    ],
+    "baseline": {
+      "id": "qwen36-moe-mtp-3090-cuda-baseline-20260906",
+      "model": {
+        "file": "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+        "size": 18209036576,
+        "sha256": "df27a780435b7b45c2597536112ea3cb091f8544c3d0c3318d9f4258b31f7adf",
+        "architecture": "qwen35moe",
+        "mtp": true,
+        "context_metadata": 262144
+      },
+      "backend": "CUDA",
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 3090",
+        "total_mib": 24576,
+        "driver": "595.84"
+      },
+      "engine": {
+        "build": "b10715-cuda-sm86",
+        "version": "version: 0.3.0-dev (build 1, commit 662a0b0)\nbuilt with GNU 15.2.0 for Linux x86_64",
+        "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026"
+      },
+      "template": {
+        "resource": null,
+        "sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c",
+        "source": "GGUF embedded"
+      },
+      "settings": {
+        "context": 16384,
+        "slots": 1,
+        "gpu_layers": 999,
+        "flash": "on",
+        "cache": "q8_0",
+        "speculation": "draft-mtp",
+        "drafter": "",
+        "pair_confirmed": false,
+        "draft_length": 3,
+        "effort": "default",
+        "draft_cache": "q8_0"
+      },
+      "date": "2026-09-06",
+      "context": {
+        "allocated_total": 16384,
+        "slots": 1,
+        "largest_successful_occupied_tokens": 16352,
+        "searched_maximum": null,
+        "headroom_estimate": null
+      },
+      "runs": [
+        {
+          "result_id": "5687730a-2582-4ad6-ac79-c71472898ee2",
+          "started": "2026-09-06T18:51:17.356127+00:00",
+          "options": {
+            "sweep_prompts": false,
+            "full_window": false,
+            "workloads": [
+              "generate",
+              "edit",
+              "long-code"
+            ],
+            "prompt_tokens": 1024,
+            "output_tokens": 256,
+            "search_context": false,
+            "max_context": 262144,
+            "timeout": 180,
+            "context_timeout": 900,
+            "repeats": 2
+          },
+          "sampling": {
+            "temperature": 0,
+            "seed": 42,
+            "ignore_eos": true,
+            "cache_prompt": false
+          },
+          "samples": [
+            {
+              "workload": "generate",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 1647.6214074934596,
+              "decode_tok_s": 169.52758313499714,
+              "peak_total_gpu_used_mib": 19119
+            },
+            {
+              "workload": "generate",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 2,
+              "prefill_tok_s": 1849.52723266294,
+              "decode_tok_s": 171.61016093668192,
+              "peak_total_gpu_used_mib": 19119
+            },
+            {
+              "workload": "edit",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 1885.7153380107914,
+              "decode_tok_s": 175.15973881278788,
+              "peak_total_gpu_used_mib": 19119
+            },
+            {
+              "workload": "edit",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 2,
+              "prefill_tok_s": 1834.5829638189425,
+              "decode_tok_s": 175.19993404237778,
+              "peak_total_gpu_used_mib": 19119
+            },
+            {
+              "workload": "long-code",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 1859.9041713436716,
+              "decode_tok_s": 180.03782912503735,
+              "peak_total_gpu_used_mib": 19119
+            },
+            {
+              "workload": "long-code",
+              "input_tokens": 1024,
+              "output_tokens": 256,
+              "repetition": 2,
+              "prefill_tok_s": 1852.2739194767328,
+              "decode_tok_s": 165.81084428931197,
+              "peak_total_gpu_used_mib": 19119
+            }
+          ]
+        },
+        {
+          "result_id": "1af11620-f398-4cc1-a132-28c7e37c6659",
+          "started": "2026-09-06T18:52:20.892276+00:00",
+          "options": {
+            "sweep_prompts": false,
+            "full_window": false,
+            "workloads": [
+              "long-code"
+            ],
+            "prompt_tokens": 16096,
+            "output_tokens": 256,
+            "search_context": false,
+            "max_context": 262144,
+            "timeout": 180,
+            "context_timeout": 900,
+            "repeats": 1
+          },
+          "sampling": {
+            "temperature": 0,
+            "seed": 42,
+            "ignore_eos": true,
+            "cache_prompt": false
+          },
+          "samples": [
+            {
+              "workload": "long-code",
+              "input_tokens": 16096,
+              "output_tokens": 256,
+              "repetition": 1,
+              "prefill_tok_s": 2399.8953922336486,
+              "decode_tok_s": 154.09987242947815,
+              "peak_total_gpu_used_mib": 19125
+            }
+          ]
+        }
+      ],
+      "limitations": [
+        "Cold uncached single-request synthetic coding workloads; no measured gain, quality or long-term stability claim.",
+        "Short workloads repeated twice; occupied-context workload run once. No context search was performed.",
+        "Peak GPU memory includes desktop usage; timings depend on this engine, template, GPU and driver."
+      ]
+    },
+    "summary": "General coding with q8 conversation memory and MTP3; no general speedup established.",
+    "validation": {
+      "cold_start": "Every cold sample launched a fresh engine.",
+      "context_quality": {
+        "result_id": "80edb2bb-a987-446c-b8c3-3dd969793c68",
+        "generator": "dispersed-retrieval-edit-v2",
+        "status": "passed",
+        "output_cap": 2048,
+        "scope": "Three dispersed integer facts and one exact source edit, without executing generated code."
+      },
+      "conversation": {
+        "result_id": "4a61cbcd-940b-465b-989e-141df4c1dd1c",
+        "scope": "Six controlled turns and six exact uncached replays, one repetition at 65,536 allocation and about 4K occupied input.",
+        "cache_policy": "Evidence explicitly requests 8192 MiB and 32 checkpoints, matching this installed engine's advertised normal defaults. The recommended launch leaves both flags omitted; changed engines need revalidation."
+      },
+      "sampling_scope": "GPU peaks cover sampled request execution, including the running desktop. Successful startup is observed; startup memory peaks are not fully sampled."
+    },
+    "preliminary_validation": {
+      "note": "Initial instruction wording was revised after the MoE reached its 2048-token output cap. Both checkpoints were rerun with explicit right-hand-side assignment edits. This was not a context-memory failure.",
+      "run": {
+        "result_id": "63a072f8-0eae-4473-8298-a8c7817ee2b8",
+        "started": "2026-09-06T20:59:13.457443+00:00",
+        "status": "complete",
+        "mode": "cold",
+        "settings": {
+          "backend": "CUDA",
+          "context": 65536,
+          "slots": 1,
+          "gpu_layers": 999,
+          "flash": "on",
+          "cache": "q8_0",
+          "cache_k": null,
+          "cache_v": null,
+          "speculation": "draft-mtp",
+          "drafter": "",
+          "pair_confirmed": false,
+          "draft_length": 3,
+          "effort": "default",
+          "draft_cache": "q8_0",
+          "batch_size": 2048,
+          "ubatch_size": 512,
+          "backend_sampling": false,
+          "cuda_graph_opt": "off",
+          "cache_ram_mib": null,
+          "context_checkpoints": null,
+          "lookup_ngram_n": null,
+          "lookup_ngram_m": null
+        },
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "context-retrieval-edit"
+          ],
+          "prompt_tokens": 61440,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 600,
+          "context_timeout": 900,
+          "repeats": 1
+        },
+        "samples": [
+          {
+            "workload": "context-retrieval-edit",
+            "repetition": 1,
+            "input_tokens": 61440,
+            "output_tokens": 2048,
+            "output_budget": 2048,
+            "requested_output_budget": 256,
+            "slots": 1,
+            "context_per_slot": 65536,
+            "wall_seconds": 47.53017844306305,
+            "prefill_tok_s": 1962.0055579938698,
+            "decode_tok_s": 126.49538149727893,
+            "peak_total_gpu_used_mib": 19979,
+            "peak_engine_rss_mib": 1595.7578125,
+            "prompt": {
+              "generator": "dispersed-retrieval-edit-v1",
+              "workload": "context-retrieval-edit",
+              "source_sha256": "af5b2204886e092bf5682e9daca5f049284f40d02ee8e1f66709a27f8ec5f4c3",
+              "reference_sha256": "b6985fd55e30b09eafa5c3162d12355ac2a2ecd3ec3fef7f1ea4ae8bd96c9d98",
+              "padding_tokens": 61226,
+              "fact_token_offsets": [
+                {
+                  "name": "DEPLOY_RETRY_BUDGET",
+                  "start_token": 78,
+                  "end_token": 100
+                },
+                {
+                  "name": "BATCH_ITEM_CEILING",
+                  "start_token": 30713,
+                  "end_token": 30734
+                },
+                {
+                  "name": "REQUEST_DEADLINE_SECONDS",
+                  "start_token": 61347,
+                  "end_token": 61366
+                }
+              ],
+              "limitation": "Three fixed facts dispersed early, middle and late in repeated unrelated reference text, followed by one exact source edit; not general long-context accuracy or stability.",
+              "input_token_sha256": "436fd42d49abf5df22f24374c0654068940e2c10b61f515e40f645bd7e6f55b2"
+            },
+            "adherence": {
+              "status": "failed",
+              "exact_payload_match": false,
+              "output_limit_reached": true,
+              "expected_sha256": "ec065f6d2eab76c4542c6ad7b7846c4898e875742e42babffab052db87dfbe00",
+              "actual_sha256": "851c70a4f09709d99d62b67a1d5c8de65044b0fe7cc1174548a0caad15a7f402",
+              "thinking_characters": null,
+              "policy": "Compare complete source after final </think> and optional single Python code fence; ignore only outer whitespace. Raw output retained. No code execution or semantic scoring."
+            },
+            "sampling": {
+              "temperature": 0,
+              "seed": 42,
+              "ignore_eos": false,
+              "cache_prompt": false
+            }
+          }
+        ]
+      }
+    },
+    "decisions": [
+      {
+        "setting": "combined-batch-sampling",
+        "decision": "Keep physical batch512 and target sampling off: combined1024/sampling improved prefill modestly but reduced decode substantially. Isolated gains did not add together.",
+        "evidence": [
+          {
+            "result_id": "ba337bef-b73e-4d2f-bb4b-e892898550ec",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 65248,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 600,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 65536,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  65248,
+                  65248
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 2198.2604944885234,
+                "median_decode_tok_s": 131.82451480278732,
+                "median_wall_seconds": 31.64036459196359,
+                "peak_total_gpu_used_mib": 19955,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "60400368-f8c6-4b41-9e87-89fdbada91a0",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 65248,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 600,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 65536,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 1024,
+              "backend_sampling": true,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  65248,
+                  65248
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 2286.997135240346,
+                "median_decode_tok_s": 114.90006712010882,
+                "median_wall_seconds": 30.773957245983183,
+                "peak_total_gpu_used_mib": 20218,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "isolated-batch",
+        "decision": "Physical batch1024 helped longer prefill but traded away decode and extra memory.",
+        "evidence": [
+          {
+            "result_id": "18d130e7-b748-4e7d-b15e-270dcc640930",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 65248,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 65536,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": null,
+              "cuda_graph_opt": null
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  65248,
+                  65248
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 1988.6559272899535,
+                "median_decode_tok_s": 117.38659878938253,
+                "median_wall_seconds": 35.00342638930306,
+                "peak_total_gpu_used_mib": 19906,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "9aa2ddf8-b287-4dc1-894a-98372824a005",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 65248,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 65536,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 1024,
+              "backend_sampling": null,
+              "cuda_graph_opt": null
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  65248,
+                  65248
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 2450.6137710697612,
+                "median_decode_tok_s": 109.97760184287296,
+                "median_wall_seconds": 28.969194614561275,
+                "peak_total_gpu_used_mib": 20148,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "isolated-sampling",
+        "decision": "Small isolated sampling signal at a shorter prompt did not justify the final combined setting.",
+        "evidence": [
+          {
+            "result_id": "4a9061e3-235a-4568-b888-51febc80ef36",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 1024,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  1024,
+                  1024
+                ],
+                "median_prefill_tok_s": 2345.6089495108276,
+                "median_decode_tok_s": 156.60892821273802,
+                "median_wall_seconds": 8.281053001992404,
+                "peak_total_gpu_used_mib": 19049,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "5ee32831-4bc1-43a5-9fa5-0128bc86982f",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 1024,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": true,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  1024,
+                  1024
+                ],
+                "median_prefill_tok_s": 2336.5124174766297,
+                "median_decode_tok_s": 161.03960008817631,
+                "median_wall_seconds": 8.111598547548056,
+                "peak_total_gpu_used_mib": 19076,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "streams",
+        "decision": "Concurrent streams did not establish a useful gain.",
+        "evidence": [
+          {
+            "result_id": "9b171462-e73b-4fe6-9026-039a8a958774",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 2320.674808204688,
+                "median_decode_tok_s": 173.2246245028429,
+                "median_wall_seconds": 3.2425603684969246,
+                "peak_total_gpu_used_mib": 19049,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "9b47d963-b6e0-42d3-9e5d-f70f17b50115",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "on"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 2342.2834399599014,
+                "median_decode_tok_s": 173.50529516220678,
+                "median_wall_seconds": 3.2209692914038897,
+                "peak_total_gpu_used_mib": 19049,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "lookup",
+        "decision": "Lookup reduced decode on generation, copying and small edits. Shorter copy reasoning changes output count; it is not an equal-work speedup.",
+        "evidence": [
+          {
+            "result_id": "b41bc78f-050a-4c59-9667-49f41a9d2383",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "generate",
+                "source-copy",
+                "source-small-edit"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "generate": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 2288.349538875483,
+                "median_decode_tok_s": 154.48801050766113,
+                "median_wall_seconds": 3.4471608016174287,
+                "peak_total_gpu_used_mib": 19120,
+                "adherence": []
+              },
+              "source-copy": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  1896,
+                  1896
+                ],
+                "median_prefill_tok_s": 2319.146038594962,
+                "median_decode_tok_s": 189.81725872453683,
+                "median_wall_seconds": 11.75250971200876,
+                "peak_total_gpu_used_mib": 19120,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              },
+              "source-small-edit": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  1671,
+                  1671
+                ],
+                "median_prefill_tok_s": 2301.689925458419,
+                "median_decode_tok_s": 185.86762999534903,
+                "median_wall_seconds": 10.767253420315683,
+                "peak_total_gpu_used_mib": 19158,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              }
+            }
+          },
+          {
+            "result_id": "4265ba41-aca4-4b07-aaf1-200571619d35",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "generate",
+                "source-copy",
+                "source-small-edit"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 256,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 2
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp,ngram-simple",
+              "draft_length": 3,
+              "lookup_ngram_n": 3,
+              "lookup_ngram_m": 3,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "generate": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  256,
+                  256
+                ],
+                "median_prefill_tok_s": 2332.185321072846,
+                "median_decode_tok_s": 147.37639965925678,
+                "median_wall_seconds": 3.4890017504803836,
+                "peak_total_gpu_used_mib": 19153,
+                "adherence": []
+              },
+              "source-copy": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  1609,
+                  1609
+                ],
+                "median_prefill_tok_s": 2304.6465562693475,
+                "median_decode_tok_s": 180.57854802349772,
+                "median_wall_seconds": 10.684785925550386,
+                "peak_total_gpu_used_mib": 19136,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              },
+              "source-small-edit": {
+                "repeats": 2,
+                "input_tokens": [
+                  4096,
+                  4096
+                ],
+                "output_tokens": [
+                  1670,
+                  1670
+                ],
+                "median_prefill_tok_s": 2312.941353908909,
+                "median_decode_tok_s": 180.45964453340207,
+                "median_wall_seconds": 11.022119770059362,
+                "peak_total_gpu_used_mib": 19149,
+                "adherence": [
+                  "passed",
+                  "passed"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "setting": "mixed-cache",
+        "decision": "Keep q8/q8. Mixed q8/q4 was much slower with a small memory reduction on this installed build.",
+        "evidence": [
+          {
+            "result_id": "35b8b2dd-a2e5-4b39-9e8c-6d3ff8b18328",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 32,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 1
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": null,
+              "cache_v": null,
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 1,
+                "input_tokens": [
+                  4096
+                ],
+                "output_tokens": [
+                  32
+                ],
+                "median_prefill_tok_s": 2278.41496633831,
+                "median_decode_tok_s": 130.93593853613618,
+                "median_wall_seconds": 2.041767810937017,
+                "peak_total_gpu_used_mib": 19201,
+                "adherence": []
+              }
+            }
+          },
+          {
+            "result_id": "13c6271c-417d-4d69-a698-3dcb0fa0394c",
+            "options": {
+              "sweep_prompts": false,
+              "full_window": false,
+              "workloads": [
+                "long-code"
+              ],
+              "prompt_tokens": 4096,
+              "output_tokens": 32,
+              "search_context": false,
+              "max_context": 262144,
+              "timeout": 180,
+              "context_timeout": 900,
+              "repeats": 1
+            },
+            "settings": {
+              "context": 16384,
+              "slots": 1,
+              "cache": "q8_0",
+              "cache_k": "q8_0",
+              "cache_v": "q4_0",
+              "speculation": "draft-mtp",
+              "draft_length": 3,
+              "lookup_ngram_n": null,
+              "lookup_ngram_m": null,
+              "batch_size": 2048,
+              "ubatch_size": 512,
+              "backend_sampling": false,
+              "cuda_graph_opt": "off"
+            },
+            "workloads": {
+              "long-code": {
+                "repeats": 1,
+                "input_tokens": [
+                  4096
+                ],
+                "output_tokens": [
+                  32
+                ],
+                "median_prefill_tok_s": 236.92907525818387,
+                "median_decode_tok_s": 64.31762116091232,
+                "median_wall_seconds": 17.772709135897458,
+                "peak_total_gpu_used_mib": 19070,
+                "adherence": []
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "evidence_policy": "Portable summaries retain source result IDs, budgets, actual counts and measured tradeoffs. Input token hashes use SHA256 of compact JSON integer arrays. Full raw records remain in the originating workbench; dated research is not local evidence."
   }
 ]
