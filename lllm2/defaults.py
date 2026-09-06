@@ -7,9 +7,10 @@ from dataclasses import replace
 from pathlib import Path
 from .discovery import CATALOG, command, hardware, metadata, probe
 from .settings import Settings, capabilities
+from .recommendations import measured_defaults
 
 # Built-in tuning was previously benchmarked on an RTX 3090.
-SOURCE = 'Built-in defaults'
+SOURCE = 'Inherited defaults · estimates'
 
 
 def catalogue_entry(path):
@@ -50,6 +51,15 @@ def context_plan(entry, total_mib, backend, ceiling, *, mtp=False, draft_cache='
 
 
 def starting_defaults(selection):
+    measured, qualifications = measured_defaults(selection)
+    if measured:
+        return measured
+    fallback = inherited_defaults(selection)
+    fallback['notes'] = qualifications + fallback['notes']
+    return fallback
+
+
+def inherited_defaults(selection):
     # Never carry experiments or another model's drafter/effort into a new model.
     s = Settings(model=selection.model, engine=selection.engine, backend=selection.backend, device=selection.device)
     notes = []

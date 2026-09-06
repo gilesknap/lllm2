@@ -162,9 +162,10 @@ the panel reads HTML from disk on each request. The panel bind remains
 checks; do not automatically relaunch it. Physical touch hardware/screen readers
 and real launch/save mutations were not tested in this slice.
 
-Next unfinished work is slice 2: evidence and defaults foundation. Stop here until
-requested. No performance implementation or new GPU benchmarks have been done for
-this plan; RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains.
+Slice 2 is now complete; the next unfinished work is slice 3 (prefill tuning).
+The user authorized sequential work and PR/merge per slice with subagents.
+RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains;
+new slice 2 baseline evidence is recorded below and in PERFORMANCE_PLAN.md.
 
 The user authorized detached background panel management and restarts after code
 changes, with LAN exposure on `0.0.0.0:8082`. PID file: `/tmp/lllm2-panel.pid`;
@@ -224,3 +225,38 @@ in `/tmp/lllm2-cuda-smoke-result.json`; no benchmark result ID was created.
 The smoke engine was stopped, saved defaults were untouched, and the LAN panel
 remains available without restarting. User authorized PR/merge and subsequent
 slices using separate subagents; finish and validate each slice before merging.
+
+## Slice 2 boundary — portable measured baselines
+
+Implemented `recommendations.py` / `recommendations.json`, default precedence and
+promotion provenance in `defaults.py` / `app.py`, and source/evidence/modified-form
+labels in `static/index.html`. Exact model SHA256, GPU/backend and portable template
+identity constrain profiles; changed builds/drivers/templates are qualified.
+Saved preferences retain precedence. Legacy bare saved settings still load;
+manual saves and historical benchmark provenance are explicitly distinguished.
+
+Four completed CUDA baseline records (14 cold requests, each with engine restart):
+- Dense: `685605f4-33a5-4560-8a58-0df38ce8dfe1` (six short samples),
+  `a2b4390a-ba5e-4460-ac29-5cf5977dbd6a` (one occupied-window sample).
+- MTP MoE: `5687730a-2582-4ad6-ac79-c71472898ee2` (six short samples),
+  `1af11620-f398-4cc1-a132-28c7e37c6659` (one occupied-window sample).
+
+The portable data contains exact identities, configurations, budgets and compact
+metrics; full records remain in the existing SQLite database. Both use 16384 total
+context, one slot, CUDA, flash on, main/draft q8_0, MTP3 and default effort.
+Generate/edit/long-code at 1024+256 were repeated twice; long-code16096+256 ran
+once. These are baseline execution measurements and a tested starting allocation,
+not comparative gains or a maximum context. Dense Vulkan saved159744 remains
+untouched. No saved MoE/CUDA preferences were created by the benchmark work.
+
+Passed independent review, Python/JS checks, portable-data comparison to actual
+records, temporary clean-state/compatibility/provenance checks, live resolution
+for both exact files, rejection of the non-MTP same-basename file, and live narrow
+browser evidence/modified-form/reset/saved-source checks. Panel was restarted only
+after confirming no active job or serving engine; environment and LAN binding
+were preserved and HTTP200 verified. Current PID is in `/tmp/lllm2-panel.pid`;
+do not hardcode a remembered PID. No benchmark engine left running.
+
+Next slice: 3, optional batch/microbatch controls and bounded comparisons. Keep
+missing values equivalent to the existing engine defaults. Existing baseline
+results above are frozen evidence; do not silently rerun or relabel them.

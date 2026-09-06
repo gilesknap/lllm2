@@ -15,6 +15,7 @@ from .engine import Cancelled, Engine
 from .settings import Settings, capabilities, launch_args
 from .store import Store
 from .defaults import starting_defaults
+from .recommendations import promotion_provenance, saved_qualifications
 
 
 class App:
@@ -62,7 +63,19 @@ class App:
             if saved and source != 'built-in':
                 resolved = Settings.parse(saved)
                 resolved.engine, resolved.device = s.engine, s.device
-                return dict(settings=resolved.dict(), source='Saved defaults', notes=[])
+                provenance = self.store.get('default-evidence', self.default_key(s))
+                if not provenance or provenance.get('settings') != saved:
+                    return dict(settings=resolved.dict(), source='Saved defaults · origin unknown',
+                                notes=['Legacy saved settings preserved; no measurement provenance was recorded.'])
+                notes = ['Saved preferences take precedence over built-in recommendations.']
+                if provenance['kind'] == 'benchmark':
+                    notes.append(provenance['note'])
+                    notes.extend(saved_qualifications(provenance, resolved))
+                    if provenance['context']['used_headroom_estimate']:
+                        notes.append('Saved context uses a headroom estimate, not an observed successful allocation.')
+                return dict(settings=resolved.dict(), source='Saved defaults · ' +
+                            ('historical benchmark evidence · qualified' if provenance['kind'] == 'benchmark' else 'manual preferences'),
+                            notes=notes, evidence=provenance if provenance['kind'] == 'benchmark' else None)
             if source == 'saved':
                 raise ValueError('No saved defaults for this model and backend yet. Choose “Use as default” on a completed benchmark, or save the current settings.')
             return starting_defaults(s)
@@ -70,6 +83,7 @@ class App:
             s = Settings.parse(data['settings'])
             return self.store.get('default',self.default_key(s))
         if path == '/api/default/save':
+            provenance = None
             if data.get('result_id'):
                 r = self.store.get('result',data['result_id'])
                 if not r or r['status'] != 'complete' or not r['samples']:
@@ -79,10 +93,13 @@ class App:
                     if not r['recommended_context']:
                         raise ValueError('This run has no successful context probe.')
                     s.context = r['recommended_context'] * s.slots
+                provenance = promotion_provenance(r, s, data.get('use_context'))
             else:
                 s = Settings.parse(data['settings'])
             launch_args(s,config.ENGINE_PORT)
             self.store.put('default',self.default_key(s),s.dict())
+            self.store.put('default-evidence', self.default_key(s),
+                           provenance or dict(kind='manual', settings=s.dict()))
             return s.dict()
         if path == '/api/benchmark':
             return self.bench.submit(data)

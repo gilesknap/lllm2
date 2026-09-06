@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: slice 1 complete; slices 2–8 not started.
+Status: slices 1–2 complete; slices 3–8 not started.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -74,7 +74,7 @@ execute the whole roadmap or launch an exhaustive GPU sweep in one session.
 | Slice | Deliverable | Depends on | Status |
 |---|---|---|---|
 | 1 | Launch-setting tooltips and clearer feature availability | Existing panel | Complete (6 September 2026) |
-| 2 | Baselines and portable, evidence-backed defaults | 1 | Not started |
+| 2 | Baselines and portable, evidence-backed defaults | 1 | Complete (6 September 2026) |
 | 3 | Prefill batch/microbatch controls and bounded comparisons | 2 | Not started |
 | 4 | Target GPU sampling and concurrent-stream experiments | 2; use stable batch choice from 3 | Not started |
 | 5 | Warm conversation/prefix-reuse measurements and controls | 2 | Not started |
@@ -155,6 +155,34 @@ Unknown models and non-3090 GPUs still get conservative, clearly labelled fallba
 
 Done when built-in recommendations survive a clean installation, saved settings
 still win, old data loads, and no unmeasured context estimate is labelled tested.
+
+Slice 2 completion — 6 September 2026:
+- Added `recommendations.py` and `recommendations.json`; updated `defaults.py`,
+  `app.py` and the UI. Portable records match exact checkpoint SHA256, backend,
+  GPU and template identity. Changed engine/driver/template carries qualification;
+  incompatible settings fall back explicitly. Saved preferences still win.
+- Result promotion retains compact evidence separately from legacy settings;
+  manual saves clear that attribution. Old saved defaults remain unchanged with
+  unknown origin. Edited forms visibly stop claiming the loaded measurement.
+- Four new CUDA result records, 14 cold samples (256 output each), RTX 3090,
+  installed b10715-cuda-sm86, q8_0 main/draft, flash on, MTP3, default effort:
+  dense short `685605f4-33a5-4560-8a58-0df38ce8dfe1`, occupied
+  `a2b4390a-ba5e-4460-ac29-5cf5977dbd6a`; MTP MoE short
+  `5687730a-2582-4ad6-ac79-c71472898ee2`, occupied
+  `1af11620-f398-4cc1-a132-28c7e37c6659`. Short runs cover generate/edit/long-code
+  at 1024 input twice; occupied runs cover long-code at 16096 input once.
+- Both portable starting allocations are 16384 total tokens, one slot. These are
+  tested baselines, not speedup claims, searched maxima or headroom estimates.
+  Prior dense Vulkan evidence remains qualified history; its saved 159744 setting
+  is preserved. No CUDA/Vulkan comparison at mismatched allocations is claimed.
+- Checks passed: independent code/data review; all portable metrics/settings
+  matched saved records; Python/JS syntax; temporary compatibility/provenance
+  checks; live exact-profile resolution for both files; actual non-MTP same-name
+  rejection; legacy Vulkan preference preservation; narrow live browser measured,
+  modified/reset and saved-source labels. Idle panel restart preserved environment
+  and `0.0.0.0:8082`; LAN HTTP 200 verified. No model left serving.
+- Limits: synthetic execution/capacity screening only, not answer quality or
+  stability validation; no searched maximum. Next: slice 3.
 
 ### Slice 3: prefill tuning
 
