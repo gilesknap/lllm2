@@ -203,5 +203,7 @@ class Engine:
         if cancel.is_set():
             raise Cancelled()
         if error:
+            if isinstance(error[0], urllib.error.URLError) and isinstance(error[0].reason, TimeoutError):
+                raise TimeoutError(f'{path} timed out: {error[0].reason}') from error[0]
             raise error[0]
         return result[0]

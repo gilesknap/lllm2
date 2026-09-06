@@ -94,10 +94,10 @@ class Bench:
         opts = dict(workloads=data.get('workloads',['generate','edit','long-code']),
                     prompt_tokens=data.get('prompt_tokens',1024), output_tokens=data.get('output_tokens',256),
                     search_context=data.get('search_context',True), max_context=data.get('max_context',metadata(s.model)['context'] or 131072),
-                    timeout=data.get('timeout',180), repeats=data.get('repeats',1))
+                    timeout=data.get('timeout',180), context_timeout=data.get('context_timeout',900), repeats=data.get('repeats',1))
         if not opts['workloads'] or not isinstance(opts['workloads'],list) or any(w not in WORKLOADS for w in opts['workloads']):
             raise ValueError('Select coding workloads.')
-        for k, lo, hi in [('prompt_tokens',128,131072),('output_tokens',16,4096),('max_context',512,1048576),('timeout',10,1800),('repeats',1,5)]:
+        for k, lo, hi in [('prompt_tokens',128,131072),('output_tokens',16,4096),('max_context',512,1048576),('timeout',10,1800),('context_timeout',10,3600),('repeats',1,5)]:
             if type(opts[k]) is not int or not lo <= opts[k] <= hi:
                 raise ValueError(f'{k} must be in {lo}..{hi}')
         if type(opts['search_context']) is not bool:
@@ -146,7 +146,7 @@ class Bench:
                     r['drafter'] = identity(s.drafter)
                     r['pair_evidence'] = 'User-declared target-specific ordinary DFlash pair; successful runs verify execution only.'
                 self.store.put('result',r['id'],r)
-                self.update(status='running', current=label, completed=i, result_id=r['id'], phase='loading')
+                self.update(status='running', current=label, completed=i, result_id=r['id'], phase='loading',context_probe_started=None)
                 try:
                     # Restart each workload/repeat to make cold prefill unambiguous.
                     for workload in opts['workloads']:
@@ -254,23 +254,31 @@ class Bench:
         good, bad = 0, ceiling+256
         attempt = min(max(floor,s.context//s.slots),ceiling)
         attempts = 0
+        context_timeout = opts.get('context_timeout',900)
+        r['context_search_status'] = 'running'
         while floor <= attempt <= ceiling and attempts < 24:
             if self.cancel.is_set():
                 raise Cancelled()
             attempts += 1
-            self.update(phase=f'Context probe: {attempt:,} tokens per slot')
-            entry = dict(context_per_slot=attempt,status='running',started=stamp())
+            self.update(phase=f'Context probe {attempts} (up to 24): {attempt:,} tokens per slot; {context_timeout}s timeout per operation',context_probe_started=time.time())
+            entry = dict(context_per_slot=attempt,status='running',started=stamp(),timeout_seconds=context_timeout)
             r['probes'].append(entry)
             self.store.put('result',r['id'],r)
             candidate = replace(s,context=attempt*s.slots)
             try:
-                self.engine.start(candidate,self.cancel,opts['timeout'])
-                entry['sample'] = self.measure(candidate,'long-code',attempt-opts['output_tokens']-32,opts['output_tokens'],opts['timeout'])
+                self.engine.start(candidate,self.cancel,context_timeout)
+                entry['sample'] = self.measure(candidate,'long-code',attempt-opts['output_tokens']-32,opts['output_tokens'],context_timeout)
                 entry['status'] = 'success'
                 good = attempt
             except Cancelled:
                 entry['status'] = 'cancelled'
                 raise
+            except TimeoutError as e:
+                entry.update(status='timed_out',error=str(e),logs=self.engine.state()['logs'])
+                r['context_search_status'] = 'inconclusive_timeout'
+                r['context_search_stop_reason'] = 'Context probe timed out; usable-context limit is unknown. Increase the context-probe timeout to continue testing. Earlier successful probes remain valid.'
+                self.update(phase=r['context_search_stop_reason'])
+                break
             except Exception as e:
                 entry.update(status='failed',error=str(e),logs=self.engine.state()['logs'])
                 bad = attempt
@@ -294,5 +302,7 @@ class Bench:
                 attempt = ((good+bad)//2)//256*256
             if attempt < floor:
                 break
+        if r['context_search_status'] == 'running':
+            r['context_search_status'] = 'complete' if good >= ceiling or bad-good <= 256 else 'inconclusive_probe_limit'
         r['context_search_resolution'] = 256
         r['context_ceiling_reached'] = good == ceiling
