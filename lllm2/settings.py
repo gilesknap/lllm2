@@ -1,7 +1,7 @@
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 import re
-from .discovery import batch_defaults, metadata, probe
+from .discovery import batch_defaults, metadata, probe, cuda_graph_support, engine_environment, EXECUTION_ENV_KEYS
 
 
 @dataclass
@@ -24,12 +24,18 @@ class Settings:
     chat_template: str = ''
     batch_size: int | None = None
     ubatch_size: int | None = None
+    backend_sampling: bool = False
+    cuda_graph_opt: str = 'default'
 
     @classmethod
     def parse(cls, data):
         if set(data) - {f.name for f in fields(cls)}:
             raise ValueError('Unknown launch setting.')
         s = cls(**data)
+        if type(s.backend_sampling) is not bool:
+            raise ValueError('backend_sampling must be boolean')
+        if s.cuda_graph_opt not in ('default', 'on', 'off'):
+            raise ValueError('Invalid cuda_graph_opt')
         for key in ('batch_size', 'ubatch_size'):
             if getattr(s, key) == '':
                 setattr(s, key, None)
@@ -62,6 +68,17 @@ def capabilities(s):
     def flag_status(flag):
         return 'unknown' if p['error'] else 'available' if flag in flags else 'unsupported'
     out = {}
+    sampling_status = flag_status('--backend-sampling') if s.backend == 'CUDA' else 'unsupported'
+    out['backend_sampling'] = dict(status=sampling_status, reason='Experimental target GPU sampling requires CUDA and --backend-sampling. Requests may fall back to CPU; no measured benefit implied. Draft sampling is unchanged.')
+    graph = cuda_graph_support(s.engine)
+    reason = graph['reason'] + ' Requires ordinary CUDA Graphs and one visible CUDA device; performance needs measurement.'
+    status = 'available' if s.backend == 'CUDA' and graph['supported'] else 'unsupported'
+    env = engine_environment(s.engine)
+    if env.get('GGML_CUDA_DISABLE_GRAPHS') is not None:
+        status, reason = 'missing prerequisites', 'Inherited GGML_CUDA_DISABLE_GRAPHS disables ordinary CUDA Graphs; concurrent streams cannot run.'
+    if len([d for d in p['devices'] if d.startswith('CUDA')]) > 1:
+        status, reason = 'missing prerequisites', 'Concurrent streams require exactly one visible CUDA device.'
+    out['cuda_graph_opt'] = dict(status=status, reason=reason, evidence=graph)
     for name, flag in [('flash','--flash-attn'),('cache','--cache-type-k'),('effort','--reasoning-effort')]:
         status = flag_status(flag)
         if name == 'cache' and '--cache-type-v' not in flags:
@@ -99,6 +116,28 @@ def capabilities(s):
     return out
 
 
+def launch_environment(s):
+    env = engine_environment(s.engine)
+    if s.cuda_graph_opt != 'default':
+        env['GGML_CUDA_GRAPH_OPT'] = '1' if s.cuda_graph_opt == 'on' else '0'
+    return env
+
+
+def execution_settings(s, environment=None, logs=(), response=None):
+    """Requested options and observed diagnostics; never infer GPU execution from a flag."""
+    lines = list(logs)
+    starts = [i for i, line in enumerate(lines) if line.startswith('Launching: ')]
+    current = lines[starts[-1] + 1:] if starts else []
+    diagnostics = [line for line in current if re.search(r'backend sampl|sampler chain|sampl.*(?:fallback|disabl|not compatible|not supported)', line, re.I)]
+    generation = (response or {}).get('generation_settings', {})
+    return dict(requested=dict(backend_sampling=s.backend_sampling, cuda_graph_opt=s.cuda_graph_opt),
+                child_environment={k: environment.get(k) for k in EXECUTION_ENV_KEYS} if environment is not None else None,
+                target_sampling=dict(response_requested=generation.get('backend_sampling'),
+                                     offload='unknown; normal logs do not prove complete target GPU sampling'),
+                draft_sampling=dict(requested=None, policy='engine default unchanged; enablement not observed'),
+                diagnostics=diagnostics[-40:])
+
+
 def batch_settings(s, logs=()):
     """Keep requests and help defaults separate from observed target-context values."""
     p = probe(s.engine)
@@ -133,6 +172,13 @@ def launch_args(s, port):
     if m['context'] and s.context // s.slots > m['context']:
         raise ValueError('Requested context per slot exceeds checkpoint context metadata.')
     caps = capabilities(s)
+    if s.backend_sampling and caps['backend_sampling']['status'] != 'available':
+        raise ValueError(caps['backend_sampling']['reason'])
+    if s.cuda_graph_opt != 'default':
+        if s.backend != 'CUDA' or not cuda_graph_support(s.engine)['supported']:
+            raise ValueError('Explicit CUDA streams settings require a CUDA build with the compiled switch.')
+        if s.cuda_graph_opt == 'on' and caps['cuda_graph_opt']['status'] != 'available':
+            raise ValueError(caps['cuda_graph_opt']['reason'])
     args = [p['path']]
     def add(flag, value=None):
         if flag not in p['flags']:
@@ -143,6 +189,8 @@ def launch_args(s, port):
     for flag, value in [('--model',str(Path(s.model).expanduser().resolve())),('--host','127.0.0.1'),('--port',port),('--ctx-size',s.context),('--parallel',s.slots),('--gpu-layers',s.gpu_layers),('--device',s.device)]:
         add(flag,value)
     add('--jinja')
+    if s.backend_sampling:
+        add('--backend-sampling')
     for flag, value in [('--batch-size', s.batch_size), ('--ubatch-size', s.ubatch_size)]:
         if value is not None:
             add(flag, value)

@@ -162,7 +162,7 @@ the panel reads HTML from disk on each request. The panel bind remains
 checks; do not automatically relaunch it. Physical touch hardware/screen readers
 and real launch/save mutations were not tested in this slice.
 
-Slices 1–3 are now complete; the next unfinished work is slice 4 (CUDA execution overhead).
+Slices 1–4 are now complete; the next unfinished work is slice 5 (warm conversations).
 The user authorized sequential work and PR/merge per slice with subagents.
 RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains;
 new slice 2 baseline evidence is recorded below and in PERFORMANCE_PLAN.md.
@@ -290,3 +290,36 @@ PR6 merged slice1/CUDA selection; PR8 merged slice2. CodeRabbit reviewed PR6,
 then skipped PR8 because its included-review quota was exhausted (green check
 was not a review). Independent agent review and local runtime checks supplied
 review/validation. Continue to report automated-review skips explicitly.
+
+## Slice 4 boundary — CUDA execution overhead
+
+Added enable-only target sampling and tri-state streams controls in collapsed
+Advanced UI, child-only environment overrides and actual launch/request evidence.
+Normal verbosity cannot prove full GPU sampling offload; result evidence says so.
+Default launch behavior and all profiles/saved preferences remain unchanged.
+Inherited unmeasured CUDA execution variables qualify portable baseline evidence.
+
+Six screen records plus two confirmation records contain16 cold samples; exact
+IDs, settings and metrics are in PERFORMANCE_PLAN.md slice4. Dense showed no
+useful gain from either option; neither model benefited usefully from streams.
+MoE sampling retained~2.8% median decode improvement in the4096+1024 confirmation,
+with~0.4% lower prefill and27MiB additional peak GPU memory. This is a small
+workload-specific candidate for slice8, not a new general default. No combined
+sampling/streams test was justified. Keep baseline sampling/streams behavior and
+logical2048/micro512 for controlled slice5 comparisons.
+
+Independent review, compatibility/environment/provenance and failed-preflight
+checks passed, as did Python/JS syntax and live narrow-browser controls/help/
+legacy reset/modified labels. Restarted only the idle owned panel, preserving
+its environment and0.0.0.0:8082; verified LAN HTTP200. No engine left serving.
+PR9 merged slice3; CodeRabbit again skipped because of its hourly review quota.
+Its green check was not an actual review; independent review and local checks
+provided validation. No sudo, system change or engine upgrade was needed.
+
+Next: slice5, a separate warm-conversation runner preserving cold measurements.
+Verify exact build timing cache_n serialization and finite cache/checkpoint flags.
+Use actual generated token IDs for append-prefix probes; final n_tokens_cached
+is slot occupancy, not reused input. Record processed/reused input separately,
+stream first-token/completion and owned-process host memory. Include causal cold
+controls, edited-history misses and cancellation. Read-only preparation is complete;
+no slice5 implementation or GPU trials have run yet.

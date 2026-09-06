@@ -5,7 +5,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
-from .discovery import hardware, identity, metadata, probe
+from .discovery import hardware, identity, metadata, probe, engine_environment
 from .settings import Settings, launch_args
 
 PROFILES = json.loads(Path(__file__).with_name('recommendations.json').read_text())
@@ -81,6 +81,13 @@ def measured_defaults(selection):
         if template_hash != template['sha256']:
             changed.append('chat template')
         settings = Settings.parse(values)
+        if settings.backend == 'CUDA':
+            env = engine_environment(settings.engine)
+            inherited = [key for key in ('GGML_CUDA_GRAPH_OPT', 'GGML_CUDA_DISABLE_GRAPHS')
+                         if key in env and (key != 'GGML_CUDA_GRAPH_OPT' or settings.cuda_graph_opt == 'default')]
+            if inherited:
+                changed.append('inherited CUDA execution environment')
+                notes.append('Inherited ' + ', '.join(inherited) + ' is preserved. Built-in evidence does not verify these inherited values; execution behavior and performance require revalidation.')
         # Includes device, metadata, speculative prerequisites and every launch flag.
         if settings.speculation != 'none' and '--spec-draft-n-max' not in p['flags']:
             raise ValueError('Binary cannot reproduce the measured draft length.')
@@ -104,8 +111,9 @@ def promotion_provenance(result, settings, use_context):
                 hardware=result.get('hardware'), options=result.get('options'),
                 measured_settings=result['settings'], template_identity=result.get('template_identity'),
                 batch_settings=result.get('batch_settings'),
+                execution_settings=result.get('execution_settings'),
                 samples=[{k: s.get(k) for k in ('workload', 'input_tokens', 'output_tokens',
-                    'context_per_slot', 'slots', 'prefill_tok_s', 'decode_tok_s', 'peak_total_gpu_used_mib', 'batch_settings')}
+                    'context_per_slot', 'slots', 'prefill_tok_s', 'decode_tok_s', 'peak_total_gpu_used_mib', 'batch_settings', 'execution_settings')}
                     for s in result['samples']],
                 context=dict(allocated_total=result['settings']['context'],
                     largest_observed_context=result.get('largest_observed_context'),
