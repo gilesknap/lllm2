@@ -1,0 +1,6 @@
+[project]
+name = "lllm2"
+version = "0.1.0"
+description = "Local NVIDIA LLM experimentation workbench"
+requires-python = ">=3.11"
+dependencies = []
