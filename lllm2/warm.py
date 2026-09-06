@@ -8,7 +8,7 @@ import time
 
 from .discovery import hardware
 from .engine import Cancelled
-from .settings import batch_settings, execution_settings
+from .settings import batch_settings, execution_settings, cache_settings
 
 
 def host_memory(process):
@@ -145,7 +145,7 @@ def run_conversation(bench, s, opts, result):
                 raise ValueError('Conversation turn exceeds its bounded context budget.')
             sample = dict(workload='warm-conversation', turn=turn, control=control, repetition=repetition,
                           status='running', input_tokens=len(prompt), output_budget=opts['output_tokens'],
-                          slots=1, context_per_slot=s.context, batch_settings=batches,
+                          slots=1, context_per_slot=s.context, batch_settings=batches, cache_settings=cache_settings(s),
                           prompt=dict(generator='token-conversation-v1', token_ids=list(prompt),
                                       token_sha256=hashlib.sha256(json.dumps(prompt).encode()).hexdigest(),
                                       initial_source_sha256=provenance['source_sha256']),

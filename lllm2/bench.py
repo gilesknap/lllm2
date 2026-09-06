@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from .discovery import hardware, identity, metadata, probe
 from .engine import Cancelled, GPUUnavailable
-from .settings import Settings, batch_settings, capabilities, launch_args, execution_settings, speculative_settings
+from .settings import Settings, batch_settings, capabilities, launch_args, execution_settings, speculative_settings, cache_settings
 from . import config
 from .source_workloads import TASKS, output_budget, source_prompt, adherence
 
@@ -78,7 +78,8 @@ def suite(s):
             skipped.append(dict(option=mode,reason=caps[mode]['reason']))
     if caps['cache']['status'] == 'available':
         for cache in ['f16','q8_0','q4_0']:
-            candidate('cache-' + cache,cache=cache)
+            if base.cache_pair() != (cache, cache):
+                candidate('cache-' + cache, cache=cache, cache_k=None, cache_v=None)
     if caps['flash']['status'] == 'available':
         candidate('flash-' + ('off' if base.flash == 'on' else 'on'),flash='off' if base.flash == 'on' else 'on')
     if caps['effort']['status'] == 'available':
@@ -169,6 +170,7 @@ class Bench:
                 r = dict(id=str(uuid.uuid4()),group=group,label=label,started=stamp(),status='running',
                          settings=s.dict(),options=opts,model=identity(s.model),engine={k:v for k,v in probe(s.engine).items() if k not in ['help','flags']},
                          batch_settings=batch_settings(s),
+                         cache_settings=cache_settings(s),
                          execution_settings=execution_settings(s),
                          hardware=hardware(),samples=[],probes=[],largest_observed_context=None,recommended_context=None,
                          note='Cold, uncached single-request coding probes; no quality or long-term stability claim. Context numbers are per slot.')
@@ -309,6 +311,7 @@ class Bench:
                     host_before=host_before, host_after=host_after,
                     peak_engine_rss_mib=max((h['rss_mib'] for h in host_points if h.get('rss_mib') is not None), default=None),
                     batch_settings=batches,
+                    cache_settings=cache_settings(s),
                     execution_settings=execution,
                     context_per_slot=s.context//s.slots,slots=s.slots,wall_seconds=elapsed,
                     prefill_tok_s=timings.get('prompt_per_second'),decode_tok_s=timings.get('predicted_per_second'),

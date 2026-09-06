@@ -24,6 +24,36 @@ EXECUTION_ENV_KEYS = ('GGML_CUDA_GRAPH_OPT', 'GGML_CUDA_DISABLE_GRAPHS', 'CUDA_V
 
 
 @functools.lru_cache(maxsize=32)
+def _library_digest(path, device, inode, size, mtime_ns, ctime_ns):
+    with open(path, 'rb') as handle:
+        digest = hashlib.file_digest(handle, 'sha256').hexdigest()
+    stat = Path(path).stat()
+    if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns) != (device, inode, size, mtime_ns, ctime_ns):
+        raise ValueError('CUDA library changed during fingerprinting; retry inspection.')
+    return digest
+
+
+def cache_kernel_support(binary, backend):
+    """Narrow compiled-library evidence; this does not observe runtime dispatch."""
+    out = dict(mixed_gpu_kernel='unknown', runtime_dispatch='unknown; not observed', library=None,
+               reason='Independent cache types need a runtime check for this engine/backend; advertised types alone do not prove attention-kernel support.')
+    if backend != 'CUDA':
+        return out
+    library = Path(binary).expanduser().resolve().with_name('libggml-cuda.so')
+    try:
+        stat = library.stat()
+        digest = _library_digest(str(library), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        out['library'] = dict(path=str(library), size=stat.st_size, sha256=digest)
+        if digest == 'b81f5da083d4c25345569268819bce5f7e14b45de19d055f634db3e22bbcef61':
+            out.update(mixed_gpu_kernel='unsupported',
+                       reason='This exact adjacent CUDA library rejects mixed K/V types in its flash-attention kernel selector. An explicit mixed-pair launch is experimental: it may fail or use another backend; runtime dispatch and performance remain unverified.',
+                       evidence='llama.cpp 662a0b0 fattn.cu; verified binary get_best_fattn_kernel type comparison at 0x216454 returns NONE for unequal types. Adjacent library identity does not prove which library a custom executable loads.')
+    except (OSError, ValueError) as error:
+        out['reason'] += ' CUDA library identity unavailable: ' + str(error)
+    return out
+
+
+@functools.lru_cache(maxsize=32)
 def _cuda_graph_marker(path, size, mtime_ns):
     # Adjacent shared library evidence, independent of command-line help.
     with open(path, 'rb') as handle:
