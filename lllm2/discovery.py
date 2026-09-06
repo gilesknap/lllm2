@@ -111,3 +111,13 @@ def engines():
     if shutil.which('llama-server'):
         paths.add(Path(shutil.which('llama-server')).resolve())
     return [{k:v for k,v in probe(p).items() if k != 'help'} for p in sorted(paths)]
+
+
+def batch_defaults(help_text):
+    """Read numeric advertised defaults only, without assuming a build's values."""
+    out = {}
+    for key, flag in [('batch_size', '--batch-size'), ('ubatch_size', '--ubatch-size')]:
+        block = re.search(r'(?m)^.*(?<!\S)' + re.escape(flag) + r'\s+[^\n]*(?:\n[ \t]{10,}[^\n]*)*', help_text)
+        match = re.search(r'\(default:\s*(\d+)\)', block[0]) if block else None
+        out[key] = int(match[1]) if match and int(match[1]) > 0 else None
+    return out

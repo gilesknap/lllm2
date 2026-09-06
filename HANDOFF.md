@@ -162,7 +162,7 @@ the panel reads HTML from disk on each request. The panel bind remains
 checks; do not automatically relaunch it. Physical touch hardware/screen readers
 and real launch/save mutations were not tested in this slice.
 
-Slice 2 is now complete; the next unfinished work is slice 3 (prefill tuning).
+Slices 1–3 are now complete; the next unfinished work is slice 4 (CUDA execution overhead).
 The user authorized sequential work and PR/merge per slice with subagents.
 RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains;
 new slice 2 baseline evidence is recorded below and in PERFORMANCE_PLAN.md.
@@ -260,3 +260,33 @@ do not hardcode a remembered PID. No benchmark engine left running.
 Next slice: 3, optional batch/microbatch controls and bounded comparisons. Keep
 missing values equivalent to the existing engine defaults. Existing baseline
 results above are frozen evidence; do not silently rerun or relabel them.
+
+## Slice 3 boundary — batch controls and measured tradeoff
+
+Nullable `batch_size` / `ubatch_size` are in Settings and Advanced UI. Blank values
+omit flags; legacy settings reset the fields to blank. Requested values,
+advertised engine defaults and actual startup observations are distinct in saved
+samples and promotion evidence. Existing verbosity does not expose effective
+batch sizes, so these remain unknown rather than copied from requested values.
+The actual installed defaults are logical2048/micro512, and all comparison argv
+matched the requested explicit settings. No shipped or user-saved defaults changed.
+
+Six short comparison records (12 cold samples) and two longer MoE records (four
+cold samples) completed. Exact IDs/configurations/metrics are in PERFORMANCE_PLAN.md
+slice3. Dense1024 only gained~1.4% prefill in the short screen: keep512. MoE1024
+improved median prefill~23.2% at65248+256 within a65536 window but lowered decode
+~6.3%, using242MiB more GPU memory. Long results:
+`9aa2ddf8-b287-4dc1-894a-98372824a005` (1024),
+`18d130e7-b748-4e7d-b15e-270dcc640930` (512).
+Keep2048/512 as the general baseline for slice4;1024 remains a qualified
+prefill-oriented MoE candidate for slice8. No context maximum or quality claim.
+
+Passed independent agent review, temporary Python/JS compatibility and provenance
+checks, and live narrow-browser Advanced/help/null/default-reset checks. Idle
+panel restart preserved environment/LAN binding; HTTP200 verified. GPU comparisons
+ended with no engine serving, and saved preferences were unchanged.
+
+PR6 merged slice1/CUDA selection; PR8 merged slice2. CodeRabbit reviewed PR6,
+then skipped PR8 because its included-review quota was exhausted (green check
+was not a review). Independent agent review and local runtime checks supplied
+review/validation. Continue to report automated-review skips explicitly.

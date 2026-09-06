@@ -87,6 +87,8 @@ def measured_defaults(selection):
         launch_args(settings, 1920)
         if changed:
             notes.append('Changed ' + ' and '.join(changed) + ': settings pass capability checks, but performance and runtime behavior need revalidation.')
+            if 'engine build' in changed and (settings.batch_size is None or settings.ubatch_size is None):
+                notes.append('Omitted batch controls use the selected engine defaults, which may differ from the measured build.')
         notes.extend(record['limitations'])
         notes.append(f"Tested starting allocation: {settings.context:,} total tokens / {settings.slots} slot(s). This is not a searched maximum or a headroom recommendation.")
         return dict(settings=settings.dict(), source='Measured built-in baseline' + (' · qualified' if changed else ''),
@@ -101,8 +103,9 @@ def promotion_provenance(result, settings, use_context):
                 started=result.get('started'), engine=result.get('engine'), model=result.get('model'),
                 hardware=result.get('hardware'), options=result.get('options'),
                 measured_settings=result['settings'], template_identity=result.get('template_identity'),
+                batch_settings=result.get('batch_settings'),
                 samples=[{k: s.get(k) for k in ('workload', 'input_tokens', 'output_tokens',
-                    'context_per_slot', 'slots', 'prefill_tok_s', 'decode_tok_s', 'peak_total_gpu_used_mib')}
+                    'context_per_slot', 'slots', 'prefill_tok_s', 'decode_tok_s', 'peak_total_gpu_used_mib', 'batch_settings')}
                     for s in result['samples']],
                 context=dict(allocated_total=result['settings']['context'],
                     largest_observed_context=result.get('largest_observed_context'),
