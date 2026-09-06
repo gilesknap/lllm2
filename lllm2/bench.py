@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from .discovery import hardware, identity, metadata, probe
 from .engine import Cancelled, GPUUnavailable
-from .settings import Settings, capabilities, launch_args
+from .settings import Settings, batch_settings, capabilities, launch_args
 from . import config
 
 WORKLOADS = {
@@ -153,6 +153,7 @@ class Bench:
                     raise Cancelled()
                 r = dict(id=str(uuid.uuid4()),group=group,label=label,started=stamp(),status='running',
                          settings=s.dict(),options=opts,model=identity(s.model),engine={k:v for k,v in probe(s.engine).items() if k not in ['help','flags']},
+                         batch_settings=batch_settings(s),
                          hardware=hardware(),samples=[],probes=[],largest_observed_context=None,recommended_context=None,
                          note='Cold, uncached single-request coding probes; no quality or long-term stability claim. Context numbers are per slot.')
                 if s.drafter and s.speculation == 'draft-dflash':
@@ -231,6 +232,8 @@ class Bench:
                            formatted_sha256=hashlib.sha256(formatted.encode()).hexdigest(),token_ids=actual)
 
     def measure(self,s,workload,tokens,output,timeout):
+        with self.engine.log_lock:
+            batches = batch_settings(s, list(self.engine.lines))
         prompt, provenance = self.prompt(s,workload,tokens,timeout)
         memory = []
         finished = threading.Event()
@@ -257,6 +260,7 @@ class Bench:
         if timings.get('prompt_n',0) < tokens - 1:
             raise RuntimeError('Prompt cache reuse or incomplete timing detected; cannot report cold prefill.')
         return dict(workload=workload,input_tokens=evaluated,output_tokens=predicted,output_budget=output,
+                    batch_settings=batches,
                     context_per_slot=s.context//s.slots,slots=s.slots,wall_seconds=elapsed,
                     prefill_tok_s=timings.get('prompt_per_second'),decode_tok_s=timings.get('predicted_per_second'),
                     timings=timings,memory=memory,peak_total_gpu_used_mib=max((sum(g['used_mib'] for g in m['gpus']) for m in memory),default=None),

@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: slices 1–2 complete; slices 3–8 not started.
+Status: slices 1–3 complete; slices 4–8 not started.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -75,7 +75,7 @@ execute the whole roadmap or launch an exhaustive GPU sweep in one session.
 |---|---|---|---|
 | 1 | Launch-setting tooltips and clearer feature availability | Existing panel | Complete (6 September 2026) |
 | 2 | Baselines and portable, evidence-backed defaults | 1 | Complete (6 September 2026) |
-| 3 | Prefill batch/microbatch controls and bounded comparisons | 2 | Not started |
+| 3 | Prefill batch/microbatch controls and bounded comparisons | 2 | Complete (6 September 2026) |
 | 4 | Target GPU sampling and concurrent-stream experiments | 2; use stable batch choice from 3 | Not started |
 | 5 | Warm conversation/prefix-reuse measurements and controls | 2 | Not started |
 | 6 | Prompt lookup combined with MTP for copying/editing | 2; stable settings from 3/4 | Not started |
@@ -199,6 +199,43 @@ only finalists at longer context. Avoid a Cartesian product of all batch values.
 
 Done when results identify whether a change helps each model without silently
 trading away context or decode speed. Promote only a measured compatible choice.
+
+Slice 3 completion — 6 September 2026:
+- Added nullable logical/physical batch controls in Advanced; omitted/blank fields
+  preserve engine defaults and older settings. Validate bounds, supported flags
+  and microbatch <= logical batch where explicit/default values are known.
+  Records distinguish requested, advertised-default and startup-observed values.
+- Independent review and temporary compatibility/UI checks passed; live Advanced
+  controls, help, narrow layout, null serialization and old-setting reset passed.
+  Restarted idle panel, preserved LAN binding/environment, verified HTTP 200.
+- CUDA screen: both exact checkpoints, context16384, one slot, logical2048,
+  microbatch512/256/1024, long-code4096+256 twice each; MTP3, q8_0 caches,
+  flash on and default effort held fixed. Actual argv matched every request.
+  Runtime effective batch sizes were not logged at existing verbosity and remain
+  explicitly unknown; installed advertised defaults are2048/512.
+
+| Model / microbatch | Result ID | Prefill tok/s (two samples) | Decode tok/s (two samples) | Peak total GPU MiB |
+|---|---|---|---|---|
+| Dense /512 | `85a890c7-5bc8-4a1e-b331-c83b38a93735` |1057.9 /1059.7|54.7 /54.9|17172|
+| Dense /256 | `09344445-bfc7-42f2-afce-70bd72cc083a` |1011.7 /1004.7|55.9 /56.0|17068|
+| Dense /1024 | `7f304562-1ee1-42d9-afac-e317cb440d66` |1073.5 /1073.8|55.7 /55.7|17400|
+| MTP MoE /512 | `a4063b75-d0b7-4367-bc86-60fd5e2b51c6` |2264.8 /2364.1|169.7 /173.0|19052|
+| MTP MoE /256 | `0fb97db6-16f4-49f6-afd9-e74ccebc2293` |1717.7 /1718.6|174.5 /174.1|18992|
+| MTP MoE /1024 | `b396a885-e628-4899-8e0d-50933845fc5e` |2914.0 /2903.5|177.7 /178.2|19204|
+
+Promising MoE1024 was checked against512 in reversed order at context65536,
+long-code65248+256, twice each:1024 result`9aa2ddf8-b287-4dc1-894a-98372824a005`
+(2455.7/2445.6 prefill,110.0/110.0 decode,20148MiB peak);512
+result`18d130e7-b748-4e7d-b15e-270dcc640930` (1992.3/1985.0 prefill,
+116.8/117.9 decode,19906MiB peak). All16 samples completed.
+
+Decision: preserve general2048/512 and shipped baseline defaults. Dense1024's
+~1.4% prefill difference is insufficient to promote. MoE1024 is a prefill-oriented
+candidate:~23.2% higher median prefill at the longer window, but~6.3% lower median
+decode and242MiB extra peak GPU use. Do not hide that tradeoff or promote it as an
+unqualified general win. Both long-window settings executed successfully; neither
+is a searched maximum or quality/stability guarantee. Keep512 for controlled
+slice4 general comparisons; revisit1024 as a qualified alternative in slice8.
 
 ### Slice 4: CUDA execution overhead
 
