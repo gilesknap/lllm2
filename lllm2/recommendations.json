@@ -1,0 +1,346 @@
+[
+  {
+    "id": "qwen38-dense-3090-cuda-baseline-20260906",
+    "model": {
+      "file": "Qwen3.8-27B-UD-Q4_K_S.gguf",
+      "size": 15358213024,
+      "sha256": "75bc9c8adba2842e72f0ab5201aaa07133c5010b566305c09187fcbdcd364017",
+      "architecture": "qwen35",
+      "mtp": true,
+      "context_metadata": 262144
+    },
+    "backend": "CUDA",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "total_mib": 24576,
+      "driver": "595.84"
+    },
+    "engine": {
+      "build": "b10715-cuda-sm86",
+      "version": "version: 0.3.0-dev (build 1, commit 662a0b0)\nbuilt with GNU 15.2.0 for Linux x86_64",
+      "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026"
+    },
+    "template": {
+      "resource": "qwen3.8-27b.jinja",
+      "sha256": "7ee117933b2be2d181ea5d85bcdff5bba7b70aa3a3ad21b46f2004d552a571cd",
+      "source": "bundled override"
+    },
+    "settings": {
+      "context": 16384,
+      "slots": 1,
+      "gpu_layers": 999,
+      "flash": "on",
+      "cache": "q8_0",
+      "speculation": "draft-mtp",
+      "drafter": "",
+      "pair_confirmed": false,
+      "draft_length": 3,
+      "effort": "default",
+      "draft_cache": "q8_0"
+    },
+    "date": "2026-09-06",
+    "context": {
+      "allocated_total": 16384,
+      "slots": 1,
+      "largest_successful_occupied_tokens": 16352,
+      "searched_maximum": null,
+      "headroom_estimate": null
+    },
+    "runs": [
+      {
+        "result_id": "685605f4-33a5-4560-8a58-0df38ce8dfe1",
+        "started": "2026-09-06T18:49:55.652968+00:00",
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "generate",
+            "edit",
+            "long-code"
+          ],
+          "prompt_tokens": 1024,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 180,
+          "context_timeout": 900,
+          "repeats": 2
+        },
+        "sampling": {
+          "temperature": 0,
+          "seed": 42,
+          "ignore_eos": true,
+          "cache_prompt": false
+        },
+        "samples": [
+          {
+            "workload": "generate",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 1040.8661958373484,
+            "decode_tok_s": 65.15720004946837,
+            "peak_total_gpu_used_mib": 17225
+          },
+          {
+            "workload": "generate",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 2,
+            "prefill_tok_s": 1080.833466150597,
+            "decode_tok_s": 65.30506042510777,
+            "peak_total_gpu_used_mib": 17223
+          },
+          {
+            "workload": "edit",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 1077.9571448873355,
+            "decode_tok_s": 79.84814448568714,
+            "peak_total_gpu_used_mib": 17223
+          },
+          {
+            "workload": "edit",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 2,
+            "prefill_tok_s": 1075.0960919627119,
+            "decode_tok_s": 79.79307621396559,
+            "peak_total_gpu_used_mib": 17223
+          },
+          {
+            "workload": "long-code",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 1072.6803810529448,
+            "decode_tok_s": 71.37059531473034,
+            "peak_total_gpu_used_mib": 17223
+          },
+          {
+            "workload": "long-code",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 2,
+            "prefill_tok_s": 1071.6251656100414,
+            "decode_tok_s": 71.26938317606556,
+            "peak_total_gpu_used_mib": 17223
+          }
+        ]
+      },
+      {
+        "result_id": "a2b4390a-ba5e-4460-ac29-5cf5977dbd6a",
+        "started": "2026-09-06T18:50:50.061060+00:00",
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "long-code"
+          ],
+          "prompt_tokens": 16096,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 180,
+          "context_timeout": 900,
+          "repeats": 1
+        },
+        "sampling": {
+          "temperature": 0,
+          "seed": 42,
+          "ignore_eos": true,
+          "cache_prompt": false
+        },
+        "samples": [
+          {
+            "workload": "long-code",
+            "input_tokens": 16096,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 1030.9801331358142,
+            "decode_tok_s": 48.702377669176784,
+            "peak_total_gpu_used_mib": 17291
+          }
+        ]
+      }
+    ],
+    "limitations": [
+      "Cold uncached single-request synthetic coding workloads; no measured gain, quality or long-term stability claim.",
+      "Short workloads repeated twice; occupied-context workload run once. No context search was performed.",
+      "Peak GPU memory includes desktop usage; timings depend on this engine, template, GPU and driver."
+    ]
+  },
+  {
+    "id": "qwen36-moe-mtp-3090-cuda-baseline-20260906",
+    "model": {
+      "file": "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+      "size": 18209036576,
+      "sha256": "df27a780435b7b45c2597536112ea3cb091f8544c3d0c3318d9f4258b31f7adf",
+      "architecture": "qwen35moe",
+      "mtp": true,
+      "context_metadata": 262144
+    },
+    "backend": "CUDA",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "total_mib": 24576,
+      "driver": "595.84"
+    },
+    "engine": {
+      "build": "b10715-cuda-sm86",
+      "version": "version: 0.3.0-dev (build 1, commit 662a0b0)\nbuilt with GNU 15.2.0 for Linux x86_64",
+      "sha256": "3249d801c257fdda15bb89b7d74dc8213a48509e0eafe39bf1c9b1e64249e026"
+    },
+    "template": {
+      "resource": null,
+      "sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c",
+      "source": "GGUF embedded"
+    },
+    "settings": {
+      "context": 16384,
+      "slots": 1,
+      "gpu_layers": 999,
+      "flash": "on",
+      "cache": "q8_0",
+      "speculation": "draft-mtp",
+      "drafter": "",
+      "pair_confirmed": false,
+      "draft_length": 3,
+      "effort": "default",
+      "draft_cache": "q8_0"
+    },
+    "date": "2026-09-06",
+    "context": {
+      "allocated_total": 16384,
+      "slots": 1,
+      "largest_successful_occupied_tokens": 16352,
+      "searched_maximum": null,
+      "headroom_estimate": null
+    },
+    "runs": [
+      {
+        "result_id": "5687730a-2582-4ad6-ac79-c71472898ee2",
+        "started": "2026-09-06T18:51:17.356127+00:00",
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "generate",
+            "edit",
+            "long-code"
+          ],
+          "prompt_tokens": 1024,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 180,
+          "context_timeout": 900,
+          "repeats": 2
+        },
+        "sampling": {
+          "temperature": 0,
+          "seed": 42,
+          "ignore_eos": true,
+          "cache_prompt": false
+        },
+        "samples": [
+          {
+            "workload": "generate",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 1647.6214074934596,
+            "decode_tok_s": 169.52758313499714,
+            "peak_total_gpu_used_mib": 19119
+          },
+          {
+            "workload": "generate",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 2,
+            "prefill_tok_s": 1849.52723266294,
+            "decode_tok_s": 171.61016093668192,
+            "peak_total_gpu_used_mib": 19119
+          },
+          {
+            "workload": "edit",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 1885.7153380107914,
+            "decode_tok_s": 175.15973881278788,
+            "peak_total_gpu_used_mib": 19119
+          },
+          {
+            "workload": "edit",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 2,
+            "prefill_tok_s": 1834.5829638189425,
+            "decode_tok_s": 175.19993404237778,
+            "peak_total_gpu_used_mib": 19119
+          },
+          {
+            "workload": "long-code",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 1859.9041713436716,
+            "decode_tok_s": 180.03782912503735,
+            "peak_total_gpu_used_mib": 19119
+          },
+          {
+            "workload": "long-code",
+            "input_tokens": 1024,
+            "output_tokens": 256,
+            "repetition": 2,
+            "prefill_tok_s": 1852.2739194767328,
+            "decode_tok_s": 165.81084428931197,
+            "peak_total_gpu_used_mib": 19119
+          }
+        ]
+      },
+      {
+        "result_id": "1af11620-f398-4cc1-a132-28c7e37c6659",
+        "started": "2026-09-06T18:52:20.892276+00:00",
+        "options": {
+          "sweep_prompts": false,
+          "full_window": false,
+          "workloads": [
+            "long-code"
+          ],
+          "prompt_tokens": 16096,
+          "output_tokens": 256,
+          "search_context": false,
+          "max_context": 262144,
+          "timeout": 180,
+          "context_timeout": 900,
+          "repeats": 1
+        },
+        "sampling": {
+          "temperature": 0,
+          "seed": 42,
+          "ignore_eos": true,
+          "cache_prompt": false
+        },
+        "samples": [
+          {
+            "workload": "long-code",
+            "input_tokens": 16096,
+            "output_tokens": 256,
+            "repetition": 1,
+            "prefill_tok_s": 2399.8953922336486,
+            "decode_tok_s": 154.09987242947815,
+            "peak_total_gpu_used_mib": 19125
+          }
+        ]
+      }
+    ],
+    "limitations": [
+      "Cold uncached single-request synthetic coding workloads; no measured gain, quality or long-term stability claim.",
+      "Short workloads repeated twice; occupied-context workload run once. No context search was performed.",
+      "Peak GPU memory includes desktop usage; timings depend on this engine, template, GPU and driver."
+    ]
+  }
+]
