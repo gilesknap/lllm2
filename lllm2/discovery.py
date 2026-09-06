@@ -12,9 +12,17 @@ from . import config, gguf
 CATALOG = json.loads(Path(__file__).with_name('models.json').read_text())
 
 
-def command(args, timeout=10):
+def engine_environment(binary):
+    env = {k:v for k,v in os.environ.items() if not k.startswith('LLAMA_ARG_')}
+    directory = str(Path(binary).expanduser().resolve().parent)
+    existing = env.get('LD_LIBRARY_PATH')
+    env['LD_LIBRARY_PATH'] = directory + (os.pathsep + existing if existing else '')
+    return env
+
+
+def command(args, timeout=10, env=None):
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
         return r.returncode, r.stdout + r.stderr
     except (OSError, subprocess.TimeoutExpired) as e:
         return -1, str(e)
@@ -68,9 +76,10 @@ def models():
 
 @functools.lru_cache(maxsize=32)
 def _probe(path, size, mtime_ns):
-    rc, help_text = command([path, '--help'], 15)
-    _, version = command([path, '--version'])
-    _, devices = command([path, '--list-devices']) if '--list-devices' in help_text else (1, '')
+    env = engine_environment(path)
+    rc, help_text = command([path, '--help'], 15, env=env)
+    _, version = command([path, '--version'], env=env)
+    _, devices = command([path, '--list-devices'], env=env) if '--list-devices' in help_text else (1, '')
     flags = sorted(set(re.findall(r'--[a-z][a-z0-9-]+', help_text))) if rc == 0 else []
     available = []
     for line in devices.splitlines():
@@ -92,6 +101,7 @@ def probe(path):
 
 
 def engines():
+    _probe.cache_clear()
     paths = set()
     for root in config.ENGINE_ROOTS:
         if root.is_file():

@@ -9,7 +9,7 @@ import time
 import urllib.request
 import urllib.error
 from . import config
-from .discovery import command, hardware
+from .discovery import command, hardware, engine_environment
 from .settings import launch_args
 
 
@@ -106,7 +106,7 @@ class Engine:
             self.log('Launching: ' + ' '.join(argv))
             p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, errors='replace', start_new_session=True,
-                                 env={k:v for k,v in os.environ.items() if not k.startswith('LLAMA_ARG_')})
+                                 env=engine_environment(argv[0]))
             self.process = p
             threading.Thread(target=self._logs,args=(p,),daemon=True).start()
         deadline = time.monotonic() + timeout
