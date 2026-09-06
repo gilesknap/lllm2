@@ -125,7 +125,7 @@ class App:
 def main():
     parser = argparse.ArgumentParser(description='lllm2 local LLM workbench')
     parser.add_argument('--port',type=int,default=8082)
-    parser.add_argument('--host',default='0.0.0.0',help='IPv4 bind address (default: all interfaces; use 127.0.0.1 for localhost only)')
+    parser.add_argument('--host',default='127.0.0.1',help='IPv4 bind address (default: localhost; use 0.0.0.0 for trusted-LAN access without authentication or TLS)')
     args = parser.parse_args()
     config.STATE_DIR.mkdir(parents=True,exist_ok=True)
     lock = (config.STATE_DIR/'panel.lock').open('w')
@@ -206,6 +206,7 @@ def main():
     print(f'lllm2: http://127.0.0.1:{args.port}',flush=True)
     if args.host != '127.0.0.1':
         print(f'LAN panel: http://{socket.gethostname() if args.host == "0.0.0.0" else args.host}:{args.port} (listening on {args.host})',flush=True)
+        print('LAN access has no login or TLS: anyone who can reach this port can control the workbench. Use only on a trusted network.',flush=True)
     try:
         server.serve_forever()
     finally:
