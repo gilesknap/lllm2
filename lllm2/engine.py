@@ -1,4 +1,7 @@
 import collections
+import csv
+import shlex
+from pathlib import Path
 import json
 import os
 import signal
@@ -23,6 +26,43 @@ class GPUUnavailable(RuntimeError):
 
 class ResourceConflict(GPUUnavailable):
     pass
+
+
+def gpu_processes(output):
+    """Separate normal browser GPU helpers from competing compute workloads.
+
+    nvidia-smi can classify Chrome's Wayland GPU helper as compute. Prefer
+    /proc identity, since some drivers report only the executable, not argv.
+    This is a coexistence check, not a security boundary or memory guarantee.
+    """
+    desktop, competing = [], []
+    browsers = {'chrome', 'chromium', 'chromium-browser', 'google-chrome',
+                'google-chrome-stable', 'brave', 'brave-browser', 'msedge'}
+    for row in csv.reader(output.splitlines()):
+        if not row:
+            continue
+        if len(row) < 2 or not row[0].strip().isdigit():
+            competing.append('Unrecognised GPU process record')
+            continue
+        pid, reported = row[0].strip(), ','.join(row[1:]).strip()
+        try:
+            argv = shlex.split(reported)
+        except ValueError:
+            argv = [reported]
+        executable = argv[0] if argv else reported
+        try:
+            proc = Path('/proc') / pid
+            executable = str((proc / 'exe').readlink())
+            argv = (proc / 'cmdline').read_bytes().decode('utf-8', 'replace').split('\0')
+        except OSError:
+            pass
+        name = Path(executable).name
+        summary = f'{pid}, {name}'
+        if name in browsers and '--type=gpu-process' in argv:
+            desktop.append(summary)
+        else:
+            competing.append(summary)
+    return desktop, competing
 
 
 class Engine:
@@ -96,8 +136,11 @@ class Engine:
         rc, processes = command(['nvidia-smi','--query-compute-apps=pid,process_name','--format=csv,noheader'],4)
         if rc != 0:
             raise GPUUnavailable('Cannot check GPU ownership: ' + processes[:300])
-        if processes.strip():
-            raise ResourceConflict('Other GPU compute processes detected; stop the old model/server first: ' + processes[:500])
+        desktop, competing = gpu_processes(processes)
+        if competing:
+            raise ResourceConflict('Other GPU compute processes detected; stop the old model/server first: ' + '; '.join(competing)[:500])
+        if desktop:
+            self.log('Allowing desktop browser GPU processes: ' + '; '.join(desktop) + '. Their VRAM and activity remain part of this workstation benchmark.')
         with self.guard:
             if cancel.is_set():
                 raise Cancelled()
