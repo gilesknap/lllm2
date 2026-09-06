@@ -27,6 +27,28 @@ class App:
         return str(Path(s.model).expanduser().resolve()) + '|' + s.backend
 
     def action(self,path,data):
+        if path == '/api/files':
+            requested = data.get('directory')
+            directory = Path(requested).expanduser() if requested else config.MODELS_DIR
+            if not requested and not directory.is_dir():
+                directory = Path.home()
+            directory = directory.resolve(strict=True)
+            if not directory.is_dir():
+                raise ValueError('Choose a directory.')
+            entries = []
+            for child in directory.iterdir():
+                if child.name.startswith('.'):
+                    continue
+                try:
+                    is_dir = child.is_dir()
+                    if is_dir or (child.is_file() and child.suffix.lower() == '.gguf'):
+                        entries.append(dict(name=child.name, path=str(child), directory=is_dir,
+                                            size=None if is_dir else child.stat().st_size))
+                except OSError:
+                    continue
+            entries.sort(key=lambda e: (not e['directory'], e['name'].casefold()))
+            return dict(directory=str(directory), parent=str(directory.parent), entries=entries,
+                        home=str(Path.home()), models=str(config.MODELS_DIR))
         if path == '/api/discover':
             return dict(models=models(),engines=engines(),catalog=CATALOG)
         if path == '/api/capabilities':

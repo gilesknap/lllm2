@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>lllm2 · workbench</title>
 <style>
 :root{color-scheme:light dark;--bg:#eef1f3;--card:#fff;--ink:#101820;--dim:#5a6772;--rule:#d6dde3;--accent:#087660;--wash:#ddede9;--bad:#b44328}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif}main{max-width:1350px;margin:auto;padding:28px}header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:26px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--dim)}h2{font-size:16px;margin:0 0 14px}h3{font-size:14px;margin:20px 0 10px}.muted,small{color:var(--dim)}.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:18px}.card{background:var(--card);border:1px solid var(--rule);border-radius:9px;padding:20px;margin-bottom:18px}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.between{justify-content:space-between}.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;font-size:12px;color:var(--dim)}input,select,button{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--rule);border-radius:5px;padding:8px;max-width:100%}label input:not([type=checkbox]),label select{display:block;width:100%;margin-top:4px}input[type=checkbox]{accent-color:var(--accent)}button{cursor:pointer;padding:8px 12px;font-size:12px;font-weight:600}button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:white;border-color:var(--accent)}button:disabled{opacity:.45;cursor:default}.wide{grid-column:1/-1}.pill{background:var(--wash);color:var(--accent);border-radius:20px;padding:4px 9px;font-size:12px}.feature{padding:9px 0;border-bottom:1px solid var(--rule);font-size:12px}.feature b{display:block}.feature small{display:block;margin-top:3px}.error{color:var(--bad);white-space:pre-wrap}#message{position:sticky;top:0;z-index:2;background:var(--card);border-left:4px solid var(--accent);padding:12px 18px;display:none;margin-bottom:15px}pre{font:11px/1.6 ui-monospace,monospace;background:var(--bg);padding:12px;max-height:270px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;border-bottom:1px solid var(--rule);padding:10px 8px;vertical-align:top}th{color:var(--dim);font-weight:500}td small{display:block}summary{cursor:pointer}details{margin-top:12px}.scroll{overflow:auto}.download{border-bottom:1px solid var(--rule);padding:10px 0}.download button{float:right}.progress{height:5px;background:var(--rule);border-radius:3px;margin:12px 0}.progress div{height:100%;background:var(--accent);border-radius:3px}.check{display:flex;gap:8px;align-items:center}.check input{margin:0}.context-note{font-size:12px;padding:10px;background:var(--bg);border-radius:5px}a{color:var(--accent)}@media(prefers-color-scheme:dark){:root{--bg:#0c1216;--card:#141d23;--ink:#e4eaee;--dim:#a0afba;--rule:#29373d;--accent:#4aaf98;--wash:#17352e;--bad:#ff9f86}}@media(max-width:850px){main{padding:16px}.grid{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+dialog{width:min(700px,calc(100vw - 32px));max-height:85vh;background:var(--card);color:var(--ink);border:1px solid var(--rule);border-radius:9px;padding:20px}dialog::backdrop{background:#0008}#file-list{height:320px;overflow:auto;border:1px solid var(--rule);border-radius:5px;margin:12px 0}#file-list button{display:flex;justify-content:space-between;gap:10px;text-align:left;width:100%;border:0;border-bottom:1px solid var(--rule);border-radius:0;overflow-wrap:anywhere}#file-list button[aria-pressed=true]{background:var(--wash);color:var(--accent)}#file-list small{white-space:nowrap}#file-error{min-height:1.5em}#file-selected{overflow-wrap:anywhere}
 </style></head><body><main>
 <header><div><h1>lllm2 <span>/ workbench</span></h1><div class="muted">Explore local models. Measure the tradeoffs.</div></div><div><span class="pill" id="gpu">Detecting NVIDIA GPU…</span><div class="muted" id="endpoint" style="font-size:12px;margin-top:8px"></div></div></header>
 <div id="message" role="status"></div>
@@ -18,7 +19,7 @@
 <label>GPU layers<input id="gpu_layers" type="number" min="0" max="999" value="999"></label><label>Flash attention<select id="flash"><option>on</option><option>auto</option><option>off</option></select></label>
 <label>KV cache (K and V)<select id="cache"><option>f16</option><option>q8_0</option><option>q4_0</option></select></label><label>Reasoning effort<select id="effort"><option>default</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
 <label>Speculation · choose one<select id="speculation"><option value="none">Off</option><option value="draft-mtp">MTP</option><option value="draft-dflash">DFlash · experimental</option><option value="ngram-simple">Prompt lookup (ngram)</option></select></label><label>Draft length<input id="draft_length" type="number" min="1" max="256" value="15"></label>
-<label>Draft KV cache<select id="draft_cache"><option>default</option><option>f16</option><option>q8_0</option><option>q4_0</option></select></label><label class="wide">Chat template override (optional)<input id="chat_template" placeholder="Use checkpoint template"></label><label class="wide">DFlash drafter GGUF<input id="drafter" placeholder="/path/to/target-specific-dflash.gguf"></label><label class="check wide"><input id="pair_confirmed" type="checkbox">I verified this ordinary DFlash drafter was trained and converted for this exact target.</label></div>
+<label>Draft KV cache<select id="draft_cache"><option>default</option><option>f16</option><option>q8_0</option><option>q4_0</option></select></label><label class="wide">Chat template override (optional)<input id="chat_template" placeholder="Use checkpoint template"></label><div class="wide"><label for="drafter">DFlash drafter GGUF</label><div class="row"><input id="drafter" style="flex:1;min-width:0" placeholder="/path/to/target-specific-dflash.gguf"><button id="browse-drafter" type="button">Browse…</button></div></div><label class="check wide"><input id="pair_confirmed" type="checkbox">I verified this ordinary DFlash drafter was trained and converted for this exact target.</label></div>
 <p class="muted" id="default-source" style="font-size:12px"></p><p class="context-note" id="slot-note"></p><div class="row"><button id="start" class="primary">Start model</button><button id="stop">Stop</button><button id="save-default">Save settings as defaults</button></div>
 <details open><summary>Feature availability · support details</summary><p class="muted" style="font-size:12px">Choose features using the Launch settings controls above. These details explain support. After changing settings, stop and start the model to apply them.</p><div id="features" class="muted">Select a model and engine to inspect capabilities.</div></details>
 </section></div><div>
@@ -33,7 +34,15 @@
 <section class="card"><div class="row between"><h2>Queue & engine</h2><button id="cancel">Cancel operation</button></div><div id="job">Idle</div><div class="progress"><div id="bar" style="width:0"></div></div><div id="job-detail" class="muted" style="font-size:12px"></div><details><summary>Engine logs & exact command</summary><pre id="logs">No engine started.</pre></details></section>
 </div></div>
 <section class="card"><div class="row between"><h2>Saved comparisons</h2><button id="export">Export full results JSON</button></div><p class="muted" style="font-size:12px">Rows stay separate by coding workload. Compare identical budgets and engine builds. VRAM is sampled total device use, including the desktop. Output is forced to the same token budget, ignoring early end-of-sequence. No answer-quality grading.</p><div class="scroll"><table><thead><tr><th>Run / workload</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>Input / output</th><th>Peak GPU MiB</th><th>Observed / recommended context</th><th>Settings</th></tr></thead><tbody id="results"><tr><td colspan="7">No experiments yet.</td></tr></tbody></table></div></section>
-</main><script>
+</main>
+<dialog id="file-dialog" aria-labelledby="file-title"><div class="row between"><h2 id="file-title">Select a DFlash drafter</h2><button id="file-close" type="button" aria-label="Close file picker">Close</button></div>
+<p class="muted">Choose a local GGUF on the workstation running lllm2.</p>
+<div class="row"><button id="file-up">Up</button><button id="file-models">Models</button><button id="file-home">Home</button></div>
+<label style="margin-top:12px" for="file-directory">Folder</label><div class="row"><input id="file-directory" style="flex:1;min-width:0"><button id="file-go">Go</button></div>
+<label style="margin-top:12px">Filter this folder<input id="file-filter" type="search" placeholder="Filter GGUF files and folders"></label>
+<p id="file-error" class="error" role="status"></p><div id="file-list" aria-label="Folders and GGUF files"></div>
+<p id="file-selected" class="muted">No file selected.</p><div class="row"><button id="file-use" class="primary" disabled>Use selected file</button><button id="file-cancel">Cancel</button></div></dialog>
+<script>
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const settingKeys=['model','engine','backend','device','context','slots','gpu_layers','flash','cache','speculation','drafter','pair_confirmed','draft_length','effort','draft_cache','chat_template'];
 let token='', discovered={}, combinations=[], results=[], lastResults='', lastActive=false, capSequence=0, defaultSequence=0, statusState={};
@@ -75,6 +84,53 @@ document.querySelectorAll('.run').forEach(b=>b.onclick=()=>attempt(async()=>{con
 $('add-combo').onclick=()=>{combinations.push(settings());$('combos').textContent=combinations.map((s,i)=>`${i+1}. ${s.speculation} / ${s.cache} / flash ${s.flash} / effort ${s.effort} / draft ${s.draft_length}`).join('\n');};$('clear-combos').onclick=()=>{combinations=[];$('combos').textContent='No combinations selected.';};
 $('catalog').onclick=e=>{const b=e.target.closest('[data-download]');if(b)attempt(async()=>{await api(b.dataset.active==='true'?'/api/download/cancel':'/api/download',{id:b.dataset.download});await poll();});};
 $('results').onclick=e=>{const b=e.target.closest('[data-promote],[data-context]');if(b)attempt(async()=>{const s=await api('/api/default/save',{result_id:b.dataset.promote||b.dataset.context,use_context:!!b.dataset.context});fill(s);message('Measured configuration saved as defaults for this model and backend.');});};
+let fileListing=null, selectedFile='', fileRequest=0;
+function renderFiles(){
+ const filter=$('file-filter').value.toLowerCase();
+ const entries=(fileListing?.entries||[]).filter(e=>e.name.toLowerCase().includes(filter));
+ $('file-list').replaceChildren();
+ for(const entry of entries){
+  const button=document.createElement('button');
+  button.type='button';button.setAttribute('aria-pressed',String(selectedFile===entry.path));
+  const name=document.createElement('span');name.textContent=(entry.directory?'📁 ':'')+entry.name;
+  const detail=document.createElement('small');detail.textContent=entry.directory?'Folder':(entry.size/2**30).toFixed(2)+' GiB';
+  button.append(name,detail);
+  button.onclick=()=>{if(entry.directory){openFolder(entry.path);}else{selectedFile=entry.path;$('file-selected').textContent=entry.path;$('file-use').disabled=false;renderFiles();}};
+  button.ondblclick=()=>{if(!entry.directory)useFile(entry.path);};
+  $('file-list').append(button);
+ }
+ if(!entries.length)$('file-list').textContent='No matching folders or GGUF files.';
+}
+async function openFolder(directory){
+ const request=++fileRequest;selectedFile='';fileListing=null;
+ $('file-use').disabled=true;$('file-selected').textContent='No file selected.';
+ $('file-list').textContent='Loading…';$('file-error').textContent='';
+ try{
+  const listing=await api('/api/files',{directory});
+  if(request!==fileRequest||!$('file-dialog').open)return;
+  fileListing=listing;$('file-directory').value=listing.directory;$('file-filter').value='';
+  $('file-up').disabled=listing.parent===listing.directory;renderFiles();
+ }catch(e){if(request===fileRequest){$('file-error').textContent=e.message;$('file-list').replaceChildren();}}
+}
+function closeFiles(){fileRequest++;$('file-dialog').close();}
+function useFile(path){
+ $('drafter').value=path;$('pair_confirmed').checked=false;defaultSequence++;
+ closeFiles();attempt(inspect);
+}
+$('browse-drafter').onclick=()=>{
+ $('file-dialog').showModal();
+ const current=$('drafter').value.trim(), slash=current.lastIndexOf('/');
+ openFolder(slash>=0?(current.slice(0,slash)||'/'):null);
+};
+$('file-up').onclick=()=>{if(fileListing)openFolder(fileListing.parent);};
+$('file-home').onclick=()=>openFolder(fileListing?.home||'~');
+$('file-models').onclick=()=>openFolder(null);
+$('file-go').onclick=()=>openFolder($('file-directory').value);
+$('file-directory').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();openFolder(e.target.value);}};
+$('file-filter').oninput=renderFiles;
+$('file-use').onclick=()=>{if(selectedFile)useFile(selectedFile);};
+for(const id of ['file-close','file-cancel'])$(id).onclick=closeFiles;
+$('file-dialog').addEventListener('cancel',()=>{fileRequest++;});
 $('export').onclick=()=>attempt(async()=>{const full=await api('/api/results/export');const url=URL.createObjectURL(new Blob([JSON.stringify(full,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='lllm2-results.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 (async()=>{await poll();await attempt(scan);slotNote();setInterval(poll,2500);})();
 </script></body></html>
