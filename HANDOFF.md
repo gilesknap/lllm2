@@ -121,10 +121,106 @@ cannot establish vLLM's benefit for concurrency. Benchmark 1/2/4/8 requests,
 shared-prefix and independent prompts, per-request latency, aggregate throughput
 and usable context before adding another backend. It is not implemented yet.
 
+## Preference for future documentation
+
+When documentation work begins, record experiments in docs: what was tried,
+exact configurations, results, caveats, decisions, and links to raw benchmark
+data in the existing database. Keep a small experiment log for interpretations.
+Skills should contain reusable working procedures (such as running fair
+comparisons and finding previous results), link to the experiment docs, and avoid
+duplicating findings. Promote a finding into a skill only when it becomes a
+reusable procedure. This is a reminder for the docs phase, not a request to start
+documentation infrastructure now.
+
+## Current work plan — Qwen performance and UI clarity
+
+The user requested saving the research and planning small implementation slices
+before continuing in fresh contexts. Read [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md)
+for the current order and status, and [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md)
+for the dated, source-linked research. These root Markdown artifacts are explicitly
+authorized; general documentation infrastructure remains deferred.
+
+Prioritize Qwen3.8-27B dense and Qwen3.6-35B-A3B MoE on the RTX 3090. Keep the
+normal UI understandable to a novice and ship portable defaults backed by actual
+measurements, distinguishing inherited estimates and user-saved preferences.
+Slice 1 is complete (6 September 2026). `lllm2/static/index.html` now supplies
+shared concise help for all launch settings and feature rows, reuses the existing
+tooltip interactions after dynamic renders, and distinguishes support, form
+selection and measurement evidence. Visible pending-change text compares the form
+with the running engine; inherited defaults are explicitly estimates. Launch code,
+control defaults, saved settings and capability API meanings are unchanged.
+
+Validation: JS syntax and diff whitespace checks; original input/option attributes
+and serialization preserved; temporary headless Chrome checks at narrow/desktop
+widths for help, viewport fit, re-renders, rescan/model switching, selection,
+pending changes and mocked form actions. Chrome emulated touch/Escape passed on
+both a mock fixture and the real LAN page, without toggling the DFlash checkbox.
+The live page rendered 16 launch tooltips and six feature rows without a displayed
+error, and HTTP 200 returned the exact edited HTML. No restart was necessary:
+the panel reads HTML from disk on each request. The panel bind remains
+`0.0.0.0:8082`; no active benchmark was present. The user stopped the model during
+checks; do not automatically relaunch it. Physical touch hardware/screen readers
+and real launch/save mutations were not tested in this slice.
+
+Next unfinished work is slice 2: evidence and defaults foundation. Stop here until
+requested. No performance implementation or new GPU benchmarks have been done for
+this plan; RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains.
+
+The user authorized detached background panel management and restarts after code
+changes, with LAN exposure on `0.0.0.0:8082`. PID file: `/tmp/lllm2-panel.pid`;
+log: `/tmp/lllm2-panel.log`; LAN URL: `http://192.168.1.10:8082/`. Recheck live
+process identity/job state before restarting. Preserve that bind setting.
+
+## Launching VS Code as agents on the desktop
+
+User-confirmed working on 6 September 2026. In a terminal belonging to the
+desktop user (`giles`), grant local X11 access and preserve DISPLAY when switching:
+
+```bash
+xhost +SI:localuser:agents
+su --whitelist-environment=DISPLAY - agents
+```
+
+Then, as `agents`:
+
+```bash
+code --ozone-platform=x11 --disable-gpu ~/code/lllm2
+```
+
+Without `--disable-gpu`, VS Code displayed a blank window; the user confirmed
+this command fixes it. Close existing VS Code windows belonging to `agents`
+before relaunching with the flag. This disables editor GPU rendering, not CUDA
+for the LLM. No persistent shell or VS Code configuration was changed.
+
+Repeat the xhost grant after a new desktop login. For an already-open agents
+shell, run `echo "$DISPLAY"` as the desktop user and export that exact value in
+the agents shell; do not assume `:0`. To revoke the grant, run
+`xhost -SI:localuser:agents` as the desktop user.
+
 ## Suggested next-session starting prompt
 
 Read PLAN.md and HANDOFF.md, inspect this checkout and my actual GPU/engine setup,
-then continue iteration two with me. Preserve the agreed scope and existing
-installations. Start by reviewing outstanding CodeRabbit findings and the current
-workstation benchmark results; do not assume the cloud session validated CUDA,
-DFlash or the final usable context limit.
+then read PERFORMANCE_PLAN.md and implement the next unfinished slice only.
+Preserve the agreed scope and existing installations. Keep unresolved review
+findings in mind; do not assume the cloud session validated CUDA, DFlash or the
+final usable context limit. Update the plan and this handoff at the slice boundary.
+
+## CUDA selection follow-up — 6 September 2026
+
+The “No matching device detected” report was a binary/backend mismatch:
+`engines/b10715/llama-server` reports Vulkan0, while the already installed
+`engines/b10715-cuda-sm86/llama-server` reports CUDA0. No driver repair, sudo,
+rebuild or engine upgrade was required. The UI now offers an explicit matching
+build button with its full path when the selected binary lacks the chosen
+backend. It reuses normal inspection/default loading and never silently switches,
+starts, or saves. Live browser checks passed in both directions (CUDA/Vulkan).
+
+A bounded real CUDA smoke passed on the RTX 3090 with Qwen3.8-27B UD-Q4_K_S:
+4096 total context, one slot, flash on, q8_0 main/draft cache, MTP length 3,
+default effort and the inherited chat template. Startup/template validation and
+32 generated tokens succeeded (66 prompt tokens). This is functional validation,
+not a measured speedup or usable-context recommendation. Evidence is temporarily
+in `/tmp/lllm2-cuda-smoke-result.json`; no benchmark result ID was created.
+The smoke engine was stopped, saved defaults were untouched, and the LAN panel
+remains available without restarting. User authorized PR/merge and subsequent
+slices using separate subagents; finish and validate each slice before merging.
