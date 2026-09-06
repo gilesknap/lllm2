@@ -29,15 +29,21 @@ class ResourceConflict(GPUUnavailable):
 
 
 def gpu_processes(output):
-    """Separate normal browser GPU helpers from competing compute workloads.
+    """Separate recognised desktop applications from competing compute workloads.
 
-    nvidia-smi can classify Chrome's Wayland GPU helper as compute. Prefer
-    /proc identity, since some drivers report only the executable, not argv.
+    Wayland and Electron desktop apps can appear in the compute-process list.
+    Match executable identity, not GPU-helper arguments: drivers and /proc may
+    report different or shortened command lines for the same desktop process.
     This is a coexistence check, not a security boundary or memory guarantee.
     """
     desktop, competing = [], []
-    browsers = {'chrome', 'chromium', 'chromium-browser', 'google-chrome',
-                'google-chrome-stable', 'brave', 'brave-browser', 'msedge'}
+    desktop_apps = {
+        'chrome', 'chromium', 'chromium-browser', 'google-chrome',
+        'google-chrome-stable', 'brave', 'brave-browser', 'msedge', 'firefox',
+        'nautilus', 'gnome-shell', 'gnome-terminal-server', 'xorg', 'xwayland',
+        'xdg-desktop-portal', 'xdg-desktop-portal-gnome', 'xdg-desktop-portal-gtk',
+        'slack', 'code', 'code-insiders',
+    }
     for row in csv.reader(output.splitlines()):
         if not row:
             continue
@@ -53,12 +59,11 @@ def gpu_processes(output):
         try:
             proc = Path('/proc') / pid
             executable = str((proc / 'exe').readlink())
-            argv = (proc / 'cmdline').read_bytes().decode('utf-8', 'replace').split('\0')
         except OSError:
             pass
-        name = Path(executable).name
+        name = Path(executable.removesuffix(' (deleted)')).name
         summary = f'{pid}, {name}'
-        if name in browsers and '--type=gpu-process' in argv:
+        if name.lower() in desktop_apps:
             desktop.append(summary)
         else:
             competing.append(summary)
@@ -140,7 +145,7 @@ class Engine:
         if competing:
             raise ResourceConflict('Other GPU compute processes detected; stop the old model/server first: ' + '; '.join(competing)[:500])
         if desktop:
-            self.log('Allowing desktop browser GPU processes: ' + '; '.join(desktop) + '. Their VRAM and activity remain part of this workstation benchmark.')
+            self.log('Allowing desktop GPU processes: ' + '; '.join(desktop) + '. Their VRAM and activity remain part of this workstation benchmark.')
         with self.guard:
             if cancel.is_set():
                 raise Cancelled()
