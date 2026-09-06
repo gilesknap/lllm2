@@ -12,8 +12,8 @@ import time
 import urllib.request
 import urllib.error
 from . import config
-from .discovery import command, hardware, engine_environment
-from .settings import launch_args
+from .discovery import command, hardware, EXECUTION_ENV_KEYS
+from .settings import launch_args, launch_environment
 
 
 class Cancelled(Exception):
@@ -75,6 +75,8 @@ class Engine:
         self.process = None
         self.settings = None
         self.argv = []
+        self.execution_environment = None
+        self.attempt_environment = None
         self.lines = collections.deque(maxlen=1000)
         self.log_lock = threading.Lock()
         self.guard = threading.RLock()
@@ -89,7 +91,8 @@ class Engine:
             logs = list(self.lines)[-200:]
         return dict(running=self.process is not None and self.process.poll() is None,
                     pid=self.process.pid if self.process else None,
-                    settings=self.settings.dict() if self.settings else None, argv=self.argv, logs=logs)
+                    settings=self.settings.dict() if self.settings else None, argv=self.argv, logs=logs,
+                    execution_environment=self.execution_environment)
 
     def request(self, path, body=None, timeout=30):
         data = None if body is None else json.dumps(body).encode()
@@ -125,6 +128,7 @@ class Engine:
         p.stdout.close()
 
     def start(self, s, cancel, timeout=180):
+        self.attempt_environment = None
         argv = launch_args(s, config.ENGINE_PORT)
         self.stop()
         if cancel.is_set():
@@ -152,9 +156,12 @@ class Engine:
             self.argv = argv
             self.settings = s
             self.log('Launching: ' + ' '.join(argv))
+            env = launch_environment(s)
+            self.execution_environment = {k: env.get(k) for k in EXECUTION_ENV_KEYS}
             p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, errors='replace', start_new_session=True,
-                                 env=engine_environment(argv[0]))
+                                 env=env)
+            self.attempt_environment = self.execution_environment
             self.process = p
             threading.Thread(target=self._logs,args=(p,),daemon=True).start()
         deadline = time.monotonic() + timeout

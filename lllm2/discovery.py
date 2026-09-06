@@ -20,6 +20,33 @@ def engine_environment(binary):
     return env
 
 
+EXECUTION_ENV_KEYS = ('GGML_CUDA_GRAPH_OPT', 'GGML_CUDA_DISABLE_GRAPHS', 'CUDA_VISIBLE_DEVICES')
+
+
+@functools.lru_cache(maxsize=32)
+def _cuda_graph_marker(path, size, mtime_ns):
+    # Adjacent shared library evidence, independent of command-line help.
+    with open(path, 'rb') as handle:
+        tail = b''
+        while chunk := handle.read(1024 * 1024):
+            data = tail + chunk
+            if b'GGML_CUDA_GRAPH_OPT\x00' in data:
+                return True
+            tail = data[-32:]
+    return False
+
+
+def cuda_graph_support(binary):
+    library = Path(binary).expanduser().resolve().with_name('libggml-cuda.so')
+    try:
+        info = identity(library)
+        supported = _cuda_graph_marker(**info)
+        return dict(supported=supported, library=info,
+                    reason='Compiled CUDA streams switch found.' if supported else 'Adjacent CUDA library does not contain the streams switch.')
+    except OSError:
+        return dict(supported=False, library=None, reason='Cannot confirm streams support in an adjacent readable CUDA library.')
+
+
 def command(args, timeout=10, env=None):
     try:
         r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)

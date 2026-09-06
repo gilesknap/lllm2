@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from .discovery import hardware, identity, metadata, probe
 from .engine import Cancelled, GPUUnavailable
-from .settings import Settings, batch_settings, capabilities, launch_args
+from .settings import Settings, batch_settings, capabilities, launch_args, execution_settings
 from . import config
 
 WORKLOADS = {
@@ -154,6 +154,7 @@ class Bench:
                 r = dict(id=str(uuid.uuid4()),group=group,label=label,started=stamp(),status='running',
                          settings=s.dict(),options=opts,model=identity(s.model),engine={k:v for k,v in probe(s.engine).items() if k not in ['help','flags']},
                          batch_settings=batch_settings(s),
+                         execution_settings=execution_settings(s),
                          hardware=hardware(),samples=[],probes=[],largest_observed_context=None,recommended_context=None,
                          note='Cold, uncached single-request coding probes; no quality or long-term stability claim. Context numbers are per slot.')
                 if s.drafter and s.speculation == 'draft-dflash':
@@ -174,6 +175,7 @@ class Bench:
                                 sample = self.measure(s,workload,tokens,opts['output_tokens'],opts['timeout'])
                                 sample['repetition'] = repetition + 1
                                 r['samples'].append(sample)
+                                r['execution_settings'] = sample['execution_settings']
                                 self.store.put('result',r['id'],r)
                                 self.engine.stop()
                     if opts['search_context']:
@@ -184,6 +186,8 @@ class Bench:
                     cancelled = True
                 except Exception as e:
                     r.update(status='failed',error=str(e),logs=self.engine.state()['logs'])
+                    attempt_env = self.engine.attempt_environment
+                    r['execution_settings'] = execution_settings(s, attempt_env, self.engine.state()['logs'] if attempt_env is not None else ())
                     if isinstance(e,GPUUnavailable) or not hardware()['gpus']:
                         fatal = str(e)
                 finally:
@@ -259,8 +263,11 @@ class Bench:
             raise RuntimeError(f'Incomplete workload: requested {tokens}+{output} tokens, evaluated {evaluated}, generated {predicted}; truncated={response.get("truncated")}.')
         if timings.get('prompt_n',0) < tokens - 1:
             raise RuntimeError('Prompt cache reuse or incomplete timing detected; cannot report cold prefill.')
+        with self.engine.log_lock:
+            execution = execution_settings(s, self.engine.execution_environment, list(self.engine.lines), response)
         return dict(workload=workload,input_tokens=evaluated,output_tokens=predicted,output_budget=output,
                     batch_settings=batches,
+                    execution_settings=execution,
                     context_per_slot=s.context//s.slots,slots=s.slots,wall_seconds=elapsed,
                     prefill_tok_s=timings.get('prompt_per_second'),decode_tok_s=timings.get('predicted_per_second'),
                     timings=timings,memory=memory,peak_total_gpu_used_mib=max((sum(g['used_mib'] for g in m['gpus']) for m in memory),default=None),

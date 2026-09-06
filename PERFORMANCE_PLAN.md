@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: slices 1–3 complete; slices 4–8 not started.
+Status: slices 1–4 complete; slices 5–8 not started.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -251,6 +251,51 @@ the switch. Record sampling fallback/compatibility with the actual API requests.
 
 Done when a small repeated comparison shows a benefit or a documented no-gain
 decision. Do not retain a prominent novice control solely because a flag exists.
+
+Slice 4 completion — 6 September 2026:
+- Added experimental target GPU sampling and tri-state concurrent CUDA streams in
+  collapsed Advanced controls. Omitted sampling and default streams preserve
+  existing launch behavior, draft sampling and inherited environment. Explicit
+  streams overrides apply only to the child engine; defaults remain unchanged.
+- The adjacent installed CUDA library contains the compiled streams switch.
+  Exact build662a0b0 source confirms one visible device and ordinary CUDA Graphs
+  are prerequisites. Streams are distinct from ordinary graphs. Sampling response
+  settings confirm the request, but normal logs do not prove complete GPU offload;
+  evidence retains that uncertainty and any observed fallback diagnostics.
+- Records retain actual approved child environment and request evidence. Failed
+  preflight cannot inherit the previous launch's evidence. Built-in profiles are
+  qualified when inherited CUDA execution variables were not measured.
+- Both exact CUDA checkpoints: context16384, one slot, logical2048/micro512,
+  MTP3, q8_0 main/draft, flash on, default effort; long-code4096+256, twice each.
+  Baseline explicitly disabled streams; each candidate changed only one option.
+
+| Model / option | Result ID | Prefill tok/s | Decode tok/s | Peak GPU MiB |
+|---|---|---|---|---|
+| Dense / baseline | `795c6c15-fcd3-47eb-81da-197879184434` |1048.3 /1064.7|54.9 /55.3|17169|
+| Dense / sampling | `f2f4940d-39ac-4173-9af9-052149409439` |1043.2 /1036.8|54.7 /54.7|17183|
+| Dense / streams | `f289aa2b-b172-4065-a770-cd6f2fd8acda` |1046.1 /1046.9|54.4 /54.5|17165|
+| MTP MoE / baseline | `9b171462-e73b-4fe6-9026-039a8a958774` |2287.0 /2354.4|171.5 /174.9|19049|
+| MTP MoE / sampling | `e858a973-f148-4248-9109-0728367c8566` |2434.0 /2300.4|177.9 /178.7|19067|
+| MTP MoE / streams | `9b47d963-b6e0-42d3-9e5d-f70f17b50115` |2350.6 /2334.0|174.0 /173.0|19049|
+
+MoE sampling confirmation reversed order at4096+1024, twice each:
+`5ee32831-4bc1-43a5-9fa5-0128bc86982f` sampling (2343.2/2329.8 prefill,
+161.5/160.6 decode,19076MiB peak), then
+`4a9061e3-235a-4568-b888-51febc80ef36` baseline (2364.5/2326.8 prefill,
+156.7/156.5 decode,19049MiB peak). All16 cold samples completed.
+
+Decision: sampling is a small workload-specific MoE candidate (~2.8% median decode,
+~0.4% lower prefill in confirmation). Dense showed no useful gain; streams showed
+no useful gain for either model. No combination was justified. Preserve profiles
+and saved defaults; retain controls as collapsed experimental options, not novice
+recommendations. Keep the baseline for slice5 and revisit sampling in slice8.
+
+Independent review, temporary compatibility/environment/provenance/error checks,
+Python/JS syntax and live narrow-browser Advanced/help/reset/modified-state checks
+passed. Idle panel restarted with inherited environment and0.0.0.0:8082 preserved;
+LAN HTTP200 verified. No engine left serving. Research remains distinct from local
+measurements; see exact-source [streams implementation](https://github.com/ggml-org/llama.cpp/blob/662a0b0/ggml/src/ggml-cuda/ggml-cuda.cu#L4355)
+and [sampling arguments](https://github.com/ggml-org/llama.cpp/blob/662a0b0/common/arg.cpp#L2303).
 
 ### Slice 5: warm conversations
 
