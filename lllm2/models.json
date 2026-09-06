@@ -1,0 +1,83 @@
+[
+  {
+    "id": "qwen3.8-27b",
+    "name": "Qwen3.8-27B",
+    "repo": "unsloth/Qwen3.8-27B-GGUF",
+    "file": "Qwen3.8-27B-UD-Q4_K_S.gguf",
+    "size_gb": 15.36,
+    "max_ctx": 262144,
+    "kv_kib_per_token": 64
+  },
+  {
+    "id": "qwen3.6-35b-a3b",
+    "name": "Qwen3.6-35B-A3B",
+    "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "file": "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    "size_gb": 17.73,
+    "max_ctx": 262144,
+    "kv_kib_per_token": 20
+  },
+  {
+    "id": "qwen3.6-35b-a3b-mtp",
+    "name": "Qwen3.6-35B-A3B-MTP",
+    "repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+    "file": "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+    "size_gb": 18.21,
+    "max_ctx": 262144,
+    "kv_kib_per_token": 20
+  },
+  {
+    "id": "qwen3.6-35b-a3b-q4ks",
+    "name": "Qwen3.6-35B-A3B-Q4KS",
+    "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "file": "Qwen3.6-35B-A3B-UD-Q4_K_S.gguf",
+    "size_gb": 20.89,
+    "max_ctx": 262144,
+    "kv_kib_per_token": 20
+  },
+  {
+    "id": "gpt-oss-20b",
+    "name": "gpt-oss-20b",
+    "repo": "ggml-org/gpt-oss-20b-GGUF",
+    "file": "gpt-oss-20b-MXFP4.gguf",
+    "size_gb": 12.11,
+    "max_ctx": 131072,
+    "kv_kib_per_token": 24
+  },
+  {
+    "id": "qwen3-8b",
+    "name": "Qwen3-8B",
+    "repo": "unsloth/Qwen3-8B-GGUF",
+    "file": "Qwen3-8B-Q4_K_M.gguf",
+    "size_gb": 5.03,
+    "max_ctx": 32768,
+    "kv_kib_per_token": 144
+  },
+  {
+    "id": "gemma-4-26b-a4b",
+    "name": "Gemma-4-26B-A4B",
+    "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+    "file": "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf",
+    "size_gb": 17.01,
+    "max_ctx": 262144,
+    "kv_kib_per_token": 20
+  },
+  {
+    "id": "muse-glimmer-30b",
+    "name": "Muse-Glimmer-30B",
+    "repo": "unsloth/Muse-Glimmer-30B-GGUF",
+    "file": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+    "size_gb": 15.88,
+    "max_ctx": 131072,
+    "kv_kib_per_token": 13
+  },
+  {
+    "id": "gemma-4-12b-qat",
+    "name": "Gemma-4-12B-QAT",
+    "repo": "unsloth/gemma-4-12B-it-qat-GGUF",
+    "file": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+    "size_gb": 6.72,
+    "max_ctx": 262144,
+    "kv_kib_per_token": 16
+  }
+]

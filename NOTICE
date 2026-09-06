@@ -1,0 +1,4 @@
+lllm2 includes GGUF inspection, model catalogue data and downloads adapted from
+gilesknap/lllm3090, revision e56c8d0fb19f76a254b5453bf7f206b229705d6a.
+Copyright Giles Knap and contributors. Licensed under Apache License 2.0.
+Modifications: isolated configuration, robust download resume and streamlined catalogue.

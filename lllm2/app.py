@@ -1,0 +1,173 @@
+import argparse
+import fcntl
+import json
+import secrets
+import signal
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+from . import config, downloads
+from .bench import Bench, WORKLOADS
+from .discovery import CATALOG, engines, hardware, models, probe
+from .engine import Cancelled, Engine
+from .settings import Settings, capabilities, launch_args
+from .store import Store
+
+
+class App:
+    def __init__(self):
+        self.store = Store()
+        self.engine = Engine()
+        self.bench = Bench(self.engine,self.store)
+        self.token = secrets.token_urlsafe(32)
+
+    def default_key(self,s):
+        return str(Path(s.model).expanduser().resolve()) + '|' + s.backend
+
+    def action(self,path,data):
+        if path == '/api/discover':
+            return dict(models=models(),engines=engines(),catalog=CATALOG)
+        if path == '/api/capabilities':
+            s = Settings.parse(data['settings'])
+            return dict(features=capabilities(s),engine={k:v for k,v in probe(s.engine).items() if k != 'help'})
+        if path == '/api/default/load':
+            s = Settings.parse(data['settings'])
+            return self.store.get('default',self.default_key(s))
+        if path == '/api/default/save':
+            if data.get('result_id'):
+                r = self.store.get('result',data['result_id'])
+                if not r or r['status'] != 'complete' or not r['samples']:
+                    raise ValueError('Only a completed measured configuration can be promoted.')
+                s = Settings.parse(r['settings'])
+                if data.get('use_context'):
+                    if not r['recommended_context']:
+                        raise ValueError('This run has no successful context probe.')
+                    s.context = r['recommended_context'] * s.slots
+            else:
+                s = Settings.parse(data['settings'])
+            launch_args(s,config.ENGINE_PORT)
+            self.store.put('default',self.default_key(s),s.dict())
+            return s.dict()
+        if path == '/api/benchmark':
+            return self.bench.submit(data)
+        if path in ['/api/cancel','/api/stop']:
+            self.bench.cancel.set()
+            self.engine.stop()
+            return dict(ok=True)
+        if path == '/api/start':
+            s = Settings.parse(data['settings'])
+            launch_args(s,config.ENGINE_PORT)
+            with self.bench.lock:
+                if self.bench.active:
+                    raise ValueError('Wait for the current operation or cancel it first.')
+                self.bench.active = True
+                self.bench.cancel.clear()
+                self.bench.progress = dict(status='starting',phase='Loading model')
+            def start():
+                try:
+                    self.engine.start(s,self.bench.cancel)
+                    self.bench.update(status='serving',phase='Ready')
+                except Cancelled:
+                    self.bench.update(status='cancelled')
+                except Exception as e:
+                    self.bench.update(status='failed',error=str(e))
+                finally:
+                    with self.bench.lock:
+                        self.bench.active = False
+            threading.Thread(target=start,daemon=True).start()
+            return dict(ok=True)
+        if path == '/api/download':
+            entry = next((e for e in CATALOG if e['id']==data['id']),None)
+            if entry is None:
+                raise ValueError('Unknown catalogue model.')
+            return downloads.start(entry).as_dict()
+        if path == '/api/download/cancel':
+            return dict(cancelled=downloads.cancel(data['id']))
+        raise ValueError('Unknown action')
+
+
+def main():
+    parser = argparse.ArgumentParser(description='lllm2 local LLM workbench')
+    parser.add_argument('--port',type=int,default=8082)
+    args = parser.parse_args()
+    config.STATE_DIR.mkdir(parents=True,exist_ok=True)
+    lock = (config.STATE_DIR/'panel.lock').open('w')
+    try:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:
+        parser.error('Another lllm2 panel owns this state directory.')
+    app = App()
+    allowed_hosts = {f'127.0.0.1:{args.port}',f'localhost:{args.port}'}
+
+    class Handler(BaseHTTPRequestHandler):
+        def send(self,status,body,kind='application/json'):
+            raw = json.dumps(body).encode() if kind == 'application/json' else body
+            self.send_response(status)
+            self.send_header('Content-Type',kind)
+            self.send_header('Content-Length',str(len(raw)))
+            self.send_header('Cache-Control','no-store')
+            self.send_header('X-Content-Type-Options','nosniff')
+            self.end_headers()
+            try:
+                self.wfile.write(raw)
+            except (BrokenPipeError,ConnectionResetError):
+                pass
+
+        def valid_host(self):
+            if self.headers.get('Host') not in allowed_hosts:
+                self.send(403,dict(error='Use the local panel address.'))
+                return False
+            return True
+
+        def do_GET(self):
+            if not self.valid_host():
+                return
+            path = urlparse(self.path).path
+            if path == '/':
+                self.send(200,Path(__file__).with_name('static').joinpath('index.html').read_bytes(),'text/html; charset=utf-8')
+            elif path == '/api/status':
+                self.send(200,dict(token=app.token,engine=app.engine.state(),job=app.bench.snapshot(),hardware=hardware(),
+                                   downloads=downloads.all_downloads(),endpoint=app.engine.base+'/v1',
+                                   paths=dict(models=str(config.MODELS_DIR),engines=[str(p) for p in config.ENGINE_ROOTS]),workloads=WORKLOADS))
+            elif path in ['/api/results','/api/results/export']:
+                rows = app.store.list('summary' if path == '/api/results' else 'result')
+                self.send(200,rows)
+            else:
+                self.send(404,dict(error='Not found'))
+
+        def do_POST(self):
+            if not self.valid_host():
+                return
+            origin = self.headers.get('Origin')
+            if self.headers.get('X-LLLM2-Token') != app.token or (origin and origin not in {f'http://{h}' for h in allowed_hosts}):
+                self.send(403,dict(error='Reload the local panel to renew its session.'))
+                return
+            try:
+                size = int(self.headers.get('Content-Length','0'))
+                if not 0<size<=2_000_000:
+                    raise ValueError('Invalid request size')
+                data = json.loads(self.rfile.read(size))
+                self.send(200,app.action(urlparse(self.path).path,data))
+            except (ValueError,KeyError,TypeError,OSError) as e:
+                self.send(400,dict(error=str(e)))
+            except Exception as e:
+                app.engine.log('Panel error: ' + str(e))
+                self.send(500,dict(error=str(e)))
+
+        def log_message(self,*args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
+    def shutdown(*_):
+        threading.Thread(target=server.shutdown,daemon=True).start()
+    signal.signal(signal.SIGTERM,shutdown)
+    signal.signal(signal.SIGINT,shutdown)
+    print(f'lllm2: http://127.0.0.1:{args.port}',flush=True)
+    try:
+        server.serve_forever()
+    finally:
+        app.bench.cancel.set()
+        app.engine.stop()
+        server.server_close()
+        lock.close()
