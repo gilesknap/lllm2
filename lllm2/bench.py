@@ -252,6 +252,8 @@ class Bench:
         floor = math.ceil(floor/256)*256
         ceiling = ceiling//256*256
         good, bad = 0, ceiling+256
+        # Probe the selected launch context first, then bisect the remaining
+        # interval. The ceiling+256 sentinel keeps the ceiling itself testable.
         attempt = min(max(floor,s.context//s.slots),ceiling)
         attempts = 0
         context_timeout = opts.get('context_timeout',900)
@@ -294,15 +296,15 @@ class Bench:
                 r['recommended_context_is_estimate'] = True
                 r['context_ceiling'] = ceiling
                 self.store.put('result',r['id'],r)
-            if good >= ceiling or bad-good <= 256:
+            lower = max(good//256*256,floor-256)
+            upper = math.ceil(bad/256)*256
+            if good >= ceiling or upper-lower <= 256:
                 break
-            if good and bad == ceiling+256:
-                attempt = min(ceiling,good*2)
-            else:
-                attempt = ((good+bad)//2)//256*256
+            attempt = ((lower+upper)//2)//256*256
             if attempt < floor:
                 break
         if r['context_search_status'] == 'running':
-            r['context_search_status'] = 'complete' if good >= ceiling or bad-good <= 256 else 'inconclusive_probe_limit'
+            resolved = math.ceil(bad/256)*256 - max(good//256*256,floor-256) <= 256
+            r['context_search_status'] = 'complete' if good >= ceiling or resolved else 'inconclusive_probe_limit'
         r['context_search_resolution'] = 256
         r['context_ceiling_reached'] = good == ceiling
