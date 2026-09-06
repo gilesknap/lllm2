@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: plan written; implementation slices not started.
+Status: slice 1 complete; slices 2–8 not started.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -73,7 +73,7 @@ execute the whole roadmap or launch an exhaustive GPU sweep in one session.
 
 | Slice | Deliverable | Depends on | Status |
 |---|---|---|---|
-| 1 | Launch-setting tooltips and clearer feature availability | Existing panel | Not started |
+| 1 | Launch-setting tooltips and clearer feature availability | Existing panel | Complete (6 September 2026) |
 | 2 | Baselines and portable, evidence-backed defaults | 1 | Not started |
 | 3 | Prefill batch/microbatch controls and bounded comparisons | 2 | Not started |
 | 4 | Target GPU sampling and concurrent-stream experiments | 2; use stable batch choice from 3 | Not started |
@@ -101,6 +101,33 @@ Done when a fresh user can find an explanation for every launch setting, identif
 why a feature is unavailable, and distinguish the form from the running model.
 Check keyboard/touch behavior, narrow layouts, rescan/model switching, and existing
 form actions. A tooltip click must not toggle a checkbox or accidentally submit.
+
+Slice 1 completion — 6 September 2026:
+- Changed `lllm2/static/index.html` only for implementation: shared descriptions
+  for all 16 launch controls and six feature rows; reusable tooltip initialization;
+  plain support labels, visible reasons, form choices and expandable diagnostics;
+  visible pending changes versus the running model; clearer inherited-default copy.
+- Preserved launch controls, options, initial values, settings serialization,
+  capability status/API meanings, defaults and backend code. No performance modes
+  or GPU benchmarks added; no new result IDs or performance claims.
+- Checks passed: JavaScript syntax, `git diff --check`, comparison of original
+  input/option attributes and serialization, temporary headless Chrome smoke checks
+  at narrow and desktop widths (focus/click/Escape/outside dismissal, viewport fit,
+  re-render/rescan/model switching, unique IDs/handlers, feature selection, pending
+  state, mocked load/save/start/stop actions). Chrome emulated touch also passed.
+- Real LAN page rendered all help and feature rows with no displayed error;
+  real-page emulated touch/Escape passed without toggling the DFlash checkbox.
+  HTTP 200 served the exact updated HTML. Static HTML is read on each request,
+  so no panel restart was needed; `0.0.0.0:8082` was preserved. No active benchmark
+  was present. The user stopped the model during validation.
+- Limits: no physical touch-device or screen-reader check; launch/save mutations
+  were tested with mocked APIs. No new GPU validation. Next: slice 2 in a fresh task.
+
+Pre-slice-2 CUDA check: complete. The installed CUDA build detects CUDA0 and
+passed a short real Qwen3.8 launch/generation. The UI now offers explicit selection
+of a matching installed build when backend/binary choices disagree. Live browser
+recovery passed for CUDA and Vulkan. No system changes or benchmark gain claimed;
+see HANDOFF.md for configuration and evidence.
 
 ### Slice 2: evidence and defaults foundation
 

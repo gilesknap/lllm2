@@ -143,9 +143,28 @@ authorized; general documentation infrastructure remains deferred.
 Prioritize Qwen3.8-27B dense and Qwen3.6-35B-A3B MoE on the RTX 3090. Keep the
 normal UI understandable to a novice and ship portable defaults backed by actual
 measurements, distinguishing inherited estimates and user-saved preferences.
-The next slice is launch-setting tooltips and clearer feature availability,
-reusing existing experiment tooltip behavior without changing launch defaults.
-No performance implementation or new GPU benchmarks have been done for this plan.
+Slice 1 is complete (6 September 2026). `lllm2/static/index.html` now supplies
+shared concise help for all launch settings and feature rows, reuses the existing
+tooltip interactions after dynamic renders, and distinguishes support, form
+selection and measurement evidence. Visible pending-change text compares the form
+with the running engine; inherited defaults are explicitly estimates. Launch code,
+control defaults, saved settings and capability API meanings are unchanged.
+
+Validation: JS syntax and diff whitespace checks; original input/option attributes
+and serialization preserved; temporary headless Chrome checks at narrow/desktop
+widths for help, viewport fit, re-renders, rescan/model switching, selection,
+pending changes and mocked form actions. Chrome emulated touch/Escape passed on
+both a mock fixture and the real LAN page, without toggling the DFlash checkbox.
+The live page rendered 16 launch tooltips and six feature rows without a displayed
+error, and HTTP 200 returned the exact edited HTML. No restart was necessary:
+the panel reads HTML from disk on each request. The panel bind remains
+`0.0.0.0:8082`; no active benchmark was present. The user stopped the model during
+checks; do not automatically relaunch it. Physical touch hardware/screen readers
+and real launch/save mutations were not tested in this slice.
+
+Next unfinished work is slice 2: evidence and defaults foundation. Stop here until
+requested. No performance implementation or new GPU benchmarks have been done for
+this plan; RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains.
 
 The user authorized detached background panel management and restarts after code
 changes, with LAN exposure on `0.0.0.0:8082`. PID file: `/tmp/lllm2-panel.pid`;
@@ -185,3 +204,23 @@ then read PERFORMANCE_PLAN.md and implement the next unfinished slice only.
 Preserve the agreed scope and existing installations. Keep unresolved review
 findings in mind; do not assume the cloud session validated CUDA, DFlash or the
 final usable context limit. Update the plan and this handoff at the slice boundary.
+
+## CUDA selection follow-up — 6 September 2026
+
+The “No matching device detected” report was a binary/backend mismatch:
+`engines/b10715/llama-server` reports Vulkan0, while the already installed
+`engines/b10715-cuda-sm86/llama-server` reports CUDA0. No driver repair, sudo,
+rebuild or engine upgrade was required. The UI now offers an explicit matching
+build button with its full path when the selected binary lacks the chosen
+backend. It reuses normal inspection/default loading and never silently switches,
+starts, or saves. Live browser checks passed in both directions (CUDA/Vulkan).
+
+A bounded real CUDA smoke passed on the RTX 3090 with Qwen3.8-27B UD-Q4_K_S:
+4096 total context, one slot, flash on, q8_0 main/draft cache, MTP length 3,
+default effort and the inherited chat template. Startup/template validation and
+32 generated tokens succeeded (66 prompt tokens). This is functional validation,
+not a measured speedup or usable-context recommendation. Evidence is temporarily
+in `/tmp/lllm2-cuda-smoke-result.json`; no benchmark result ID was created.
+The smoke engine was stopped, saved defaults were untouched, and the LAN panel
+remains available without restarting. User authorized PR/merge and subsequent
+slices using separate subagents; finish and validate each slice before merging.
