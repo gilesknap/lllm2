@@ -538,7 +538,9 @@ evidence. Document regressions and no-gain experiments alongside successful ones
 Slice 8 complete (6 September 2026). Fresh occupied-context CUDA runs hold65,536 total
 allocation, one slot, q8/q8 main and draft cache, MTP3, default effort, flash on,
 batch2048, streams explicitly off,65,248 input+256 generated tokens, two fresh
-engine starts per configuration. Frozen16K baseline records remain unchanged.
+engine starts per configuration. Occupied input plus output totals65,504 tokens;
+the remaining32 tokens are the explicit safety margin within the65,536 allocation.
+Frozen16K baseline records remain unchanged.
 
 | Configuration | Prefill tok/s (two runs) | Decode tok/s (two runs) | Peak total GPU MiB |
 |---|---|---|---:|

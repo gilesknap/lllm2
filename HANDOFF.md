@@ -496,3 +496,8 @@ launch/result/job changes or overflow. The test explicitly selects backends rath
 than assuming the initial selector. Final idle panel restart preserved environment
 and0.0.0.0:8082, with LAN HTTP200 at192.168.1.10:8082. No engine left serving.
 All eight slices complete; stop at this boundary.
+
+Final delivery is PR16. CodeRabbit completed review with one minor documentation
+clarification:65,248 input+256 output occupies65,504 tokens, leaving the explicit
+32-token margin within65,536 allocation. Clarified the plan; measurements and
+code are unchanged. Independent review and final live checks already passed.
