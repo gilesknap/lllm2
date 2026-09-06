@@ -113,7 +113,12 @@ def promotion_provenance(result, settings, use_context):
                 batch_settings=result.get('batch_settings'),
                 execution_settings=result.get('execution_settings'),
                 samples=[{k: s.get(k) for k in ('workload', 'input_tokens', 'output_tokens',
-                    'context_per_slot', 'slots', 'prefill_tok_s', 'decode_tok_s', 'peak_total_gpu_used_mib', 'batch_settings', 'execution_settings')}
+                    'requested_output_budget', 'output_budget', 'wall_seconds', 'peak_engine_rss_mib',
+                    'context_per_slot', 'slots', 'prefill_tok_s', 'decode_tok_s', 'peak_total_gpu_used_mib',
+                    'batch_settings', 'execution_settings', 'speculative_settings')} |
+                    dict(adherence={k: s['adherence'].get(k) for k in
+                        ('status', 'exact_payload_match', 'output_limit_reached', 'expected_sha256',
+                         'actual_sha256', 'thinking_characters', 'policy')} if s.get('adherence') else None)
                     for s in result['samples']],
                 context=dict(allocated_total=result['settings']['context'],
                     largest_observed_context=result.get('largest_observed_context'),

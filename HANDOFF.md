@@ -162,7 +162,7 @@ the panel reads HTML from disk on each request. The panel bind remains
 checks; do not automatically relaunch it. Physical touch hardware/screen readers
 and real launch/save mutations were not tested in this slice.
 
-Slices 1–5 are now complete; the next unfinished work is slice 6 (MTP plus lookup).
+Slices 1–6 are now complete; the next unfinished work is slice 7 (independent cache precision).
 The user authorized sequential work and PR/merge per slice with subagents.
 RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains;
 new slice 2 baseline evidence is recorded below and in PERFORMANCE_PLAN.md.
@@ -374,3 +374,52 @@ separate accounting/timing/RSS and no promotion action. Legacy cold smoke
 flags omitted and zero cache reuse. After confirming idle, restarted the final
 panel with original environment and0.0.0.0:8082; LAN HTTP200 verified. No engine
 left serving. Browser-discovered wrapped-help parsing was fixed and retested.
+
+PR11 merged slice5 (`283c8a0`). CodeRabbit completed its review with no actionable
+findings/no merge-blocking risk; its generic docstring coverage warning remains
+outside this slice. Next implementation is slice6 on performance-slice6.
+
+## Slice 6 boundary — lookup, source adherence and experiment reset
+
+Added explicit MTP+ngram-simple with paired nullable N/M controls, preserving
+ordinary MTP defaults. Blank explicit combination uses3/3; MTP draft length and
+lookup M remain independent. Verified lookup-first fallback ordering and aggregate
+counter limitations are recorded. Complete source-copy/single-edit workloads use
+an explicit minimum2048 output cap, natural EOS and exact final-source checks,
+retaining raw reasoning/output. Existing generation stays fixed-budget. Added
+host RSS to cold samples and prevented failed-adherence default promotion.
+
+All34 real CUDA samples passed, including24 exact source answers. Seven records,
+identical input-vector checks, widths, budgets, metrics and IDs are in the plan.
+Dense lookup3 small edits improved~9.5% median decode but generation regressed
+~4.7%; copying~2.1% was within variation. Wider lookup6 regressed. MoE lookup3
+regressed decode on all three workloads; its shorter copy wall time came from
+less generated reasoning (1609vs1896 tokens), not an equal-work speedup. Preserve
+ordinary MTP3/general profiles. Dense lookup3 is only a narrow small-edit candidate
+for slice8, with its generation regression visible; no copying profile earned.
+
+User requested an experiment reset during this slice. Added Reset experiment
+settings near the pane heading: HTML parameter/workload defaults, selected-model
+context ceiling and derived control states; no API calls or launch/default/result/
+comparison/job changes. Live narrow browser checked reset of all numeric/boolean/
+source controls,262144 model ceiling, no network side effect and preservation of
+simulated active-job state. Tooltip, legacy lookup reset, measured source rows and
+cap/EOS copy also passed. Independent review and temporary compatibility/source/
+adherence/promotion tests passed. Existing saved preferences remained unchanged.
+Final panel responds on LAN0.0.0.0:8082; no engine left serving.
+
+Next slice7: nullable independent K/V overrides with legacy cache mapping both.
+Read-only evidence: installed CUDA library SHA256
+b81f5da083d4c25345569268819bce5f7e14b45de19d055f634db3e22bbcef61 lacks mixed-pair
+Flash Attention GPU kernels. Two independent disassembly checks confirm rejection;
+possible CPU fallback remains unmeasured. Allow an explicit bounded experimental
+probe with honest availability; do not claim GPU support from flags or upgrade
+engines to force it. Hybrid recurrent state remainsF32 regardless attention pair;
+the old q8 planner is not mixed-pair capacity evidence. Detailed temporary source/
+binary preparation is /tmp/lllm2-slice7-preparation.txt. No slice7 code/GPU run yet.
+
+Slice6 final integration also preserves compact source adherence, actual/requested
+output budgets, elapsed time, host RSS and speculative settings in promotion
+provenance, excluding raw source/output. Old/new provenance checks passed. Final
+idle panel restart loaded this helper and verified LAN HTTP200 with environment
+and0.0.0.0:8082 preserved.

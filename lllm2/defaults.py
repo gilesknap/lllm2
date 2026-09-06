@@ -6,7 +6,7 @@ planner's estimate on the detected hardware, not a new measured maximum.
 from dataclasses import replace
 from pathlib import Path
 from .discovery import CATALOG, command, hardware, metadata, probe
-from .settings import Settings, capabilities
+from .settings import Settings, capabilities, MTP_MODES
 from .recommendations import measured_defaults
 
 # Built-in tuning was previously benchmarked on an RTX 3090.
@@ -84,7 +84,7 @@ def inherited_defaults(selection):
         notes.append('MTP not enabled: ' + caps['draft-mtp']['reason'])
     draft_flags = {'--spec-draft-type-k', '--spec-draft-type-v'}
     s.draft_cache = 'q8_0' if draft_flags.issubset(p['flags']) else 'default'
-    if s.speculation == 'draft-mtp' and s.draft_cache == 'default':
+    if s.speculation in MTP_MODES and s.draft_cache == 'default':
         notes.append('Draft-cache controls unavailable; context budget accounts for f16 draft cache.')
     if entry and entry.get('chat_template'):
         if '--chat-template-file' in p['flags']:
@@ -103,7 +103,7 @@ def inherited_defaults(selection):
         ceiling = min(entry['max_ctx'], m['context'] or entry['max_ctx'])
         try:
             s.context, s.slots = context_plan(entry, cards[0]['total_mib'], s.backend, ceiling,
-                                            mtp=s.speculation == 'draft-mtp', draft_cache=s.draft_cache,
+                                            mtp=s.speculation in MTP_MODES, draft_cache=s.draft_cache,
                                             desktop=desktop, driver_reserve=reserve)
             notes.append('Context/slots use the inherited calibrated planner on this GPU; verify with a workload. They are estimates, not new measurements.')
         except ValueError as e:

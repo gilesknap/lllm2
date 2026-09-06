@@ -9,8 +9,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from .discovery import hardware, identity, metadata, probe
 from .engine import Cancelled, GPUUnavailable
-from .settings import Settings, batch_settings, capabilities, launch_args, execution_settings
+from .settings import Settings, batch_settings, capabilities, launch_args, execution_settings, speculative_settings
 from . import config
+from .source_workloads import TASKS, output_budget, source_prompt, adherence
 
 WORKLOADS = {
     'generate': 'Implement a Python LRU cache with get, put, bounded capacity and O(1) operations. Explain edge cases briefly and provide the code.',
@@ -18,9 +19,11 @@ WORKLOADS = {
     'long-code': 'Review the supplied Python modules. Identify shared design problems, then implement a reusable ledger service with validated transactions and pagination. Return Python code.',
 }
 
+WORKLOADS.update(TASKS)
+
 
 def prompt_sizes(s, opts):
-    upper = s.context // s.slots - opts['output_tokens'] - 32
+    upper = s.context // s.slots - max(output_budget(w, opts['output_tokens']) for w in opts.get('workloads', ['long-code'])) - 32
     if opts.get('sweep_prompts', True):
         sizes = {min(tokens, upper) for tokens in [1024, 16384, 65536]}
     else:
@@ -66,7 +69,7 @@ def suite(s):
             skipped.append(dict(option=label,reason=str(e)))
         else:
             variants.append((label,v))
-    for mode in ['none','draft-mtp','draft-dflash','ngram-simple']:
+    for mode in ['none','draft-mtp','draft-dflash','ngram-simple','draft-mtp,ngram-simple']:
         if mode == base.speculation:
             continue
         if mode == 'none' or caps[mode]['status'] == 'available':
@@ -126,7 +129,8 @@ class Bench:
                         context_checkpoints=4 if s.context_checkpoints is None else s.context_checkpoints)
         if opts['search_context'] and opts['max_context'] < opts['output_tokens'] + 160:
             raise ValueError('Context ceiling must fit the output budget plus a real prompt.')
-        if (128 if opts['sweep_prompts'] else opts['prompt_tokens']) + opts['output_tokens'] + 32 > s.context // s.slots:
+        effective_output = max(output_budget(w, opts['output_tokens']) for w in opts['workloads'])
+        if (128 if opts['sweep_prompts'] else opts['prompt_tokens']) + effective_output + 32 > s.context // s.slots:
             raise ValueError('Shared prompt and output budgets must fit context per slot, with 32 tokens of margin.')
         variants, skipped = suite(s) if mode == 'suite' else ([('baseline' if mode == 'baseline' else 'custom',replace(s))],[])
         if mode not in ['baseline','suite','custom','combinations','warm-conversation']:
@@ -193,6 +197,8 @@ class Bench:
                                 sample = self.measure(s,workload,tokens,opts['output_tokens'],opts['timeout'])
                                 sample['repetition'] = repetition + 1
                                 r['samples'].append(sample)
+                                if (sample.get('adherence') or {}).get('status') == 'failed':
+                                    r['quality_status'] = 'failed'
                                 r['execution_settings'] = sample['execution_settings']
                                 self.store.put('result',r['id'],r)
                                 self.engine.stop()
@@ -230,6 +236,8 @@ class Bench:
         return self.engine.guarded_request(path,body,self.cancel,timeout)
 
     def prompt(self,s,workload,tokens,timeout):
+        if workload in TASKS:
+            return source_prompt(self, s, workload, tokens, timeout)
         # Tokenize the actual checkpoint's formatted chat prompt, preserving both
         # the complete instruction and template suffix while filling with code.
         def format_prompt(n):
@@ -257,19 +265,28 @@ class Bench:
         with self.engine.log_lock:
             batches = batch_settings(s, list(self.engine.lines))
         prompt, provenance = self.prompt(s,workload,tokens,timeout)
+        from .warm import host_memory
+        with self.engine.guard:
+            process = self.engine.process
+        host_before = host_memory(process)
+        requested_output = output
+        output = output_budget(workload, output)
+        source_task = workload in TASKS
+        if tokens + output + 32 > s.context // s.slots:
+            raise ValueError('Source output cap and complete input must fit context with 32 tokens of margin.')
         memory = []
         finished = threading.Event()
         def sample_memory():
             while not finished.is_set():
                 h = hardware()
-                memory.append(dict(time=stamp(),gpus=h['gpus'],error=h['error']))
+                memory.append(dict(time=stamp(),gpus=h['gpus'],error=h['error'],host=host_memory(process)))
                 finished.wait(.5)
         sampler = threading.Thread(target=sample_memory,daemon=True)
         sampler.start()
         started = time.monotonic()
         try:
             response = self.req('/completion',dict(prompt=prompt,n_predict=output,temperature=0,seed=42,
-                                cache_prompt=False,stream=False,ignore_eos=True),timeout)
+                                cache_prompt=False,stream=False,ignore_eos=not source_task),timeout)
             elapsed = time.monotonic()-started
         finally:
             finished.set()
@@ -277,19 +294,26 @@ class Bench:
         timings = response.get('timings',{})
         predicted = response.get('tokens_predicted',timings.get('predicted_n',0))
         evaluated = response.get('tokens_evaluated',timings.get('prompt_n',0))
-        if response.get('truncated') or predicted < output or evaluated < tokens:
+        host_after = host_memory(process)
+        host_points = [host_before, host_after] + [m['host'] for m in memory]
+        if (not source_task and (response.get('truncated') or predicted < output)) or evaluated < tokens:
             raise RuntimeError(f'Incomplete workload: requested {tokens}+{output} tokens, evaluated {evaluated}, generated {predicted}; truncated={response.get("truncated")}.')
         if timings.get('prompt_n',0) < tokens - 1:
             raise RuntimeError('Prompt cache reuse or incomplete timing detected; cannot report cold prefill.')
         with self.engine.log_lock:
             execution = execution_settings(s, self.engine.execution_environment, list(self.engine.lines), response)
         return dict(workload=workload,input_tokens=evaluated,output_tokens=predicted,output_budget=output,
+                    requested_output_budget=requested_output,
+                    adherence=adherence(response | dict(stopped_limit=response.get('stopped_limit', False) or predicted >= output), provenance['expected_output']) if source_task else None,
+                    speculative_settings=speculative_settings(s, timings),
+                    host_before=host_before, host_after=host_after,
+                    peak_engine_rss_mib=max((h['rss_mib'] for h in host_points if h.get('rss_mib') is not None), default=None),
                     batch_settings=batches,
                     execution_settings=execution,
                     context_per_slot=s.context//s.slots,slots=s.slots,wall_seconds=elapsed,
                     prefill_tok_s=timings.get('prompt_per_second'),decode_tok_s=timings.get('predicted_per_second'),
                     timings=timings,memory=memory,peak_total_gpu_used_mib=max((sum(g['used_mib'] for g in m['gpus']) for m in memory),default=None),
-                    prompt=provenance,output=response.get('content',''),sampling=dict(temperature=0,seed=42,ignore_eos=True,cache_prompt=False))
+                    prompt=provenance,output=response.get('content',''),sampling=dict(temperature=0,seed=42,ignore_eos=not source_task,cache_prompt=False))
 
     def context_search(self,s,opts,r):
         ceiling = min(opts['max_context'], metadata(s.model)['context'] or opts['max_context'],1048576//s.slots)
