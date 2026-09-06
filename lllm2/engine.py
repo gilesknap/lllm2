@@ -187,13 +187,66 @@ class Engine:
             raise
 
     def guarded_request(self, path, body, cancel, timeout):
+        return self._guarded_operation(path, lambda: self.request(path, body, timeout), cancel, timeout)
+
+    def stream_completion(self, body, cancel, timeout, on_event):
+        """Read native /completion SSE; callback receives parsed events, including final."""
+        event_lock = threading.Lock()
+        closed = threading.Event()
+        def read():
+            req = urllib.request.Request(self.base + '/completion', data=json.dumps(body).encode(),
+                                         headers={'Content-Type': 'application/json', 'Accept': 'text/event-stream'})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    if 'text/event-stream' not in response.headers.get('Content-Type', ''):
+                        raise RuntimeError('Engine did not return a completion event stream.')
+                    data = []
+                    size = 0
+                    while True:
+                        if closed.is_set():
+                            raise Cancelled()
+                        line = response.readline(1024 * 1024 + 1)
+                        if len(line) > 1024 * 1024:
+                            raise RuntimeError('Completion stream line exceeded size bound.')
+                        if not line:
+                            raise RuntimeError('Completion stream ended without a terminal response.')
+                        line = line.rstrip(b'\r\n')
+                        if line.startswith(b'data:'):
+                            part = line[5:].lstrip(b' ')
+                            size += len(part)
+                            if size > 2 * 1024 * 1024:
+                                raise RuntimeError('Completion stream event exceeded size bound.')
+                            data.append(part)
+                        elif not line and data:
+                            event = json.loads(b'\n'.join(data))
+                            data, size = [], 0
+                            if not isinstance(event, dict):
+                                raise RuntimeError('Invalid completion stream event.')
+                            if 'error' in event:
+                                raise RuntimeError('Completion stream error: ' + str(event['error'])[:1000])
+                            with event_lock:
+                                if closed.is_set():
+                                    raise Cancelled()
+                                on_event(event)
+                            if event.get('stop') is True:
+                                return event
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(f'/completion: HTTP {e.code}: {e.read(4000).decode("utf-8", "replace")}') from e
+        try:
+            return self._guarded_operation('/completion stream', read, cancel, timeout)
+        finally:
+            # A delayed reader must never mutate a finalized/cancelled sample.
+            with event_lock:
+                closed.set()
+
+    def _guarded_operation(self, path, operation, cancel, timeout):
         # A wall-clock bound, even if the peer dribbles bytes indefinitely.
         result = []
         error = []
         done = threading.Event()
         def work():
             try:
-                result.append(self.request(path,body,timeout))
+                result.append(operation())
             except Exception as e:
                 error.append(e)
             finally:

@@ -162,7 +162,7 @@ the panel reads HTML from disk on each request. The panel bind remains
 checks; do not automatically relaunch it. Physical touch hardware/screen readers
 and real launch/save mutations were not tested in this slice.
 
-Slices 1–4 are now complete; the next unfinished work is slice 5 (warm conversations).
+Slices 1–5 are now complete; the next unfinished work is slice 6 (MTP plus lookup).
 The user authorized sequential work and PR/merge per slice with subagents.
 RTX_PERFORMANCE_REVIEW.md remains dated research, not measured local gains;
 new slice 2 baseline evidence is recorded below and in PERFORMANCE_PLAN.md.
@@ -323,3 +323,54 @@ is slot occupancy, not reused input. Record processed/reused input separately,
 stream first-token/completion and owned-process host memory. Include causal cold
 controls, edited-history misses and cancellation. Read-only preparation is complete;
 no slice5 implementation or GPU trials have run yet.
+
+Slice4 was merged as PR10 (`514091a`). CodeRabbit skipped its hourly quota again;
+independent review and local UI/GPU checks passed. Slice5 implementation is now
+in progress on `performance-slice5`; no new saved defaults have been created.
+
+## Slice 5 boundary — measured warm conversation reuse
+
+Added warm.py and a separate six-turn conversation plus six uncached replay mode.
+Exact stream token IDs form history; processed/reused input must reconcile.
+First-token event, text and completion timings are client measurements, distinct
+from processed-token prefill. Host RSS/anonymous/swap/available RAM and GPU samples
+are retained, with partial cancellation/error evidence and launch-scoped logs.
+Native UTF-8 stream token omissions deliberately fail validation, never retokenize.
+Normal launches still omit new nullable cache/checkpoint flags; existing8192MiB/32
+engine defaults and saved preferences/profiles remain unchanged. Warm-only blanks
+use2048MiB/four checkpoints after measured512MiB eviction/cap misses. Larger-context
+reuse remains unverified. Warm results cannot be promoted as cold baselines.
+
+Six result records and96 completed requests are tabulated in PERFORMANCE_PLAN.md
+slice5 with exact budgets, IDs, medians and memory. Both targets consistently reused
+append and suffix edit;2048MiB restored switch-back in both repetitions per model.
+Switch-back processed4/reused4236 tokens; median first-token event0.540s dense
+versus4.467s uncached,0.214s MoE versus1.942s uncached. Early-history edits missed.
+The0/0 control retained immediate append reuse but lost suffix/switch-back reuse.
+Peak process RSS2735MiB dense/1875MiB MoE for2048/4 versus650/745MiB at0/0:
+a bounded memory/latency tradeoff, not a general decode improvement.
+
+Real cancellation `cae65eb2-f663-44a7-832c-38f2493b8377` preserved140 partial
+tokens and stopped only the owned engine in0.59s. Independent review and temporary
+sequence, exact-prefix/replay, invalid-count/token, SSE/error/deadline/cancellation,
+late-callback, finite/legacy settings and launch-log isolation checks passed.
+Saved preferences matched the pre-slice read-only snapshot. Detailed records remain
+in the existing database; temporary full evidence is /tmp/lllm2-slice5-full-evidence.json.
+
+Next: slice6, explicit MTP plus lookup combination and true copy/small-edit workload.
+Read-only exact-build evidence favors `draft-mtp,ngram-simple`, N3/M3 and MTP3.
+Lookup runs first; MTP handles misses. `ngram-cache` hardcodes8 independently of
+MTP width; do not claim sharedwidth3 for that method. Simple N must not exceed M
+(defaultN12 with M3 produces no draft); advertised simple min-hits is ineffective.
+Normal response counters aggregate methods; per-method tracing changes verbosity.
+Keep general generation separate and check actual copied/edited output adherence.
+Preserve both baselines; no slice6 code or trials have run yet.
+
+Final slice5 checks: live narrow browser passed finite controls, wrapped advertised
+8192/32 defaults, shared help, legacy-null reset, unchanged batch summary, explicit
+warm-only2048 fallback copy, fixed warm request payload,97 warm/partial rows with
+separate accounting/timing/RSS and no promotion action. Legacy cold smoke
+`588c8c3c-b7f8-4ac4-890a-a9940b7edb30` completed1024+32 with new optional launch
+flags omitted and zero cache reuse. After confirming idle, restarted the final
+panel with original environment and0.0.0.0:8082; LAN HTTP200 verified. No engine
+left serving. Browser-discovered wrapped-help parsing was fixed and retested.

@@ -26,6 +26,8 @@ class Settings:
     ubatch_size: int | None = None
     backend_sampling: bool = False
     cuda_graph_opt: str = 'default'
+    cache_ram_mib: int | None = None
+    context_checkpoints: int | None = None
 
     @classmethod
     def parse(cls, data):
@@ -36,6 +38,12 @@ class Settings:
             raise ValueError('backend_sampling must be boolean')
         if s.cuda_graph_opt not in ('default', 'on', 'off'):
             raise ValueError('Invalid cuda_graph_opt')
+        for key, upper in [('cache_ram_mib', 8192), ('context_checkpoints', 32)]:
+            if getattr(s, key) == '':
+                setattr(s, key, None)
+            value = getattr(s, key)
+            if value is not None and (type(value) is not int or not 0 <= value <= upper):
+                raise ValueError(f'{key} must be blank or an integer in 0..{upper}')
         for key in ('batch_size', 'ubatch_size'):
             if getattr(s, key) == '':
                 setattr(s, key, None)
@@ -85,6 +93,12 @@ def capabilities(s):
             status = 'unsupported'
         out[name] = dict(status=status, reason=f'Binary probe: {flag}. Actual model/backend behavior is validated on launch.')
     defaults = batch_defaults(help_text) if not p['error'] else {}
+    for name, flag in [('cache_ram_mib', '--cache-ram'), ('context_checkpoints', '--ctx-checkpoints')]:
+        block = re.search(r'(?m)^[^\n]*(?<!\S)' + re.escape(flag) +
+                          r'(?=[,\s])[^\n]*(?:\n(?![ \t]*-{1,2}[A-Za-z])[ \t]{10,}[^\n]*)*', help_text)
+        match = re.search(r'\(default:\s*(\d+)(?=[,\s)])', block[0]) if block else None
+        out[name] = dict(status=flag_status(flag), advertised_default=int(match[1]) if match else None,
+                         reason='Blank preserves engine defaults for normal launches. Zero disables this cache component; finite values do not cap total process memory.')
     for name, flag in [('batch_size', '--batch-size'), ('ubatch_size', '--ubatch-size')]:
         default = defaults.get(name)
         out[name] = dict(status=flag_status(flag), advertised_default=default,
@@ -191,7 +205,8 @@ def launch_args(s, port):
     add('--jinja')
     if s.backend_sampling:
         add('--backend-sampling')
-    for flag, value in [('--batch-size', s.batch_size), ('--ubatch-size', s.ubatch_size)]:
+    for flag, value in [('--batch-size', s.batch_size), ('--ubatch-size', s.ubatch_size),
+                        ('--cache-ram', s.cache_ram_mib), ('--ctx-checkpoints', s.context_checkpoints)]:
         if value is not None:
             add(flag, value)
     if s.chat_template:

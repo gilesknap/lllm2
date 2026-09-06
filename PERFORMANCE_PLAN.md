@@ -1,6 +1,6 @@
 # Qwen performance and understandable defaults: implementation slices
 
-Status: slices 1–4 complete; slices 5–8 not started.
+Status: slices 1–5 complete; slices 6–8 not started.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
@@ -313,6 +313,72 @@ Done when each Qwen has a reproducible multi-turn result and cold/warm rows cann
 be confused. Include edited-history misses and cancellation. If a complete
 streaming adapter would make the slice too large, split measurement support from
 the cache policy and update this table before proceeding.
+
+Slice 5 completion — 6 September 2026:
+- Separate controlled token-prefix conversation mode runs six turns, then exact
+  uncached replays: cold, append, suffix edit, switch away/back, early-history edit.
+  One owned engine per repetition; existing cold benchmark/context search remains
+  unchanged. Exact generated token IDs form the next prefix; no retokenization.
+- Verified pinned build serialization: `timings.cache_n` is reused input,
+  `prompt_n` is processed input; `tokens_cached` is final slot occupancy. Samples
+  require processed+reused=input and complete output IDs. Upstream UTF-8 buffering
+  can omit stream IDs; such runs fail with partial evidence instead of guessing.
+- Bounded native SSE records client first-token event, first text and completion
+  separately from engine timings. Memory evidence samples owned-process RSS,
+  anonymous/swap/available RAM and GPU use. RSS is not cache allocation. Errors,
+  cancellation and latest-launch-only diagnostics retain partial evidence.
+- Nullable finite cache/checkpoint Advanced controls preserve normal launch
+  defaults (installed8192MiB/32). Warm-only blanks resolve to measured2048MiB/4;
+  explicit0 and512 remain valid. These are not total RAM caps or a larger-context
+  reuse guarantee. Warm results cannot be promoted as general cold baselines.
+
+Both exact CUDA checkpoints used16384 allocation, one slot, logical2048/micro512,
+MTP3, q8_0 main/draft, flash on, default effort, target sampling omitted and streams
+explicitly off. Initial input4096, each output128; appended/edited input4240.
+Six records contain96 requests (48 conversation turns and48 exact cold controls):
+
+| Model | Cache MiB / checkpoints | Repeats | Result ID |
+|---|---|---|---|
+| Dense |512 /4|1|`4ec9dd89-8ec8-411c-b699-b2ff83699020`|
+| MTP MoE |512 /4|1|`e54a0ab2-c091-4e15-acdc-eeda35c718b3`|
+| Dense |0 /0|1|`3e56eeb2-8fd4-4344-bfb6-3cda32d3e075`|
+| MTP MoE |0 /0|1|`b868ae82-1419-416f-b721-53bdf149704a`|
+| Dense |2048 /4|2|`ca55808b-8ad1-4d5d-b878-70c6e1fbe7ba`|
+| MTP MoE |2048 /4|2|`4d4dfdad-9cfa-43bb-a175-27f28e0e4e41`|
+
+The512MiB pilot reused append/suffix prefixes but could not restore switch-back.
+Dense saved states (~777/614MiB) exceeded the cap; MoE evicted the prior entry.
+The0/0 control retained immediate append reuse but replayed edited/switch-back
+prompts. With2048/4, both repetitions of both models restored switch-back.
+All uncached controls processed their full input; early-history edits still missed.
+
+| Model / turn (2048 /4) | Processed / reused input | Median first-token event seconds, warm / uncached | Median completion seconds, warm / uncached |
+|---|---|---|---|
+| Dense / append |17 /4223|0.257 /4.074|2.565 /6.396|
+| Dense / suffix edit |660 /3580|0.875 /4.105|3.354 /6.346|
+| Dense / switch back |4 /4236|0.540 /4.467|3.019 /6.740|
+| Dense / early-history edit |4240 /0|4.374 /4.468|6.601 /6.700|
+| MTP MoE / append |17 /4223|0.128 /1.741|0.969 /2.598|
+| MTP MoE / suffix edit |660 /3580|0.417 /1.794|1.250 /2.535|
+| MTP MoE / switch back |4 /4236|0.214 /1.942|1.053 /2.681|
+| MTP MoE / early-history edit |4240 /0|1.915 /1.940|2.762 /2.797|
+
+At2048/4, sampled peak process RSS was2735MiB dense /1875MiB MoE; total GPU
+peaks17171/19055MiB, minimum post-turn available host RAM24077/25160MiB.
+At0/0 RSS peaks were650/745MiB. Checkpoint/cache policy trades RAM and overhead
+for edited/switch-back reuse; no general decode-speed claim or normal-default
+promotion. Memory includes working buffers/mapped pages, not just saved states.
+
+Real cancellation `cae65eb2-f663-44a7-832c-38f2493b8377` retained140 output IDs
+and stopped the owned engine in0.59seconds, with no next turn. Independent review,
+mocked bad/missing counts, timeout/error/dribbling SSE/cancellation/late callbacks,
+legacy defaults and launch-log isolation checks passed. Full saved token vectors
+matched their replay controls; saved preferences remained unchanged. Live browser
+and legacy cold smoke are recorded in HANDOFF.md. No model left serving.
+
+Exact-source evidence: [timing serialization](https://github.com/ggml-org/llama.cpp/blob/662a0b0/tools/server/server-common.cpp#L67),
+[finite policy flags](https://github.com/ggml-org/llama.cpp/blob/662a0b0/common/arg.cpp#L1695),
+[stream token buffering](https://github.com/ggml-org/llama.cpp/blob/662a0b0/tools/server/server-context.cpp#L1828).
 
 ### Slice 6: copying and editing with MTP plus lookup
 
