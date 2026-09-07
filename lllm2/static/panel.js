@@ -167,8 +167,12 @@ function benchmarkCost(){
  const upper=Math.floor(Number($('context').value)/Number($('slots').value))-Math.max(Number($('output_tokens').value),hasSource?2048:0)-32;
  const sizes=[...new Set([...(quick?[1024,16384,65536].map(n=>Math.min(n,upper)):[Number($('prompt_tokens').value)]),...(full?[upper]:[])])].sort((a,b)=>a-b);
  const workloads=document.querySelectorAll('#workloads input:checked').length, repeats=Number($('repeats').value);
- if(!Number.isFinite(upper)||upper<128){$('benchmark-time-tip').textContent='Adjust the prompt and output budgets to estimate timing.';$('benchmark-cost').textContent='Increase launch context or reduce output tokens to fit a real prompt.';return;}
- $('benchmark-cost').textContent=`Per configuration: ${sizes.length*workloads*repeats} speed samples (${sizes.map(n=>n.toLocaleString()).join(' / ')} input tokens), plus ${search?'up to 8 context probes':'no context search'}.`;$('benchmark-time-tip').textContent=(quick&&!full&&!hasSource&&Number($('output_tokens').value)===256&&workloads>0?`Rough speed-test estimate: ${2*workloads*repeats}–${3*workloads*repeats} minutes; smaller windows may finish sooner. `:'')+(full?'Full-window time is included in the sample count; see the full-window option’s timing tooltip. ':'')+'Suites multiply this work across configurations. Estimates are based on the observed Qwen/Vulkan run, not a time limit.';
+ $('benchmark-time-tip').textContent='Rough guide from an observed Qwen/Vulkan run; other models, engines and hardware may take longer or finish sooner. Smaller windows may finish sooner. Suites and selected combinations repeat the work for each configuration. Context probes are additional and can take several minutes each. This is not a time limit.';
+ if(!Number.isFinite(upper)||upper<128){$('benchmark-time').textContent='Adjust the prompt and output budgets to estimate timing.';$('benchmark-cost').textContent='Increase experiment context or reduce output tokens to fit a real prompt.';return;}
+ if(!workloads){$('benchmark-time').textContent='Select a workload to estimate timing.';$('benchmark-cost').textContent='No cold speed-test workloads selected.';return;}
+ const estimated=quick&&!full&&!hasSource&&Number($('output_tokens').value)===256&&Number.isInteger(repeats)&&repeats>=1&&repeats<=5;
+ $('benchmark-time').textContent=(estimated?`Rough speed-test time: ${2*workloads*repeats}–${3*workloads*repeats} minutes per configuration.`:'Speed-test time: no estimate for these settings.')+(search?' Context-search time is additional.':'');
+ $('benchmark-cost').textContent=`Per configuration: ${sizes.length*workloads*repeats} speed samples (${sizes.map(n=>n.toLocaleString()).join(' / ')} input tokens), plus ${search?'up to 8 context probes':'no context search'}.`;
 }
 function resetExperiments(){
  for(const control of $('experiments').querySelectorAll('input')){
@@ -361,7 +365,7 @@ function launchState(){
  $('launch-state').textContent=running.running&&!same?'Settings shown are for the next start. The current model is unchanged.':'';
  $('global-operation').hidden=!job.active;
  renderMarkup('global-operation',job.active?`${esc(launchJob?'Model starting':'Experiment running')} · ${esc(job.phase||job.status)} <a id="operation-progress" href="#${launchJob?'launch':'experiments'}">View progress</a>`:'');
- document.querySelectorAll('.run').forEach(b=>{b.disabled=!ready||!!job.active||view!=='experiments';b.textContent=(running.running?'Stop model and run · ':'')+b.dataset.label;});
+ document.querySelectorAll('.run').forEach(b=>{b.disabled=!ready||!!job.active||view!=='experiments'||(b.dataset.mode==='combinations'&&!combinations.length);b.textContent=(running.running?'Stop model and run · ':'')+b.dataset.label;});
  $('cancel').disabled=!connected||!job.active||pendingAction;
  $('save-default').disabled=!ready||view!=='launch';
  modelControlsState();
@@ -627,8 +631,13 @@ document.querySelectorAll('.run').forEach(b=>{
   try{await api('/api/benchmark',data);message('Experiment queued. Partial results are saved.');}finally{await poll();pendingAction=false;launchState();}
  });
 });
-$('add-combo').onclick=()=>{combinations.push(structuredClone(settings()));$('combos').textContent=combinations.map((s,i)=>`${i+1}. ${modelName(s.model)} · ${s.speculation} / ${cacheLabel(s)} / flash ${s.flash} / effort ${s.effort} / draft ${s.draft_length}`).join('\n');};
-$('clear-combos').onclick=()=>{combinations=[];$('combos').textContent='No combinations selected.';};
+function renderCombinations(){
+ $('combo-count').textContent=`${combinations.length} selected`;
+ $('combos').textContent=combinations.length?combinations.map((s,i)=>`${i+1}. ${modelName(s.model)} · ${s.speculation} / ${cacheLabel(s)} / flash ${s.flash} / effort ${s.effort} / draft ${s.draft_length}`).join('\n'):'No combinations selected. Add the current settings to begin.';
+ launchState();
+}
+$('add-combo').onclick=()=>{combinations.push(structuredClone(settings()));renderCombinations();};
+$('clear-combos').onclick=()=>{combinations=[];renderCombinations();};
 async function previewResult(id,useContext=false){
  const n=++selectionSequence;validationSequence++;resolving=true;validationSnapshot='';launchState();
  try{
