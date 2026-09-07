@@ -13,6 +13,7 @@ import typer
 from .discovery import engines
 from .engine import Cancelled, Engine
 from .engine_install import install
+from .harness import run_harness
 from .launch import choose_launch, installed_models
 from .settings import Settings
 
@@ -162,6 +163,43 @@ def launch(
     Example: lllm2 launch --backend CUDA --timeout 300
     """
     raise typer.Exit(_launch(model, engine, backend.value if backend else "", device, timeout))
+
+
+HARNESS_CONTEXT = {"allow_extra_args": True, "ignore_unknown_options": True,
+                   "allow_interspersed_args": False}
+
+
+@app.command(context_settings=HARNESS_CONTEXT)
+def claude(ctx: typer.Context) -> None:
+    """Launch Claude Code against the running local model.
+
+    Start a model in the panel or with lllm2 launch first. Configuration applies
+    only to this session. Additional arguments go to Claude unchanged.
+    Use -- --help for Claude's help. Example: lllm2 claude -p "Explain this repo"
+    """
+    raise typer.Exit(run_harness('claude', ctx.args))
+
+
+@app.command(context_settings=HARNESS_CONTEXT)
+def codex(ctx: typer.Context) -> None:
+    """Launch Codex against the running local model using the Responses API.
+
+    Start a model first; the engine must support /v1/responses. Configuration
+    applies only to this session. Additional arguments go to Codex unchanged.
+    Use -- --help for Codex's help. Example: lllm2 codex exec "Explain this repo"
+    """
+    raise typer.Exit(run_harness('codex', ctx.args))
+
+
+@app.command(context_settings=HARNESS_CONTEXT)
+def pi(ctx: typer.Context) -> None:
+    """Launch Pi (pi.dev) against the running local model.
+
+    Start a model first. A temporary extension configures the local provider
+    for this session. Additional arguments go to Pi unchanged.
+    Use -- --help for Pi's help. Example: lllm2 pi -p "Explain this repo"
+    """
+    raise typer.Exit(run_harness('pi', ctx.args))
 
 
 def main(argv: list[str] | None = None) -> int:
