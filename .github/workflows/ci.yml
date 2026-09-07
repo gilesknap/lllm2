@@ -10,6 +10,11 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    uses: ./.github/workflows/_tox.yml
+    with:
+      tox: pre-commit,type-checking
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -23,7 +28,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
-      - run: uv run --locked python -m unittest discover -s tests -v
+      - run: uv run --locked tox -e tests
 
   browser:
     runs-on: ubuntu-latest
@@ -48,19 +53,19 @@ jobs:
         with:
           python-version: '3.12'
       - run: uv sync --locked --group docs
-      - run: uv run --locked sphinx-build -W --keep-going -b html docs docs/_build/html
+      - run: uv run --locked tox -e docs
       - uses: actions/upload-artifact@v4
         with:
           name: docs-html
-          path: docs/_build/html
+          path: build/html
           retention-days: 7
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
-          path: docs/_build/html
+          path: build/html
 
   docs:
-    needs: [test, browser, docs-build]
+    needs: [lint, test, browser, docs-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
@@ -81,7 +86,7 @@ jobs:
     uses: ./.github/workflows/_dist.yml
 
   pypi:
-    needs: [test, browser, docs-build, dist]
+    needs: [lint, test, browser, docs-build, dist]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     uses: ./.github/workflows/_pypi.yml
     permissions:
