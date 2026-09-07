@@ -537,6 +537,7 @@ async function poll(){
  pollPending=true;
  try{
   const s=await api('/api/status');statusState=s;token=s.token;connected=true;
+  $('app-version').textContent=s.version?`Version ${s.version}`:'';
   if(startAttempt&&s.job.request_id===startAttempt.request_id&&['failed','cancelled','serving'].includes(s.job.status))startAttempt=null;
   renderHardware(s.hardware);
   $('endpoint').textContent=s.engine.ready?`API on model workstation: ${s.endpoint}`:'';

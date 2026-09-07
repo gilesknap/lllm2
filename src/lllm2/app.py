@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import config, downloads
+from . import __version__, config, downloads
 from .bench import WORKLOADS, Bench
 from .defaults import starting_defaults
 from .discovery import CATALOG, engines, hardware, probe
@@ -363,6 +363,7 @@ def serve(host="127.0.0.1", port=8082):
                     200,
                     {
                         "token": app.token,
+                        "version": __version__,
                         "engine": app.engine.state(),
                         "job": app.bench.snapshot(),
                         "hardware": hardware(),

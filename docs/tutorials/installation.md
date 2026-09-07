@@ -14,7 +14,7 @@ module load uv
 Then install the workbench:
 
 ```bash
-uv tool install lllm2
+uv tool install --upgrade lllm2
 ```
 
 ## Prepare an engine

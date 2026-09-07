@@ -23,6 +23,7 @@ fs.writeFileSync(artifacts+'/after.html',source);
 const assert=require('node:assert/strict');
 (async()=>{try{
  const p=await b.open('file://'+artifacts+'/after.html');await new Promise(r=>setTimeout(r,600));
+ assert.equal(await p.eval("document.getElementById('app-version').textContent"),'Version 1.2.3-test');
  const run=expr=>p.eval(expr.includes('await ')?'(async()=>{'+expr+'})()':expr);
  assert.equal(await run('$(' + JSON.stringify('start') + ').disabled'),false);
  await run("$('customize-toggle').click()");assert.equal(await run("$('customize').hidden"),false);

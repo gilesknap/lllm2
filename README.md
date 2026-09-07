@@ -12,7 +12,7 @@ On Linux with Python 3.11+ and a working NVIDIA driver,
 [install uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 
 ```bash
-uv tool install lllm2
+uv tool install --upgrade lllm2
 lllm2 engines install cuda
 lllm2
 ```
