@@ -15,6 +15,7 @@ case '/api/launch/check':body={valid:!fixture.checkError,error:fixture.checkErro
 case '/api/default/resolve':body={settings:data.source==='saved'?fixture.saved:sample,source:data.source==='saved'?'Saved defaults · manual preferences':'Estimated starting settings'};break;
 case '/api/default/save':fixture.saved=data.result_id?fixture.results.find(r=>r.id===data.result_id).settings:data.settings;body=fixture.saved;break;
 case '/api/results':body=fixture.results;break;
+case '/api/results/export':body=fixture.fullResults||fixture.results;break;
 case '/api/result/preview':{const r=fixture.results.find(r=>r.id===data.result_id);body={settings:r.settings,source:'Experiment result',result_id:r.id,evidence:{kind:'benchmark'},notes:[]};break;}
 case '/api/start':fixture.engine={running:true,ready:true,settings:data.settings,pid:123};break;
 }return {ok:true,json:async()=>structuredClone(body)};};

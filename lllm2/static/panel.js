@@ -75,20 +75,83 @@ function slotNote(){$('slot-note').textContent=`${Math.floor(Number($('context')
 function message(s,error=false){$('message').textContent=s;$('message').style.display='block';$('message').className=error?'error':'';}
 async function api(path,data){const r=await fetch(path,{signal:AbortSignal.timeout(path==='/api/start'?15000:path==='/api/status'?10000:180000),...(data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-LLLM2-Token':token},body:JSON.stringify(data)})});const d=await r.json();if(!r.ok)throw Error(d.error||r.statusText);return d;}
 async function attempt(fn){try{await fn();}catch(e){message(e.message,true);}}
-async function refreshResults(){
- results=await api('/api/results');const key=JSON.stringify(results.map(r=>[r.id,r.status,r.samples.length,r.probes.length,r.finished]));if(key===lastResults)return;lastResults=key;
- const fmt=x=>x==null?'—':Number(x).toLocaleString(undefined,{maximumFractionDigits:1});
- $('results').innerHTML=results.flatMap(r=>(r.samples.length?r.samples:[null]).map((s,i)=>{
-  const warm=r.measurement_mode==='warm-conversation';
-  return `<tr><td><b>${esc(r.label)}</b> · ${esc(warm?(s?.control?'Uncached replay':'Conversation')+' · '+(s?.turn||r.status):s?.workload||r.status)}<small>${warm?'Warm experiment':'Cold benchmark'} · ${esc(s?.status||r.status)}</small><small>${esc(r.settings.model.split('/').slice(-2).join('/'))}</small><small>${esc(r.started)} · ${esc(r.settings.backend)} · ${esc(r.status)}</small><small>${esc(s?.error||r.error||'')}</small>${s?.adherence?`<small>Source adherence: ${esc(s.adherence.status)}</small>`:''}</td>
-  <td>${fmt(warm?s?.processed_prefill_tok_s:s?.prefill_tok_s)}${warm?'<small>Processed tokens only</small>':''}</td>
-  <td>${fmt(s?.decode_tok_s)}${warm?`<small>First token event: ${fmt(s?.first_token_event_seconds)} s<br>First text: ${fmt(s?.first_text_seconds)} s<br>Completion: ${fmt(s?.completion_seconds)} s</small>`:''}</td>
-  <td>${fmt(s?.input_tokens)} / ${fmt(s?.output_tokens)}${s?.adherence?`<small>Output requested / cap: ${fmt(s.requested_output_budget)} / ${fmt(s.output_budget)} · total ${fmt(s.wall_seconds)} s</small>`:''}${warm?`<small>Processed ${fmt(s?.processed_tokens)} · reused ${fmt(s?.reused_tokens)}</small>`:''}</td>
-  <td>${fmt(s?.peak_total_gpu_used_mib)}${s?.peak_engine_rss_mib!=null?`<small>Engine RSS: ${fmt(s.peak_engine_rss_mib)} MiB sampled peak</small>`:''}</td>
-  <td>${fmt(r.largest_observed_context)} / ${fmt(r.recommended_context)}<small>${esc(r.context_search_stop_reason||'')}${r.context_search_status==='complete'&&r.context_failed_upper_bound?`Search range: ${fmt(r.largest_observed_context)}–${fmt(r.context_failed_upper_bound)} tokens. `:''}${r.context_ceiling_reached?'Search ceiling reached; maximum may be higher.':''}</small></td>
-  <td><details><summary>${esc(r.settings.speculation)} · ${esc(cacheLabel(r.settings))}</summary><pre>${esc(JSON.stringify({settings:r.settings,cache_settings:s?.cache_settings||r.cache_settings,batch_settings:s?.batch_settings||r.batch_settings,execution_settings:s?.execution_settings||r.execution_settings,engine:r.engine,options:r.options,timings:s?.timings,speculative_settings:s?.speculative_settings,adherence:s?.adherence,host_before:s?.host_before,host_after:s?.host_after,context_search_resolution:r.context_search_resolution,context_failed_upper_bound:r.context_failed_upper_bound,context_seed_from_speed_sample:r.context_seed_from_speed_sample,probes:r.probes.map(p=>({context:p.context_per_slot,status:p.status,error:p.error}))},null,2))}</pre></details>${!warm&&i===0&&r.status==='complete'&&r.quality_status!=='failed'?`<button data-promote="${esc(r.id)}">Try in Launch</button>${r.recommended_context?`<button data-context="${esc(r.id)}">Try with headroom context</button>`:''}`:''}</td></tr>`;
- })).join('')||'<tr><td colspan="7">No experiments yet.</td></tr>';
+let resultSort={key:'started',direction:'descending'}, resultRequest=0;
+const expandedResults=new Set();
+const resultFormat=value=>Number.isFinite(value)?value.toLocaleString(undefined,{maximumFractionDigits:1}):'—';
+const sampleMode=(r,s)=>r.measurement_mode==='warm-conversation'?(s?.control?'Uncached replay':'Warm conversation'):'Cold benchmark';
+const sampleStatus=(r,s)=>s?.status||r.status||'unknown';
+function statusClass(status){return status==='complete'?'complete':['failed','error'].includes(status)?'failed':['cancelled','interrupted','partial'].includes(status)?'partial':'';}
+function statusBadge(status){return `<span class="result-status ${statusClass(status)}">${esc(status)}</span>`;}
+function resultRows(){
+ const rows=results.flatMap(r=>(r.samples.length?r.samples:[null]).map((s,i)=>({r,s,i,key:encodeURIComponent(r.id)+'-'+i})));
+ const value=({r,s})=>({started:Date.parse(r.started),status:sampleStatus(r,s),prefill:r.measurement_mode==='warm-conversation'?s?.processed_prefill_tok_s:s?.prefill_tok_s,decode:s?.decode_tok_s,input:s?.input_tokens,gpu:s?.peak_total_gpu_used_mib})[resultSort.key];
+ const missing=v=>v==null||(typeof v==='number'&&!Number.isFinite(v));
+ return rows.sort((a,b)=>{
+  const av=value(a),bv=value(b);if(missing(av)||missing(bv))return Number(missing(av))-Number(missing(bv));
+  const comparison=typeof av==='string'?av.localeCompare(bv):av-bv;
+  return resultSort.direction==='ascending'?comparison:-comparison;
+ });
 }
+function resultDetails({r,s,i,key}){
+ const fmt=resultFormat,warm=r.measurement_mode==='warm-conversation',allocated=r.settings.context,slots=r.settings.slots;
+ const {samples,...record}=r;
+ return `<div class="result-detail-grid"><div><b>Configuration</b><p>${esc(r.settings.model)}</p><p>${esc(r.settings.backend)} · ${esc(r.settings.device)} · ${esc(r.settings.speculation)} · ${esc(cacheLabel(r.settings))}</p><p>${fmt(allocated/slots)} tokens per conversation · ${fmt(allocated)} total / ${fmt(slots)} slots</p></div>
+ <div><b>Sample & timing</b><p>${esc(sampleMode(r,s))}${s?.turn?' · '+esc(s.turn):''} · ${esc(s?.workload||'No sample')}</p><p>${fmt(s?.input_tokens)} input / ${fmt(s?.output_tokens)} output tokens · ${fmt(s?.wall_seconds??s?.completion_seconds)} s elapsed</p><p>Output requested / cap: ${fmt(s?.requested_output_budget)} / ${fmt(s?.output_budget)}</p>${warm?`<p>Processed ${fmt(s?.processed_tokens)} · reused ${fmt(s?.reused_tokens)} tokens</p><p>First token event ${fmt(s?.first_token_event_seconds)} s · first text ${fmt(s?.first_text_seconds)} s · completion ${fmt(s?.completion_seconds)} s</p>`:''}<p>Peak engine RSS ${fmt(s?.peak_engine_rss_mib)} MiB · sampled total VRAM ${fmt(s?.peak_total_gpu_used_mib)} MiB</p>${s?.adherence?`<p>Source adherence: ${esc(s.adherence.status)}</p>`:''}</div>
+ <div><b>Context search</b><p>Observed ${fmt(r.largest_observed_context)} / headroom estimate ${fmt(r.recommended_context)} tokens per conversation</p><p>${esc(r.context_search_status||'No context search recorded')}${r.context_failed_upper_bound?' · failed upper bound '+fmt(r.context_failed_upper_bound):''}</p><p>${esc(r.context_search_stop_reason||'')}${r.context_ceiling_reached?' Search ceiling reached; maximum may be higher.':''}</p></div>
+ <div><b>Run status</b><p>${statusBadge(r.status)} · ${esc(r.started)}</p>${r.quality_status?`<p>Quality/adherence: ${esc(r.quality_status)}</p>`:''}<p class="error">${esc([s?.error,r.error].filter(Boolean).join('\n'))}</p><p>Result: ${esc(r.id)} · sample ${s?i+1:'unavailable'}</p></div></div>
+ <details id="result-evidence-${key}"><summary id="result-evidence-summary-${key}">Exact settings & measurement evidence</summary><pre>${esc(JSON.stringify({...record,sample:s},null,2))}</pre></details>
+ <div class="row"><button data-copy-row="${key}" id="copy-row-${key}">Copy row</button>${i===0&&!resultBlock(r)?`<button data-promote="${esc(r.id)}">Try in Launch</button>${r.recommended_context?`<button data-context="${esc(r.id)}">Try with headroom context</button>`:''}`:''}</div>`;
+}
+function renderResults(){
+ const rows=resultRows(),fmt=resultFormat;
+ $('export-csv').disabled=$('copy-results').disabled=!rows.length;
+ const status=rows.length?`${rows.filter(row=>row.s).length} samples · ${results.length} runs · sorted by ${({started:'run date',status:'sample status',prefill:'prefill speed',decode:'decode speed',input:'input tokens',gpu:'peak VRAM'})[resultSort.key]}, ${resultSort.direction}.`:'No experiments yet.';
+ if($('results-status').textContent!==status)$('results-status').textContent=status;
+ document.querySelectorAll('[data-sort]').forEach(b=>{const direction=b.dataset.sort===resultSort.key?resultSort.direction:'none';b.closest('th').setAttribute('aria-sort',direction);b.querySelector('span').textContent=direction==='ascending'?' ↑':direction==='descending'?' ↓':' ↕';});
+ const liveKeys=new Set(rows.map(row=>row.key));for(const key of expandedResults)if(!liveKeys.has(key))expandedResults.delete(key);
+ renderMarkup('results',rows.map(row=>{
+  const {r,s,key}=row,warm=r.measurement_mode==='warm-conversation',status=sampleStatus(r,s),expanded=expandedResults.has(key);
+  return `<tr data-result-key="${key}"><td class="result-name"><b>${esc(r.label)}</b><small>${esc(s?.workload||'No sample')} · ${esc(sampleMode(r,s))}${s?.turn?' · '+esc(s.turn):''}</small><small class="result-model" title="${esc(r.settings.model)}">${esc(modelName(r.settings.model))} · ${esc(r.settings.backend)} · ${fmt(Math.floor(r.settings.context/r.settings.slots))} context</small><small>${esc(r.started)}</small><button id="expand-${key}" data-expand="${key}" aria-expanded="${expanded}" aria-controls="detail-${key}" aria-label="${expanded?'Hide':'Show'} details for ${esc(r.label)}, sample ${row.i+1}">${expanded?'Hide details':'Details'}</button></td>
+  <td>${statusBadge(status)}${status!==r.status?`<small>Run: ${esc(r.status)}</small>`:''}${r.quality_status==='failed'||s?.adherence?.status==='failed'?'<small class="error">Adherence failed</small>':''}</td>
+  <td>${fmt(warm?s?.processed_prefill_tok_s:s?.prefill_tok_s)}${warm?'<small>Processed tokens only</small>':''}</td><td>${fmt(s?.decode_tok_s)}</td><td>${fmt(s?.input_tokens)} / ${fmt(s?.output_tokens)}</td><td>${fmt(s?.peak_total_gpu_used_mib)}</td></tr>
+  <tr class="result-detail" id="detail-${key}" ${expanded?'':'hidden'}><td colspan="6">${resultDetails(row)}</td></tr>`;
+ }).join('')||'<tr><td colspan="6">No experiments yet.</td></tr>');
+}
+async function refreshResults(){
+ const n=++resultRequest,data=await api('/api/results');if(n!==resultRequest)return;
+ const key=JSON.stringify(data);if(key===lastResults)return;lastResults=key;results=data;renderResults();
+}
+// Numeric rates and measurement modes remain separate in spreadsheet exports.
+const resultColumns=[
+ ['result_id',({r})=>r.id],['sample_number',({s,i})=>s?i+1:null],['started',({r})=>r.started],['label',({r})=>r.label],
+ ['model',({r})=>r.settings.model],['engine',({r})=>r.settings.engine],['backend',({r})=>r.settings.backend],['device',({r})=>r.settings.device],
+ ['model_sha256',({r})=>r.model?.sha256],['engine_sha256',({r})=>r.engine?.sha256],['hardware_json',({r})=>r.hardware?JSON.stringify(r.hardware):null],
+ ['run_status',({r})=>r.status],['sample_status',({r,s})=>sampleStatus(r,s)],['measurement_mode',({r})=>r.measurement_mode||'cold'],['sample_kind',({r,s})=>sampleMode(r,s)],
+ ['workload',({s})=>s?.workload],['turn',({s})=>s?.turn],['adherence_status',({s})=>s?.adherence?.status],['quality_status',({r})=>r.quality_status],
+ ['input_tokens',({s})=>s?.input_tokens],['output_tokens',({s})=>s?.output_tokens],['requested_output_budget',({s})=>s?.requested_output_budget],['output_cap',({s})=>s?.output_budget],
+ ['prefill_tok_s',({s})=>s?.prefill_tok_s],['processed_prefill_tok_s',({s})=>s?.processed_prefill_tok_s],['decode_tok_s',({s})=>s?.decode_tok_s],
+ ['processed_tokens',({s})=>s?.processed_tokens],['reused_tokens',({s})=>s?.reused_tokens],['first_token_event_seconds',({s})=>s?.first_token_event_seconds],['first_text_seconds',({s})=>s?.first_text_seconds],['completion_seconds',({s})=>s?.completion_seconds],['wall_seconds',({s})=>s?.wall_seconds],
+ ['peak_total_gpu_used_mib',({s})=>s?.peak_total_gpu_used_mib],['peak_engine_rss_mib',({s})=>s?.peak_engine_rss_mib],
+ ['allocated_context_total',({r})=>r.settings.context],['slots',({r})=>r.settings.slots],['observed_context_per_slot',({r})=>r.largest_observed_context],['headroom_estimate_per_slot',({r})=>r.recommended_context],['context_search_status',({r})=>r.context_search_status],
+ ['sample_error',({s})=>s?.error],['run_error',({r})=>r.error],['settings_json',({r})=>JSON.stringify(r.settings)]
+];
+function tableText(rows,separator=','){
+ const cell=value=>{
+  let text=value==null?'':String(value);
+  // Prevent text labels/paths from becoming spreadsheet formulas; numeric data stays numeric.
+  if(typeof value==='string'&&/^[\s]*[=+\-@]/.test(text))text="'"+text;
+  return '"'+text.replace(/"/g,'""')+'"';
+ };
+ const newline=separator===','?'\r\n':'\n';
+ return [resultColumns.map(([name])=>cell(name)).join(separator),...rows.map(row=>resultColumns.map(([,value])=>cell(value(row))).join(separator))].join(newline)+newline;
+}
+function downloadText(text,type,name){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('export-csv').onclick=()=>downloadText('\ufeff'+tableText(resultRows()),'text/csv;charset=utf-8','lllm2-results.csv');
+$('copy-results').onclick=()=>attempt(()=>copyText(tableText(resultRows(),'\t'),'Results table',false));
+$('results-table').querySelector('thead').onclick=e=>{
+ const b=e.target.closest('[data-sort]');if(!b)return;
+ resultSort={key:b.dataset.sort,direction:resultSort.key===b.dataset.sort&&resultSort.direction==='descending'?'ascending':'descending'};renderResults();
+};
 function resetExperimentCeiling(modelPath=$('model').value){
  const model=discovered.models?.find(m=>m.path===modelPath);
  const entry=discovered.catalog?.find(m=>m.file===modelPath.split('/').pop());
@@ -185,7 +248,8 @@ $('file-filter').oninput=renderFiles;
 $('file-use').onclick=()=>{if(selectedFile)useFile(selectedFile);};
 for(const id of ['file-close','file-cancel'])$(id).onclick=closeFiles;
 $('file-dialog').addEventListener('cancel',()=>{fileRequest++;});
-$('export').onclick=()=>attempt(async()=>{const full=await api('/api/results/export');const url=URL.createObjectURL(new Blob([JSON.stringify(full,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='lllm2-results.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+$('export').onclick=()=>attempt(async()=>downloadText(JSON.stringify(await api('/api/results/export'),null,2),'application/json','lllm2-results.json'));
+$('skip-content').onclick=e=>{e.preventDefault();const section=$(view+'-view');section.focus();section.scrollIntoView({block:'start'});};
 
 
 // One editor, moved between views, with independent in-memory drafts and provenance.
@@ -207,6 +271,7 @@ async function switchView(next){
  if(resolving||scanPending){queuedView=next;return;}
  rememberDraft();selectionSequence++;validationSequence++;clearTimeout(editTimer);resolving=false;validationSnapshot='';
  view=next;
+ $('skip-content').href='#'+next+'-view';
  if(!drafts[next])drafts[next]=structuredClone(drafts.launch);
  const d=drafts[next];loadedDefaults=d.defaults;engineOverride=d.engineOverride;savedExists=d.savedExists;selectionNote=d.selectionNote||'';
  $('launch-view').hidden=next!=='launch';$('experiments-view').hidden=next!=='experiments';
@@ -524,9 +589,9 @@ for(const k of ['stop','cancel'])$(k).onclick=()=>attempt(async()=>{
  if(pendingAction)return;pendingAction=true;launchState();
  try{await api('/api/'+k,{});actionError='';}finally{await poll();pendingAction=false;launchState();}
 });
-async function copyText(text,label){
- try{await navigator.clipboard.writeText(text);message(label+' copied. Use it on the model workstation.');}
- catch{$('copy-text').value=text;$('copy-dialog').showModal();$('copy-text').focus();$('copy-text').select();}
+async function copyText(text,label,workstation=true){
+ try{await navigator.clipboard.writeText(text);message(label+' copied.'+(workstation?' Use it on the model workstation.':''));}
+ catch{$('copy-title').textContent=workstation?'Copy on the model workstation':'Copy '+label.toLowerCase();$('copy-text').rows=workstation?1:10;$('copy-text').value=text;$('copy-dialog').showModal();$('copy-text').focus();$('copy-text').select();}
 }
 $('copy-api').onclick=()=>attempt(()=>copyText(statusState.endpoint,'API address'));
 $('copy-agent').onclick=()=>attempt(()=>copyText($('agent-command').textContent,'Agent command'));
@@ -575,7 +640,15 @@ async function previewResult(id,useContext=false){
   message('Experiment settings copied to Launch. Review before starting or saving; your saved settings are unchanged.');
  }finally{if(n===selectionSequence){resolving=false;defaultState();launchState();finishNavigation();}}
 }
-$('results').onclick=e=>{const b=e.target.closest('[data-promote],[data-context]');if(b)attempt(()=>previewResult(b.dataset.promote||b.dataset.context,!!b.dataset.context));};
+$('results').onclick=e=>{
+ const expand=e.target.closest('[data-expand]');
+ if(expand){
+  const key=expand.dataset.expand,open=!expandedResults.has(key);if(open)expandedResults.add(key);else expandedResults.delete(key);
+  expand.setAttribute('aria-expanded',String(open));expand.setAttribute('aria-label',expand.getAttribute('aria-label').replace(/^(Show|Hide)/,open?'Hide':'Show'));expand.textContent=open?'Hide details':'Details';$('detail-'+key).hidden=!open;return;
+ }
+ const copy=e.target.closest('[data-copy-row]');if(copy){const row=resultRows().find(r=>r.key===copy.dataset.copyRow);if(row)attempt(()=>copyText(tableText([row],'\t'),'Result row',false));return;}
+ const b=e.target.closest('[data-promote],[data-context]');if(b)attempt(()=>previewResult(b.dataset.promote||b.dataset.context,!!b.dataset.context));
+};
 function resultBlock(r){return r.measurement_mode==='warm-conversation'?'Warm-only evidence':r.quality_status==='failed'?'Source adherence failed':r.status!=='complete'||!r.samples?.length?'No completed samples':'';}
 $('load-experiment').onclick=()=>attempt(async()=>{
  $('load-menu').open=false;$('experiment-picker').showModal();$('experiment-picker-error').textContent='';$('experiment-options').textContent='Loading experiments…';

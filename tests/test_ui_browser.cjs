@@ -18,7 +18,7 @@ const fs=require('node:fs');
 const path=require('node:path'),os=require('node:os');
 const root=path.resolve(__dirname,'..'),artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'lllm2-ui-'));
 const b=browser();
-const source=fs.readFileSync(root+'/lllm2/static/index.html','utf8').replace('<script src="/static/panel.js"></script>',()=>'<script>'+fs.readFileSync(path.join(__dirname,'ui_fixture.js'),'utf8')+'</script><script>'+fs.readFileSync(root+'/lllm2/static/panel.js','utf8')+'</script>');
+const source=fs.readFileSync(root+'/lllm2/static/index.html','utf8').replace('<link rel="stylesheet" href="/static/panel.css">',()=>'<style>'+fs.readFileSync(root+'/lllm2/static/panel.css','utf8')+'</style>').replace('<script src="/static/panel.js"></script>',()=>'<script>'+fs.readFileSync(path.join(__dirname,'ui_fixture.js'),'utf8')+'</script><script>'+fs.readFileSync(root+'/lllm2/static/panel.js','utf8')+'</script>');
 fs.writeFileSync(artifacts+'/after.html',source);
 const assert=require('node:assert/strict');
 (async()=>{try{
@@ -113,7 +113,66 @@ const assert=require('node:assert/strict');
  assert.equal(await run("$('start').textContent"),'Running');
  await run("renderHardware({gpus:[{name:'GPU',used_mib:null,total_mib:8192}],ram:{used_gib:null,total_gib:null,available_gib:null}})");
  assert.match(await run("$('vram').textContent"),/VRAM —/);assert.match(await run("$('ram').textContent"),/RAM — \/ —/);
+ // Mixed result modes, numeric sorting, expandable evidence and spreadsheet exports.
+ const baselineSettings=await run('fixture.settings');
+ const resultFixture=(()=>{
+  const base={settings:{...baselineSettings},probes:[],quality_status:'passed',status:'complete'};
+  const sample={status:'complete',workload:'generate',input_tokens:1024,output_tokens:32,prefill_tok_s:120,decode_tok_s:25,peak_total_gpu_used_mib:4096,peak_engine_rss_mib:500};
+  return [
+   {...base,id:'cold',label:'Cold sample',started:'2026-09-07T09:02:00Z',samples:[sample],largest_observed_context:8192,recommended_context:7168},
+   {...base,id:'old',label:'Zero and missing',started:'2026-09-07T09:01:00Z',samples:[{...sample,decode_tok_s:0},{status:'failed',workload:'edit',error:'Sample failed, with "details"',output_tokens:0}]},
+   {...base,id:'warm',label:'Warm run',started:'2026-09-07T09:03:00Z',measurement_mode:'warm-conversation',samples:[{status:'partial',workload:'long-code',turn:'append',processed_prefill_tok_s:90,decode_tok_s:40,processed_tokens:20,reused_tokens:80,input_tokens:100,output_tokens:10},{status:'complete',control:true,turn:'append',processed_prefill_tok_s:400,decode_tok_s:100,reused_tokens:0}]},
+   {...base,id:'failed',label:'No samples',started:'2026-09-07T09:04:00Z',status:'failed',samples:[],error:'Engine did not start'},
+   {...base,id:'bad-source',label:'=SUM(1,2)\n"quoted"',started:'2026-09-07T09:03:30Z',quality_status:'failed',samples:[{...sample,decode_tok_s:999,adherence:{status:'failed'}}]}
+  ];
+ })();
+ await run('fixture.results='+JSON.stringify(resultFixture));
+ const savedBefore=await run('JSON.stringify(fixture.saved)');
+ const mutationsBefore=await run("fixture.posts.filter(p=>['/api/start','/api/benchmark','/api/default/save'].includes(p.path)).length");
+ await run("switchView('experiments')");
+ assert.equal(await run("document.querySelectorAll('#results>tr[data-result-key]').length"),7);
+ assert.equal(await run("document.querySelectorAll('#results>.result-detail:not([hidden])').length"),0);
+ assert.equal(await run("$('detail-warm-0').querySelector('[data-promote]')"),null);
+ assert.equal(await run("$('detail-bad-source-0').querySelector('[data-promote]')"),null);
+ assert.equal(await run("$('detail-failed-0').querySelector('[data-promote]')"),null);
+ await run("$('expand-cold-0').click();$('result-evidence-cold-0').open=true;$('expand-cold-0').focus();fixture.results[0].samples[0].decode_tok_s=75;await refreshResults()");
+ assert.equal(await run("$('detail-cold-0').hidden"),false);
+ assert.equal(await run("$('result-evidence-cold-0').open"),true);
+ assert.equal(await run('document.activeElement.id'),'expand-cold-0');
+ assert.match(await run("document.querySelector('[data-result-key=\"cold-0\"]').textContent"),/75/);
+ await run("document.querySelector('[data-sort=decode]').click()");
+ assert.equal(await run("document.querySelector('#results>tr[data-result-key]').dataset.resultKey"),'bad-source-0');
+ await run("document.querySelector('[data-sort=decode]').click()");
+ assert.equal(await run("document.querySelector('#results>tr[data-result-key]').dataset.resultKey"),'old-0');
+ assert.deepEqual(await run("[...document.querySelectorAll('#results>tr[data-result-key]')].slice(-2).map(r=>r.dataset.resultKey)"),['old-1','failed-0']);
+ await run("fixture.exports=[];downloadText=(text,type,name)=>fixture.exports.push({text,type,name});$('export-csv').click()");
+ const exported=await run('fixture.exports[0]');assert.equal(exported.name,'lllm2-results.csv');
+ const parsed=JSON.parse(require('node:child_process').execFileSync('python3',['-c','import csv,json,sys; print(json.dumps(list(csv.DictReader(sys.stdin))))'],{input:exported.text.replace(/^\ufeff/,''),encoding:'utf8'}));
+ assert.equal(parsed.length,7);assert.equal(parsed[0].decode_tok_s,'0');assert.equal(parsed.find(r=>r.result_id==='failed').decode_tok_s,'');
+ assert.equal(parsed.find(r=>r.result_id==='bad-source').label,"'=SUM(1,2)\n\"quoted\"");
+ const warmRows=parsed.filter(r=>r.result_id==='warm');assert.equal(warmRows[0].prefill_tok_s,'');assert.equal(warmRows[0].processed_prefill_tok_s,'90');assert.equal(warmRows[1].sample_kind,'Uncached replay');
+ assert.equal(parsed.find(r=>r.result_id==='cold').headroom_estimate_per_slot,'7168');
+ await run("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{fixture.copied=text}}});$('copy-results').click();await new Promise(r=>setTimeout(r,10))");
+ assert.equal(await run('fixture.copied'),await run("tableText(resultRows(),'\t')"));
+ await run("fixture.fullResults=[{id:'raw',samples:[{output:'Full evidence is retained'}]}];$('export').click();await new Promise(r=>setTimeout(r,20))");
+ assert.equal(JSON.parse(await run('fixture.exports[1].text'))[0].samples[0].output,'Full evidence is retained');
+ await run("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw Error('Unavailable')}}});$('copy-results').click();await new Promise(r=>setTimeout(r,10))");
+ assert.equal(await run("$('copy-text').value"),await run("tableText(resultRows(),'\t')"));assert.equal(await run("$('copy-text').tagName"),'TEXTAREA');await run("$('copy-close').click()");
+ // The skip link must keep the active view and move keyboard focus into it.
+ await run("$('skip-content').focus()");await key('Enter');assert.equal(await run('view'),'experiments');assert.equal(await run('document.activeElement.id'),'experiments-view');
+ await run("switchView('launch');$('skip-content').focus()");await key('Enter');assert.equal(await run('document.activeElement.id'),'launch-view');
+ await run("switchView('experiments')");assert.equal(await run("$('detail-cold-0').hidden"),false);
+ assert.equal(await run('JSON.stringify(fixture.saved)'),savedBefore);
+ assert.equal(await run("fixture.posts.filter(p=>['/api/start','/api/benchmark','/api/default/save'].includes(p.path)).length"),mutationsBefore);
+ for(const theme of ['light','dark'])for(const width of [1440,390]){
+  await p.call('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:theme}]});
+  await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
+  await run("$('comparisons').scrollIntoView({block:'start'})");
+  assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true);
+  await p.shot(`${artifacts}/results-${theme}-${width}.png`);
+ }
+ console.log('Results checks passed: sorting, zero/missing metrics, modes, expansion/focus across refresh, eligibility, CSV quoting, multiline clipboard fallback, full JSON, skip links and unchanged drafts/defaults.');
  console.log('Artifacts: '+artifacts);
  console.log('Browser checks passed: toolbar, settings recovery, zero/Auto, separate drafts, stale response, download focus/completion, running context, clipboard fallback, disconnect, errors, unique IDs, 36 rendered state/theme/viewport combinations.');
 }finally{b.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
-setTimeout(()=>{b.close();process.exit(2);},55000).unref();
+setTimeout(()=>{b.close();process.exit(2);},60000).unref();

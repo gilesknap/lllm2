@@ -239,6 +239,8 @@ def serve(host='127.0.0.1', port=8082):
                 self.send(200,Path(__file__).with_name('static').joinpath('index.html').read_bytes(),'text/html; charset=utf-8')
             elif path == '/static/panel.js':
                 self.send(200,Path(__file__).with_name('static').joinpath('panel.js').read_bytes(),'text/javascript; charset=utf-8')
+            elif path == '/static/panel.css':
+                self.send(200,Path(__file__).with_name('static').joinpath('panel.css').read_bytes(),'text/css; charset=utf-8')
             elif path == '/api/status':
                 self.send(200,dict(token=app.token,engine=app.engine.state(),job=app.bench.snapshot(),hardware=hardware(),
                                    downloads=downloads.all_downloads(),endpoint=app.engine.base+'/v1',
