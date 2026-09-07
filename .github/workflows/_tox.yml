@@ -1,0 +1,25 @@
+name: Run tox checks
+
+on:
+  workflow_call:
+    inputs:
+      tox:
+        type: string
+        description: Comma-separated tox environments
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - run: uv run --locked tox -e "$TOX_ENVS"
+        env:
+          TOX_ENVS: ${{ inputs.tox }}

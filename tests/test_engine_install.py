@@ -1,11 +1,13 @@
-import tempfile
-import unittest
 import shutil
 import subprocess
+import tempfile
+import unittest
 from pathlib import Path
 
 from lllm2.engine_install import (
-    _fix_gcc8_filesystem_link, _fix_server_compatibility, _fix_vulkan_header_target,
+    _fix_gcc8_filesystem_link,
+    _fix_server_compatibility,
+    _fix_vulkan_header_target,
 )
 
 
@@ -19,9 +21,11 @@ class ServerCompatibilityTests(unittest.TestCase):
             server = source / "tools/server"
             server.mkdir(parents=True)
             context = server / "server-context.cpp"
-            context.write_text('#include <sstream>\nvoid format() { std::ostringstream s; s << std::setw(8) << 1; }\n')
+            context.write_text(
+                "#include <sstream>\nvoid format() { std::ostringstream s; s << std::setw(8) << 1; }\n"
+            )
             schema = server / "server-schema.cpp"
-            schema.write_text('''#include <type_traits>
+            schema.write_text("""#include <type_traits>
 template <typename T = int> struct field_num { field_num(const char *, T &) {} };
 struct { int tokens; struct { float temp; unsigned seed; } sampling; } params;
 void check() {
@@ -33,11 +37,14 @@ void check() {
     static_assert(std::is_same<decltype(u), field_num<unsigned>*>::value);
     delete i; delete f; delete u;
 }
-''')
+""")
             self.assertEqual(len(_fix_server_compatibility(source)), 2)
             self.assertEqual(_fix_server_compatibility(source), [])
-            result = subprocess.run([compiler, "-std=c++17", "-fsyntax-only", str(context), str(schema)],
-                                    capture_output=True, text=True)
+            result = subprocess.run(
+                [compiler, "-std=c++17", "-fsyntax-only", str(context), str(schema)],
+                capture_output=True,
+                text=True,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_and_already_fixed_sources_are_unchanged(self):
@@ -65,7 +72,7 @@ class FilesystemCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
             cmake = source / "CMakeLists.txt"
-            cmake.write_text('''cmake_minimum_required(VERSION 3.14)
+            cmake.write_text("""cmake_minimum_required(VERSION 3.14)
 project(filesystem_probe LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 add_library(ggml SHARED ggml.cpp)
@@ -76,27 +83,41 @@ add_library(llama-server-impl SHARED server.cpp)
 target_link_libraries(llama-server-impl PRIVATE server-context llama-common ggml)
 add_executable(llama-server main.cpp)
 target_link_libraries(llama-server PRIVATE llama-server-impl)
-''')
-            for filename, function in (("ggml", "ggml_path"), ("common", "common_path"),
-                                       ("context", "context_path")):
+""")
+            for filename, function in (
+                ("ggml", "ggml_path"),
+                ("common", "common_path"),
+                ("context", "context_path"),
+            ):
                 (source / (filename + ".cpp")).write_text(
-                    '#include <filesystem>\n#include <string>\n'
-                    f'std::string {function}() {{ return std::filesystem::current_path().string(); }}\n')
-            (source / "server.cpp").write_text('''#include <filesystem>
+                    "#include <filesystem>\n#include <string>\n"
+                    f"std::string {function}() {{ return std::filesystem::current_path().string(); }}\n"
+                )
+            (source / "server.cpp").write_text("""#include <filesystem>
 #include <string>
 std::string ggml_path(), common_path(), context_path();
 bool check() {
     return std::filesystem::path(ggml_path()).has_parent_path()
         && common_path() == context_path();
 }
-''')
-            (source / "main.cpp").write_text('bool check(); int main() { return check() ? 0 : 1; }\n')
+""")
+            (source / "main.cpp").write_text(
+                "bool check(); int main() { return check() ? 0 : 1; }\n"
+            )
             self.assertTrue(_fix_gcc8_filesystem_link(source))
             self.assertEqual(_fix_gcc8_filesystem_link(source), [])
             build = source / "build"
             for command in (
-                ["cmake", "-S", str(source), "-B", str(build), "-G", "Unix Makefiles",
-                 "-DCMAKE_CXX_COMPILER=" + compiler],
+                [
+                    "cmake",
+                    "-S",
+                    str(source),
+                    "-B",
+                    str(build),
+                    "-G",
+                    "Unix Makefiles",
+                    "-DCMAKE_CXX_COMPILER=" + compiler,
+                ],
                 ["cmake", "--build", str(build)],
             ):
                 result = subprocess.run(command, capture_output=True, text=True)
@@ -105,12 +126,19 @@ bool check() {
 
 class VulkanCompatibilityTests(unittest.TestCase):
     def test_only_repairs_missing_imported_target(self):
-        broken = ("find_package(SPIRV-Headers CONFIG REQUIRED)\n"
-                  "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)\n")
-        fixed = broken.replace("Vulkan::Vulkan)", "Vulkan::Vulkan SPIRV-Headers::SPIRV-Headers)")
+        broken = (
+            "find_package(SPIRV-Headers CONFIG REQUIRED)\n"
+            "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)\n"
+        )
+        fixed = broken.replace(
+            "Vulkan::Vulkan)", "Vulkan::Vulkan SPIRV-Headers::SPIRV-Headers)"
+        )
         older = "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)\n"
         for content, expected in ((broken, fixed), (fixed, fixed), (older, older)):
-            with self.subTest(content=content), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(content=content),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 source = Path(directory)
                 cmake = source / "ggml/src/ggml-vulkan/CMakeLists.txt"
                 cmake.parent.mkdir(parents=True)

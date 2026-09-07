@@ -1,13 +1,195 @@
+[build-system]
+requires = ["setuptools>=77", "setuptools_scm[toml]>=8"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "lllm2"
-version = "0.1.0"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 description = "Local NVIDIA LLM experimentation workbench"
-requires-python = ">=3.11"
 dependencies = ["typer>=0.16,<1"]
+dynamic = ["version"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+readme = "README.md"
+requires-python = ">=3.11"
+
+[dependency-groups]
+dev = [
+    "build>=1.2,<2",
+    "twine>=6,<7",
+    "setuptools>=77",
+    "setuptools-scm>=8",
+    {include-group = "docs"},
+    "mypy",
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "tox-uv",
+]
+
+docs = [
+    "sphinx>=8,<9",
+    "myst-parser>=4,<5",
+    "pydata-sphinx-theme>=0.16,<0.17",
+    "sphinx-autobuild",
+    "sphinx-copybutton>=0.5,<0.6",
+    "sphinx-design",
+]
 
 [project.scripts]
 lllm2 = "lllm2.cli:main"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.urls]
+GitHub = "https://github.com/gilesknap/lllm2"
+Documentation = "https://gilesknap.github.io/lllm2/"
+
+[[project.authors]] # Further authors may be added by duplicating this section
+email = "giles.knap@diamond.ac.uk"
+name = "Giles Knap"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lllm2 = ["*.json", "static/*.html", "static/*.css", "static/*.js", "templates/*.jinja"]
+
+[tool.setuptools_scm]
+version_file = "src/lllm2/_version.py"
+
+[tool.mypy]
+ignore_missing_imports = true # Ignore missing stubs in imported modules
+
+[tool.pytest.ini_options]
+# Run pytest with all our checkers, and don't spam us with massive tracebacks on error
+addopts = """
+    --tb=native -vv --doctest-modules --doctest-glob="*.rst"
+    """
+# https://iscinumpy.gitlab.io/post/bound-version-constraints/#watch-for-warnings
+filterwarnings = "error"
+# Doctest source docstrings and collect tests; Sphinx checks the user guides.
+testpaths = ["src", "tests"]
+
+[tool.coverage.run]
+patch = ["subprocess"]
+data_file = ".coverage"
+
+[tool.coverage.paths]
+# Tests are run from installed location, map back to the src directory
+source = ["src", "**/site-packages/"]
+
+[tool.tox]
+skipsdist = true
+# envs to runs automatically with tox -p
+env_list = ["pre-commit", "type-checking", "tests", "docs"]
+
+[tool.tox.env_run_base]
+# Pass all environment variables to the test environments
+passenv = ["*"]
+
+[tool.tox.env.pre-commit]
+description = "Run pre-commit on all files"
+commands = [
+    [
+        "pre-commit",
+        "run",
+        "--all-files",
+        "--show-diff-on-failure",
+        { replace = "posargs", default = [
+        ], extend = true },
+    ],
+]
+
+[tool.tox.env.type-checking]
+description = "Run mypy"
+commands = [
+    [
+        "mypy",
+        "src",
+        "tests",
+        { replace = "posargs", default = [
+        ], extend = true },
+    ],
+]
+
+[tool.tox.env.tests]
+description = "Run tests with coverage"
+commands = [
+    [
+        "pytest",
+        "--cov=lllm2",
+        "--cov-report",
+        "term",
+        "--cov-report",
+        "xml:cov.xml",
+        { replace = "posargs", default = [
+        ], extend = true },
+    ],
+]
+
+[tool.tox.env.docs]
+description = "Run docs build with clean environment"
+commands = [
+    [
+        "sphinx-build",
+        "--fresh-env",
+        "--show-traceback",
+        "--fail-on-warning",
+        "--keep-going",
+        "docs",
+        "build/html",
+        { replace = "posargs", default = [
+        ], extend = true },
+    ],
+]
+
+[tool.tox.env.docs-autobuild]
+description = "Run docs with autobuild on change"
+commands = [
+    [
+        "sphinx-autobuild",
+        "--show-traceback",
+        "--watch",
+        "README.md",
+        "docs",
+        "build/html",
+        { replace = "posargs", default = [
+        ], extend = true },
+    ],
+]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 88
+extend-exclude = ["src/lllm2/_version.py", "docs/_build"]
+# Let the formatter wrap code; keep embedded prompts and shell commands intact.
+lint.ignore = ["E501"]
+lint.select = [
+    "B",   # flake8-bugbear - https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
+    "C4",  # flake8-comprehensions - https://docs.astral.sh/ruff/rules/#flake8-comprehensions-c4
+    "E",   # pycodestyle errors - https://docs.astral.sh/ruff/rules/#error-e
+    "F",   # pyflakes rules - https://docs.astral.sh/ruff/rules/#pyflakes-f
+    "N",   # pep8-naming - https://docs.astral.sh/ruff/rules/#pep8-naming-n
+    "W",   # pycodestyle warnings - https://docs.astral.sh/ruff/rules/#warning-w
+    "I",   # isort - https://docs.astral.sh/ruff/rules/#isort-i
+    "UP",  # pyupgrade - https://docs.astral.sh/ruff/rules/#pyupgrade-up
+    "SLF", # self - https://docs.astral.sh/ruff/settings/#lintflake8-self
+]
+
+[tool.ruff.lint.per-file-ignores]
+# By default, private member access is allowed in tests
+# See https://github.com/DiamondLightSource/python-copier-template/issues/154
+# Remove this line to forbid private member access in tests
+"tests/**/*" = ["SLF001"]
+# Preserve existing public exception names and Typer enum behavior.
+"src/lllm2/engine.py" = ["N818"]
+"src/lllm2/gguf.py" = ["N818"]
+"src/lllm2/cli.py" = ["UP042"]
+# The download manager owns and coordinates its jobs' cancellation events.
+"src/lllm2/downloads.py" = ["SLF001"]
