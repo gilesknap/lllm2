@@ -64,6 +64,7 @@ let token='', discovered={}, combinations=[], results=[], lastResults='', status
 let view='launch', drafts={launch:null,experiments:null}, connected=false, resolving=true, selectionSequence=0, validationSequence=0;
 let validationSnapshot='', validationError='', actionError='', selectionNote='', pendingAction=false, pollPending=false, scanPending=false;
 let savedExists=false, engineOverride=false, editTimer=null, lastDownloads='', startAttempt=null, discoveredOnce=false, queuedView=null;
+let savedFeedback='', pickerSequence=0;
 const sameSettings=(a,b)=>!!a&&!!b&&settingKeys.every(k=>settingValue(a,k)===settingValue(b,k));
 const snapshot=()=>JSON.stringify(settings());
 const currentLaunch=()=>view==='launch'?settings():drafts.launch?.settings;
@@ -189,6 +190,7 @@ $('export').onclick=()=>attempt(async()=>{const full=await api('/api/results/exp
 
 // One editor, moved between views, with independent in-memory drafts and provenance.
 function fill(s){
+ savedFeedback='';
  if(s.model&&!Array.from($('model').options).some(o=>o.value===s.model))$('model').add(new Option(modelName(s.model),s.model));
  for(const k of settingKeys){
   if(k==='device')continue;
@@ -196,6 +198,7 @@ function fill(s){
   else $(k).value=s[k]??(k==='cuda_graph_opt'?'default':'');
  }
  $('device').replaceChildren(new Option(s.device||'Choose device',s.device||''));
+ syncPlacement();
  slotNote();defaultState();launchState();
 }
 function rememberDraft(){drafts[view]={settings:settings(),defaults:loadedDefaults,engineOverride,savedExists,selectionNote};}
@@ -211,8 +214,11 @@ async function switchView(next){
  $(next==='launch'?'editor-host-launch':'experiment-settings-host').append($('settings-editor'));
  $(next==='launch'?'summary-host-launch':'summary-host-experiments').append($('source-summary'));
  if(next==='launch')$('selection-note').before($('all-models'));else $('summary-host-experiments').before($('all-models'));
- $('customize').querySelector('summary').textContent=next==='launch'?'Customize settings':'Customize experiment settings';
+ $('customize-toggle').firstChild.textContent=next==='launch'?'Customize settings ':'Customize experiment settings ';
  $('save-default').hidden=next==='experiments';
+ $('load-experiment').hidden=next==='experiments';
+ $('load-experiment-note').hidden=next==='experiments';
+ $('load-menu').open=false;
  fill(d.settings);renderRecommendations();await inspect();
  if(next==='experiments')await refreshResults();
 }
@@ -226,8 +232,8 @@ function defaultState(){
  const names={recommended:'Recommended settings',saved:'My saved settings',custom:'Custom settings',running:'Current model settings',result:'Experiment settings · for next launch'};
  const source=loadedDefaults?.source||'Choose a model to resolve its starting settings.';
  const measured=source.startsWith('Measured built-in');
- const chosen=discovered.models?.find(m=>m.path===s.model);
- $('selected-model').hidden=!s.model||view!=='launch'||!!(chosen?.identity_verified&&discovered.catalog?.find(m=>m.id===chosen.catalog_id)?.recommendation);
+ $('source-summary').hidden=!s.model;
+ $('selected-model').hidden=!s.model||view!=='launch';
  $('selected-model').textContent='Selected model: '+modelName(s.model);
  $('summary-title').textContent=resolving?'Preparing settings…':names[mode];
  $('summary-context').textContent=s.model?`${Math.floor(s.context/s.slots).toLocaleString()} tokens per conversation · ${s.slots} slot${s.slots===1?'':'s'} · ${s.backend}${mode==='recommended'?' · '+(measured?(source.includes('qualified')?'Qualified recommendation':'Tested on RTX 3090'):'Estimated starting settings'):''}`:'';
@@ -237,8 +243,13 @@ function defaultState(){
  $('default-evidence').hidden=!loadedDefaults?.evidence;
  $('default-evidence').querySelector('summary').textContent=changed.length?'Last loaded evidence':'Recommendation evidence';
  $('default-evidence').querySelector('pre').textContent=loadedDefaults?.evidence?JSON.stringify(loadedDefaults.evidence,null,2):'';
- $('load-default').hidden=!savedExists;$('load-default').disabled=resolving;
- $('built-in-default').hidden=mode==='recommended';$('built-in-default').disabled=resolving||!s.model;
+ const loadingBlocked=resolving||scanPending||!connected;
+ $('load-default').disabled=loadingBlocked||!savedExists;
+ $('built-in-default').disabled=loadingBlocked||!s.model||!s.engine;
+ $('load-experiment').disabled=loadingBlocked;
+ $('saved-unavailable').textContent=!savedExists?'No saved settings for this model and backend.':'';
+ $('recommended-unavailable').textContent=!s.model||!s.engine?'Choose a model and engine first.':'';
+ $('settings-status').textContent=s.model?`Settings: ${names[loadedDefaults?.mode]||names.custom}${changed.length?' · Modified · Unsaved changes':savedFeedback?' · '+savedFeedback:mode==='result'?' · Not saved':''}`:'Settings will be prepared after you choose a model.';
  $('saved-note').textContent=savedExists&&mode==='recommended'?'Recommended settings are selected. Your saved settings are still available.':'';
  $('experiment-model').textContent=modelName(s.model);
  for(const id of ['drafter','pair_confirmed']){
@@ -264,41 +275,110 @@ function launchState(){
  else if(!launch?.model){status='Choose or download a model to get started.';}
  else if(validationError){status='Setup needs attention before starting.';}
  $('start').textContent=title;$('start').disabled=!ready||!!job.active||(running.ready&&same)||view!=='launch';
+ $('start').hidden=connected&&!resolving&&!launch?.model&&!running.running&&!job.active;
  $('launch-status').textContent=status;
  $('stop').hidden=!(running.running||launchJob);$('stop').textContent=launchJob?'Cancel start':'Stop model';$('stop').disabled=!connected||pendingAction;
  $('copy-api').hidden=!running.ready;$('copy-api').disabled=!connected;
+ $('connect-agent').hidden=!connected||!running.ready;
+ $('resources-scope').textContent=connected?'Model workstation resources':'Model workstation resources · last known';
+ $('connect-context').textContent=running.ready&&running.settings?`${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation on the running server.`:'';
  $('running-summary').textContent=running.running&&running.settings?`Current model: ${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation · ${running.ready?'ready':'loading'}`:'';
- $('launch-error').textContent=actionError||running.error||(job.status==='failed'?job.error:'')||(view==='launch'?validationError:'')||'';
+ const rawError=actionError||running.error||(job.status==='failed'?job.error:'')||(view==='launch'&&s.model?validationError:'')||'';
+ const friendlyError=explainError(rawError);
+ $('launch-error').textContent=friendlyError;
+ $('error-details').hidden=!rawError;$('error-raw').textContent=rawError;
  $('experiment-error').textContent=view==='experiments'?(!connected?'Panel connection unavailable. Reconnect before running an experiment.':validationError||actionError||running.error||''):'';
- $('setup-actions').hidden=resolving||(!validationError&&connected);
+ $('setup-actions').hidden=resolving||(!validationError&&connected&&!!launch?.model);
+ $('browse-models').hidden=!!launch?.model;
+ $('engine-setup').hidden=resolving||(!!discovered.engines?.some(e=>e.devices?.length)&&!!s.engine&&!/engine|llama-server|binary|backend|device/i.test(validationError));
  $('selection-note').textContent=selectionNote;
  $('launch-state').textContent=running.running&&!same?'Settings shown are for the next start. The current model is unchanged.':'';
  $('global-operation').hidden=!job.active;
- $('global-operation').replaceChildren();
- if(job.active){$('global-operation').append(document.createTextNode(`${launchJob?'Model starting':'Experiment running'} · ${job.phase||job.status} `));const link=document.createElement('a');link.href=launchJob?'#launch':'#experiments';link.textContent='View progress';$('global-operation').append(link);}
+ renderMarkup('global-operation',job.active?`${esc(launchJob?'Model starting':'Experiment running')} · ${esc(job.phase||job.status)} <a id="operation-progress" href="#${launchJob?'launch':'experiments'}">View progress</a>`:'');
  document.querySelectorAll('.run').forEach(b=>{b.disabled=!ready||!!job.active||view!=='experiments';b.textContent=(running.running?'Stop model and run · ':'')+b.dataset.label;});
  $('cancel').disabled=!connected||!job.active||pendingAction;
  $('save-default').disabled=!ready||view!=='launch';
+ modelControlsState();
+ const loadingBlocked=resolving||scanPending||!connected;
+ $('load-default').disabled=loadingBlocked||!savedExists;
+ $('built-in-default').disabled=loadingBlocked||!s.model||!s.engine;
+ $('load-experiment').disabled=loadingBlocked;
 }
+function explainError(error){
+ if(/out of memory|cuda.*alloc|failed to allocate|insufficient.*memory/i.test(error))return 'Not enough memory for this configuration. Close unused applications, choose Auto GPU placement, or reduce context under Customize, then try again.';
+ if(/exceed.*context|context.*exceed|context.*overflow|prompt.*too long/i.test(error))return 'The request exceeds the context window. Increase context and restart the model, or shorten the conversation. Relaunch your agent after changing context.';
+ if(/address already in use|port.*occupied|port.*in use/i.test(error))return 'The engine port is occupied. Check Engine logs and stop the conflicting service yourself, or configure a different engine port.';
+ if(/no such file|not found|does not exist|disappear/i.test(error))return 'A selected model or engine file is unavailable. Check its path under Customize or rescan model locations.';
+ return error.length>240?'The operation could not complete. Open the exact error details and engine logs, check the selected settings, then try again.':error;
+}
+function renderHardware(hardware){
+ const gpus=hardware.gpus||[],fmt=n=>Number.isFinite(n)?n.toFixed(1):'—';
+ $('gpu').textContent=gpus.length?gpus.map(g=>g.name).join(' · '):'No NVIDIA GPU detected';
+ $('vram').textContent=gpus.length?gpus.map((g,i)=>`${gpus.length>1?'GPU '+(g.index??i)+' ':''}VRAM ${fmt(Number.isFinite(g.used_mib)?g.used_mib/1024:NaN)} / ${fmt(Number.isFinite(g.total_mib)?g.total_mib/1024:NaN)} GiB`).join(' · '):'VRAM unavailable';
+ const ram=hardware.ram||{};
+ $('ram').textContent=`RAM ${fmt(ram.used_gib)} / ${fmt(ram.total_gib??hardware.ram_gib)} GiB`;
+ $('ram-available').textContent=Number.isFinite(ram.available_gib)?`${fmt(ram.available_gib)} GiB RAM available to applications.`:'Available RAM could not be read.';
+}
+let modelFilter='installed';
+const pendingDownloads=new Set();
+function modelControlsState(){
+ for(const b of document.querySelectorAll('[data-select-model],[data-download],[data-verify]')){
+  b.disabled=!connected||pendingAction||pendingDownloads.has(b.dataset.download)||(b.dataset.selectModel?(resolving||scanPending||b.dataset.selectModel===currentLaunch()?.model):false);
+ }
+}
+function renderMarkup(id,markup){
+ const root=$(id);if(root._markup===markup)return;root._markup=markup;
+ const focused=root.contains(document.activeElement)?document.activeElement.id:null;
+ const open=[...root.querySelectorAll('details[open]')].map(d=>d.id);
+ root.innerHTML=markup;
+ for(const id of open){const el=$(id);if(el)el.open=true;}
+ if(focused)($(focused)||$('filter-'+modelFilter))?.focus({preventScroll:true});
+}
+function setModelFilter(filter){modelFilter=filter;renderRecommendations();}
 function renderRecommendations(){
- const entries=(discovered.catalog||[]).filter(m=>m.recommendation).sort((a,b)=>a.recommendation.rank-b.recommendation.rank);
- const selected=settings().model;
- const markup=entries.map(m=>{
-  const installed=(discovered.models||[]).filter(x=>x.catalog_id===m.id&&x.identity_verified),r=m.recommendation;
-  const chosen=installed.find(x=>x.path===selected)||installed[0];
-  const unverified=discovered.models?.find(x=>x.catalog_id===m.id&&!x.identity_verified);
-  const d=(statusState.downloads||[]).find(d=>d.id===m.id),active=d&&['queued','downloading'].includes(d.state);
-  return `<div class="model-choice">${chosen?`<input type="radio" name="recommended-model" id="recommend-${esc(m.id)}" value="${esc(chosen.path)}" ${installed.some(x=>x.path===selected)?'checked':''}>`:''}<div>${chosen?`<label for="recommend-${esc(m.id)}">`:'<div>'}<b>${esc(r.name||m.name)}</b> <span class="pill">${esc(r.label)}</span>${chosen?'</label>':'</div>'}<small>${esc(r.description)}</small><small>${esc(r.variant)} · ${chosen?'Installed':unverified?'Installed variant · identity not verified':`${m.size_gb} GB download`}${installed.length>1?' · Multiple copies in All models':''}</small>${d?`<small>${esc(d.state)} · ${d.percent}% · ${esc(d.detail||'')}</small>`:''}</div>${!chosen&&unverified&&!active?`<button data-select-model="${esc(unverified.path)}">Choose installed variant</button>`:!chosen||active?`<button data-download="${esc(m.id)}" data-active="${!!active}">${active?'Cancel download':d?.state==='error'?'Retry download':'Download model'}</button>`:''}</div>`;
- }).join('');
- if($('recommended-list').innerHTML!==markup){const focus=$('recommended-list').contains(document.activeElement)?document.activeElement.id:null;$('recommended-list').innerHTML=markup;if(focus)document.getElementById(focus)?.focus({preventScroll:true});}
+ const catalog=discovered.catalog||[],models=discovered.models||[],selected=currentLaunch()?.model;
+ const rank=m=>catalog.find(c=>c.id===m.catalog_id)?.recommendation?.rank||999;
+ const rows=[...models].sort((a,b)=>rank(a)-rank(b)||a.path.localeCompare(b.path));
+ $('filter-installed').textContent=`Installed (${models.length})`;$('filter-catalog').textContent=`Browse catalogue (${catalog.length})`;
+ $('filter-installed').setAttribute('aria-pressed',String(modelFilter==='installed'));$('filter-catalog').setAttribute('aria-pressed',String(modelFilter==='catalog'));
+ $('recommended-list').hidden=modelFilter!=='installed';$('catalog').hidden=modelFilter!=='catalog';
+ const badge=c=>c?.recommendation?` <span class="pill">${esc(c.recommendation.label)}</span>`:'';
+ const details=(id,text)=>`<details id="${esc(id)}"><summary id="${esc(id)}-summary">Variant & location</summary>${esc(text)}</details>`;
+ renderMarkup('recommended-list',rows.map(m=>{
+  const c=catalog.find(c=>c.id===m.catalog_id),recommended=m.identity_verified?c:null;
+  return `<div class="model-choice ${selected===m.path?'selected':''}"><div><b>${esc(modelName(m.path))}</b>${badge(recommended)}<small>${esc(c?.recommendation?.variant||c?.file||m.path.split('/').pop())} · Installed</small>${recommended?.recommendation?`<small>${esc(recommended.recommendation.description)}</small>`:''}${details('installed-detail-'+encodeURIComponent(m.path),m.path+(m.identity_verified?' · Verified checkpoint identity':' · No measured identity verified'))}</div><button id="installed-use-${esc(encodeURIComponent(m.path))}" aria-label="${esc(selected===m.path?'Selected: ':'Use model: ')}${esc(modelName(m.path))} · ${esc(m.path)}" data-select-model="${esc(m.path)}" ${selected===m.path?'disabled':''}>${selected===m.path?'Selected':'Use this model'}</button></div>`;
+ }).join('')||'<p class="muted">No installed models found. Browse the catalogue to download one, or check your model locations below.</p><button id="empty-browse">Browse models</button>');
+ renderMarkup('catalog',[...catalog].sort((a,b)=>(a.recommendation?.rank||999)-(b.recommendation?.rank||999)).map(c=>{
+  const copies=models.filter(m=>m.catalog_id===c.id),installed=copies.find(m=>m.path===selected)||copies[0];
+  const d=(statusState.downloads||[]).find(d=>d.id===c.id),active=d&&['queued','downloading'].includes(d.state);
+  return `<div class="model-choice"><div><b>${esc(c.recommendation?.name||c.name)}</b>${badge(c)}<small>${esc(c.recommendation?.variant||c.file)} · ${installed?'Installed':`${c.size_gb} GB · Available`}</small>${c.recommendation?`<small>${esc(c.recommendation.description)}</small>`:''}${details('catalog-detail-'+c.id,c.repo+' / '+c.file+(copies.length>1?' · Multiple copies: choose an exact path in Installed.':''))}</div>${installed&&!active?`<button id="catalog-use-${esc(c.id)}" aria-label="Use ${esc(c.name)} · ${esc(c.file)}" data-select-model="${esc(installed.path)}" ${installed.path===selected?'disabled':''}>${installed.path===selected?'Selected':'Use this model'}</button>`:`<button id="catalog-download-${esc(c.id)}" aria-label="${active?'Cancel download of':'Download'} ${esc(c.name)} · ${esc(c.file)}" data-download="${esc(c.id)}" data-active="${!!active}">${active?'Cancel download':d&&['error','cancelled'].includes(d.state)?'Retry download':'Download'}</button>`}</div>`;
+ }).join('')||'<p class="muted">Catalogue unavailable. Check again to refresh discovery.</p>');
+ $('model-browser-note').textContent=modelFilter==='catalog'?'Recommendations and speed evidence are from RTX 3090 workloads. Starting settings are qualified for your selected hardware.':'';
+ modelControlsState();
 }
 function renderDownloads(){
  if(!discovered.catalog)return;
  const ds=statusState.downloads||[];
- $('catalog').innerHTML=[...discovered.catalog].sort((a,b)=>(a.recommendation?.rank||999)-(b.recommendation?.rank||999)).map(m=>{
-  const d=ds.find(d=>d.id===m.id),installed=discovered.models.some(x=>x.catalog_id===m.id),active=d&&['queued','downloading'].includes(d.state);
-  return `<div class="download"><button data-download="${esc(m.id)}" ${installed&&!active?'disabled':''} data-active="${!!active}">${active?'Cancel':installed?'Installed':'Download'}</button><b>${esc(m.name)}</b><small style="display:block">${m.size_gb} GB · ${esc(d?`${d.state} ${d.percent}% · ${d.rate_mib_s} MiB/s · ${d.detail}`:m.repo)}</small></div>`;
- }).join('');renderRecommendations();
+ $('download-section').hidden=!ds.length;
+ renderMarkup('active-downloads',ds.map(d=>`<div class="download-row" id="download-${esc(d.id)}"><div class="row"><div><h3>${esc(d.name)}</h3><small data-download-status></small></div><button id="download-action-${esc(d.id)}"></button></div><progress aria-label="${esc(d.name)} download progress"></progress><details id="download-detail-${esc(d.id)}"><summary id="download-summary-${esc(d.id)}">Download details</summary><small data-download-detail></small></details></div>`).join(''));
+ for(const d of ds){
+  const row=$('download-'+d.id),active=['queued','downloading'].includes(d.state),button=$('download-action-'+d.id);
+  const installed=discovered.models?.find(m=>m.path===d.target)||discovered.models?.find(m=>m.catalog_id===d.id);
+  row.querySelector('[data-download-status]').textContent=`${d.state==='complete'?'Downloaded':d.state} · ${d.done_gb??0} / ${d.total_gb||'unknown'} GB${active?` · ${d.rate_mib_s??0} MiB/s`:''}`;
+  row.querySelector('[data-download-detail]').textContent=[d.target,d.file,d.detail].filter(Boolean).join(' · ');
+  const progress=row.querySelector('progress');progress.max=100;if(d.total_gb)progress.value=Math.min(100,Math.max(0,d.percent||0));else progress.removeAttribute('value');progress.hidden=!active;
+  delete button.dataset.selectModel;delete button.dataset.download;delete button.dataset.active;
+  if(d.state==='complete'){
+   button.textContent=installed?'Use this model':'Verify download';
+   if(installed){delete button.dataset.verify;button.dataset.selectModel=installed.path;}
+   else button.dataset.verify='true';
+  }else{delete button.dataset.verify;button.textContent=active?'Cancel download':'Retry download';button.dataset.download=d.id;button.dataset.active=String(active);}
+  button.setAttribute('aria-label',button.textContent+' · '+d.name);
+  button.disabled=!connected||resolving||scanPending||pendingAction;
+ }
+ const notice=ds.some(d=>d.state==='complete')?'Download complete. Choose Use this model when you are ready; your current selection is preserved.':ds.some(d=>d.state==='error')?'A download failed. Open its details, then retry.':ds.some(d=>['queued','downloading'].includes(d.state))?'Downloading to the model workstation. You can continue using the panel.':'';
+ if($('download-notice').textContent!==notice)$('download-notice').textContent=notice;
+ renderRecommendations();
 }
 async function scan(){
  if(scanPending)return false;
@@ -315,9 +395,10 @@ async function scan(){
   const running=statusState.engine?.running?statusState.engine.settings:statusState.job?.kind==='launch'&&statusState.job?.active?statusState.job.settings:null;
   if(initial&&running){loadedDefaults={settings:running,mode:'running',source:'Current model settings',notes:['Showing the current operation. No saved preferences changed.']};fill(running);await inspect();}
   else if(before.model){fill(before);await inspect();}
-  else{await selectModel('');}
+  else if(initial){if(!data.models.length)modelFilter='catalog';await selectModel('');}
+  else{fill(before);await inspect();}
  }catch(e){if(n===selectionSequence)validationError='Discovery failed: '+e.message;}
- finally{scanPending=false;if(n===selectionSequence){resolving=false;defaultState();launchState();}finishNavigation();}
+ finally{scanPending=false;if(n===selectionSequence)resolving=false;defaultState();renderDownloads();launchState();finishNavigation();}
  return applied;
 }
 async function selectModel(path){
@@ -372,6 +453,8 @@ async function inspect(){
  }catch(e){if(n===validationSequence&&key===snapshot()){validationError=e.message;$('features').textContent=e.message;launchState();}}
 }
 function edited(key){
+ savedFeedback='';
+ if(key==='gpu_layers')syncPlacement();
  selectionSequence++;validationSequence++;resolving=false;validationSnapshot='';validationError='';actionError='';clearTimeout(editTimer);
  if(key==='cache')for(const k of optionalCache)$(k).value='';
  if(key==='drafter')$('pair_confirmed').checked=false;
@@ -385,7 +468,7 @@ async function poll(){
  try{
   const s=await api('/api/status');statusState=s;token=s.token;connected=true;
   if(startAttempt&&s.job.request_id===startAttempt.request_id&&['failed','cancelled','serving'].includes(s.job.status))startAttempt=null;
-  $('gpu').textContent=s.hardware.gpus.length?s.hardware.gpus.map(g=>`${g.name} · ${g.used_mib.toLocaleString()} / ${g.total_mib.toLocaleString()} MiB`).join(' | '):'No NVIDIA GPU detected';
+  renderHardware(s.hardware);
   $('endpoint').textContent=s.engine.ready?`API on model workstation: ${s.endpoint}`:'';
   $('paths').textContent=`Models: ${s.paths.models}. Engine roots: ${s.paths.engines.join(', ')}. Configure LLLM2_MODELS_DIR and LLLM2_ENGINE_ROOTS before starting the panel.`;
   $('job').textContent=`${s.job.status}${s.job.current?' · '+s.job.current:''}`;
@@ -400,18 +483,31 @@ async function poll(){
  finally{pollPending=false;}
 }
 $('refresh').onclick=()=>attempt(scan);
+$('filter-installed').onclick=()=>setModelFilter('installed');
+$('filter-catalog').onclick=()=>setModelFilter('catalog');
+$('browse-models').onclick=()=>{setModelFilter('catalog');$('filter-catalog').focus();};
 $('retry-setup').onclick=()=>attempt(async()=>{await poll();await scan();});
-$('choose-engine').onclick=()=>{$('customize').open=true;$('engine').focus();};
+function customize(open){$('customize').hidden=!open;$('customize-toggle').setAttribute('aria-expanded',String(open));}
+$('customize-toggle').onclick=()=>customize($('customize').hidden);
+function syncPlacement(){const auto=$('gpu_layers').value==='';$('gpu-placement').value=auto?'auto':'manual';$('gpu_layers').disabled=auto;}
+let manualLayers=999;
+$('gpu-placement').onchange=()=>{
+ if($('gpu-placement').value==='auto'){manualLayers=Number($('gpu_layers').value);$('gpu_layers').value='';}
+ else $('gpu_layers').value=manualLayers;
+ syncPlacement();edited('gpu_layers');
+};
+for(const id of ['choose-engine','manage-engine'])$(id).onclick=()=>{customize(true);$('engine').focus();};
 $('model').onchange=()=>attempt(()=>selectModel($('model').value));
-$('recommended-list').onchange=e=>{if(e.target.matches('input[type=radio]'))attempt(()=>selectModel(e.target.value));};
 for(const k of settingKeys){if(k!=='model')$(k).addEventListener('input',()=>edited(k));}
 for(const k of ['engine','backend'])$(k).onchange=()=>{clearTimeout(editTimer);attempt(loadDefaults);};
-$('load-default').onclick=()=>attempt(()=>loadDefaults('saved'));
-$('built-in-default').onclick=()=>attempt(()=>loadDefaults('built-in'));
+$('load-default').onclick=()=>{$('load-menu').open=false;attempt(()=>loadDefaults('saved'));};
+$('built-in-default').onclick=()=>{$('load-menu').open=false;attempt(()=>loadDefaults('built-in'));};
+document.addEventListener('click',e=>{if(!$('load-menu').contains(e.target))$('load-menu').open=false;});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('load-menu').open){$('load-menu').open=false;$('load-menu').querySelector('summary').focus();}});
 $('save-default').onclick=()=>attempt(async()=>{
  const selected=settings(),key=snapshot(),savedView=view,provenance=loadedDefaults?.mode==='result'&&sameSettings(selected,loadedDefaults.settings)?loadedDefaults:null;
  const saved=await api('/api/default/save',provenance?{result_id:provenance.result_id,use_context:provenance.use_context}:{settings:selected});
- if(key===snapshot()&&savedView===view){loadedDefaults={settings:saved,mode:'saved',source:provenance?'My saved settings · experiment evidence':'My saved settings · manual preferences',notes:provenance?.notes||['Manual preferences are not a measured benefit.'],evidence:provenance?.evidence};savedExists=true;defaultState();}
+ if(key===snapshot()&&savedView===view){loadedDefaults={settings:saved,mode:'saved',source:provenance?'My saved settings · experiment evidence':'My saved settings · manual preferences',notes:provenance?.notes||['Manual preferences are not a measured benefit.'],evidence:provenance?.evidence};savedExists=true;savedFeedback='Saved';defaultState();}
  message('Settings saved for this model and backend.');
 });
 $('start').onclick=()=>attempt(async()=>{
@@ -427,12 +523,29 @@ for(const k of ['stop','cancel'])$(k).onclick=()=>attempt(async()=>{
  if(pendingAction)return;pendingAction=true;launchState();
  try{await api('/api/'+k,{});actionError='';}finally{await poll();pendingAction=false;launchState();}
 });
-$('copy-api').onclick=()=>attempt(async()=>{
- try{await navigator.clipboard.writeText(statusState.endpoint);message('API address copied. This loopback address is on the model workstation.');}
- catch{message('API on the model workstation: '+statusState.endpoint);}
+async function copyText(text,label){
+ try{await navigator.clipboard.writeText(text);message(label+' copied. Use it on the model workstation.');}
+ catch{$('copy-text').value=text;$('copy-dialog').showModal();$('copy-text').focus();$('copy-text').select();}
+}
+$('copy-api').onclick=()=>attempt(()=>copyText(statusState.endpoint,'API address'));
+$('copy-agent').onclick=()=>attempt(()=>copyText($('agent-command').textContent,'Agent command'));
+$('copy-close').onclick=()=>$('copy-dialog').close();
+document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>attempt(()=>copyText(b.dataset.copy,'Command')));
+document.querySelectorAll('[data-agent]').forEach(b=>b.onclick=()=>{
+ document.querySelectorAll('[data-agent]').forEach(other=>other.setAttribute('aria-pressed',String(other===b)));
+ $('agent-command').textContent='lllm2 '+b.dataset.agent;
 });
-async function downloadClick(e){const variant=e.target.closest('[data-select-model]');if(variant){await selectModel(variant.dataset.selectModel);return;}const b=e.target.closest('[data-download]');if(!b||b.disabled)return;b.disabled=true;try{await api(b.dataset.active==='true'?'/api/download/cancel':'/api/download',{id:b.dataset.download});await poll();}finally{renderDownloads();}}
-for(const id of ['catalog','recommended-list'])$(id).onclick=e=>attempt(()=>downloadClick(e));
+async function downloadClick(e){
+ if(e.target.closest('[data-verify]')){await scan();return;}
+ if(e.target.closest('#empty-browse')){setModelFilter('catalog');$('filter-catalog').focus();return;}
+ const variant=e.target.closest('[data-select-model]');
+ if(variant){if(variant.disabled)return;await selectModel(variant.dataset.selectModel);return;}
+ const b=e.target.closest('[data-download]');if(!b||b.disabled)return;
+ const id=b.dataset.download;pendingDownloads.add(id);modelControlsState();
+ try{await api(b.dataset.active==='true'?'/api/download/cancel':'/api/download',{id});await poll();}
+ finally{pendingDownloads.delete(id);renderDownloads();}
+}
+for(const id of ['catalog','recommended-list','active-downloads'])$(id).onclick=e=>attempt(()=>downloadClick(e));
 $('use-launch-settings').onclick=()=>attempt(async()=>{
  if(view!=='experiments')return;
  selectionSequence++;clearTimeout(editTimer);resolving=false;const d=structuredClone(drafts.launch);loadedDefaults=d.defaults;engineOverride=d.engineOverride;fill(d.settings);resetExperimentCeiling();await inspect();
@@ -450,15 +563,28 @@ document.querySelectorAll('.run').forEach(b=>{
 });
 $('add-combo').onclick=()=>{combinations.push(structuredClone(settings()));$('combos').textContent=combinations.map((s,i)=>`${i+1}. ${modelName(s.model)} · ${s.speculation} / ${cacheLabel(s)} / flash ${s.flash} / effort ${s.effort} / draft ${s.draft_length}`).join('\n');};
 $('clear-combos').onclick=()=>{combinations=[];$('combos').textContent='No combinations selected.';};
-$('results').onclick=e=>{const b=e.target.closest('[data-promote],[data-context]');if(b)attempt(async()=>{
+async function previewResult(id,useContext=false){
  const n=++selectionSequence;validationSequence++;resolving=true;validationSnapshot='';launchState();
  try{
-  const d=await api('/api/result/preview',{result_id:b.dataset.promote||b.dataset.context,use_context:!!b.dataset.context});
+  const d=await api('/api/result/preview',{result_id:id,use_context:useContext});
   if(n!==selectionSequence)return;
   const expected=n+(view==='launch'?0:1);resolving=false;await switchView('launch');
   if(selectionSequence!==expected)return;
   location.hash='launch';loadedDefaults={...d,mode:'result'};fill(d.settings);await inspect();
   message('Experiment settings copied to Launch. Review before starting or saving; your saved settings are unchanged.');
  }finally{if(n===selectionSequence){resolving=false;defaultState();launchState();finishNavigation();}}
-});};
+}
+$('results').onclick=e=>{const b=e.target.closest('[data-promote],[data-context]');if(b)attempt(()=>previewResult(b.dataset.promote||b.dataset.context,!!b.dataset.context));};
+function resultBlock(r){return r.measurement_mode==='warm-conversation'?'Warm-only evidence':r.quality_status==='failed'?'Source adherence failed':r.status!=='complete'||!r.samples?.length?'No completed samples':'';}
+$('load-experiment').onclick=()=>attempt(async()=>{
+ $('load-menu').open=false;$('experiment-picker').showModal();$('experiment-picker-error').textContent='';$('experiment-options').textContent='Loading experiments…';
+ const n=++pickerSequence;
+ try{
+  const rows=await api('/api/results');if(n!==pickerSequence||!$('experiment-picker').open)return;
+  $('experiment-options').innerHTML=rows.map(r=>{const reason=resultBlock(r);return `<div class="experiment-option"><b>${esc(r.label||'Experiment')}</b><small>${esc(r.started)} · ${esc(r.settings.backend)} · ${Number(r.settings.context).toLocaleString()} total tokens</small><small>${esc([...new Set(r.samples.map(s=>s.workload).filter(Boolean))].join(', ')||r.measurement_mode||'Cold benchmark')}</small><small>${esc(r.settings.model)}</small><small>${reason?esc(reason):'Completed experiment · execution evidence'}</small><button data-result="${esc(r.id)}" ${reason?'disabled':''}>Load into Launch</button>${!reason&&r.recommended_context?` <button data-result="${esc(r.id)}" data-headroom="true">Load with headroom estimate</button>`:''}</div>`;}).join('')||'<p>No experiments yet. Run an experiment from the Experiments view, then return here.</p>';
+ }catch(e){if(n===pickerSequence){$('experiment-options').textContent='';$('experiment-picker-error').textContent='Could not load experiments. Close and try again. '+e.message;}}
+});
+$('experiment-picker-close').onclick=()=>{pickerSequence++;$('experiment-picker').close();};
+$('experiment-picker').addEventListener('cancel',()=>pickerSequence++);
+$('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if(!b||b.disabled)return;$('experiment-picker').close();attempt(()=>previewResult(b.dataset.result,b.dataset.headroom==='true'));};
 (async()=>{await poll();await scan();if(location.hash==='#experiments')await switchView('experiments');slotNote();setInterval(poll,2500);})();
