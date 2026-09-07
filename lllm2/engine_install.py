@@ -20,6 +20,53 @@ BACKENDS = {
 }
 
 
+def _fix_server_compatibility(source: Path) -> list[str]:
+    """Repair known server build failures, including GCC 8 new-expression CTAD."""
+    adjustments = []
+    context = source / "tools/server/server-context.cpp"
+    if context.is_file():
+        content = context.read_text()
+        if "std::setw" in content and not re.search(r"#\s*include\s*<iomanip>", content):
+            context.write_text("#include <iomanip>\n" + content)
+            adjustments.append("Include iomanip for server-context std::setw")
+
+    schema = source / "tools/server/server-schema.cpp"
+    if schema.is_file():
+        content = schema.read_text()
+        # Preserve the member's exact type; field_num handles integers and floats.
+        # Restrict this workaround to named params members, not arbitrary expressions.
+        fixed = re.sub(
+            r'new field_num\(("[^"\n]+"), (params(?:\.[A-Za-z_]\w*)+)\)',
+            r'new field_num<decltype(\2)>(\1, \2)',
+            content,
+        )
+        if fixed != content:
+            schema.write_text(fixed)
+            adjustments.append("Use explicit field_num member types for GCC 8 compatibility")
+    return adjustments
+
+
+def _fix_gcc8_filesystem_link(source: Path) -> list[str]:
+    """Link GCC 8's separate filesystem library into its consumers."""
+    cmake = source / "CMakeLists.txt"
+    marker = "# lllm2: GCC 8 filesystem linkage"
+    content = cmake.read_text()
+    if marker in content:
+        return []
+    cmake.write_text(content + "\n" + marker + '''
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
+    foreach(target ggml llama-common server-context llama-server-impl llama-server)
+        if(TARGET ${target})
+            # Append a library (not a linker flag) so it follows object files.
+            set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARIES stdc++fs)
+        endif()
+    endforeach()
+endif()
+''')
+    return ["Link stdc++fs for GNU C++ compilers older than GCC 9"]
+
+
 def _fix_vulkan_header_target(source: Path) -> list[str]:
     """Repair upstream revisions that find SPIRV-Headers but omit its target.
 
@@ -168,8 +215,11 @@ def install(backend: str, *, name: str = "", ref: str = "master",
                 subprocess.run(command, check=True)
             except subprocess.CalledProcessError as error:
                 raise RuntimeError(f"Engine {description} failed with exit code {error.returncode}.") from error
-            if description == "clone" and backend == "vulkan":
-                build_adjustments = _fix_vulkan_header_target(source)
+            if description == "clone":
+                build_adjustments = _fix_server_compatibility(source)
+                build_adjustments.extend(_fix_gcc8_filesystem_link(source))
+                if backend == "vulkan":
+                    build_adjustments.extend(_fix_vulkan_header_target(source))
         staged.mkdir()
         for artifact in (build / "bin").iterdir():
             if artifact.is_file() and (artifact.name == "llama-server" or
