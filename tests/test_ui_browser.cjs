@@ -89,7 +89,11 @@ const assert=require('node:assert/strict');
  await run("fixture.downloads=[{id:'dense',name:'Dense',state:'complete',percent:100,total_gb:15,done_gb:15}];fixture.models=[{path:'/models/new/dense.gguf',catalog_id:'dense',identity_verified:true,metadata:{context:262144}}];await poll()");
  assert.equal(await run('settings().model'),'');
 
- assert.equal(await run("$('customize').contains($('feature-availability'))"),false);
+ assert.equal(await run("$('settings-editor').contains($('feature-availability'))"),false);
+ assert.equal(await run("$('feature-availability').parentElement.id"),'feature-host-launch');
+ await run("switchView('experiments')");
+ assert.equal(await run("$('feature-availability').parentElement.id"),'feature-host-experiments');
+ await run("switchView('launch')");
  assert.equal(await run("getComputedStyle($('feature-availability')).borderTopStyle"),'solid');
  assert.equal(await run("getComputedStyle($('manage-models')).borderTopStyle"),'solid');
  // Actual keyboard activation, focus retention, and touch help.

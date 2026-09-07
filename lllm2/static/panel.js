@@ -212,6 +212,7 @@ async function switchView(next){
  $('launch-view').hidden=next!=='launch';$('experiments-view').hidden=next!=='experiments';
  $('nav-launch').setAttribute('aria-current',next==='launch'?'page':'false');$('nav-experiments').setAttribute('aria-current',next==='experiments'?'page':'false');
  $(next==='launch'?'editor-host-launch':'experiment-settings-host').append($('settings-editor'));
+ $(next==='launch'?'feature-host-launch':'feature-host-experiments').append($('feature-availability'));
  $(next==='launch'?'summary-host-launch':'summary-host-experiments').append($('source-summary'));
  if(next==='launch')$('selection-note').before($('all-models'));else $('summary-host-experiments').before($('all-models'));
  $('customize-toggle').firstChild.textContent=next==='launch'?'Customize settings ':'Customize experiment settings ';

@@ -320,3 +320,9 @@ model lifecycle/download mutations were fixtures. The running panel was not
 restarted. Restart it when its operations are idle and hard-refresh the browser
 to load matching HTML, script and RAM telemetry. Local commits only; no push, PR
 or merge is part of this execution.
+
+Follow-up review: the initial divider treatment still looked part of Customize.
+Feature availability now has its own full-width card outside the settings editor
+and follows the active draft through dedicated Launch/Experiments hosts. Model
+locations & engine setup also has a sibling card. Neither section is contained
+inside Customize or the launch configuration card.
