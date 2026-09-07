@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const settingKeys=['model','engine','backend','device','context','slots','gpu_layers','flash','cache','cache_k','cache_v','speculation','drafter','pair_confirmed','draft_length','effort','draft_cache','chat_template','batch_size','ubatch_size','backend_sampling','cuda_graph_opt','cache_ram_mib','context_checkpoints','lookup_ngram_n','lookup_ngram_m'];
-const optionalNumbers=['batch_size','ubatch_size','cache_ram_mib','context_checkpoints','lookup_ngram_n','lookup_ngram_m'];
+const optionalNumbers=['gpu_layers','batch_size','ubatch_size','cache_ram_mib','context_checkpoints','lookup_ngram_n','lookup_ngram_m'];
 const optionalCache=['cache_k','cache_v'];
 const cachePair=s=>[s.cache_k||s.cache,s.cache_v||s.cache];
 const cacheLabel=s=>{const [k,v]=cachePair(s);return `K ${k} / V ${v}`;};
@@ -19,7 +19,7 @@ const launchHelp={
  cache_ram_mib:['Host prompt cache (MiB)','Finite RAM allowance for saved conversations. Zero disables saved conversation caching. Blank keeps the normal engine default; the warm experiment uses 2048 MiB when blank. This is not a total process RAM cap.'],
  context_checkpoints:['Context checkpoints per slot','Saved states can help resume edited history on recurrent models. Zero disables these checkpoints. Blank keeps the normal engine default; the warm experiment uses four when blank. More checkpoints use additional memory.'],
  ubatch_size:['Physical microbatch (tokens)','Prompt tokens processed together in one physical chunk of the logical batch. Larger chunks may improve prefill speed but need more GPU memory. Leave blank for the engine default until compared.'],
- gpu_layers:['GPU layers','How much of the model runs on the GPU. 999 requests all layers; fewer can save GPU memory but may slow inference. Keep the starting value if the model fits.'],
+ gpu_layers:['GPU layers','Blank means automatic: the engine fits model weights and buffers to free GPU memory, keeping a 1 GiB margin and using system RAM when needed. Requires an engine with memory fitting support. Enter a number to override; 999 requests all layers and 0 keeps model layers on the CPU. Actual placement appears in the engine log.'],
  flash:['Flash attention','Calculates attention with less working memory and may improve speed. Auto leaves the choice to the engine. Keep the recommended value; quantized KV cache and DFlash require on here.'],
  cache:['Common conversation memory precision','Explicitly selecting this links K and V and clears Advanced overrides. The actual pair is shown below. Stores information about text already read. q8_0 and q4_0 use less memory than f16; speed and accuracy can change. Keep the starting precision until compared.'],
  effort:['Reasoning effort','Asks a compatible model/template to spend more or less effort reasoning. More can take longer; accepted values depend on the template. Keep default unless testing a supported value.'],

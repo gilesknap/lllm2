@@ -16,7 +16,7 @@ class Settings:
     device: str = 'CUDA0'
     context: int = 4096
     slots: int = 1
-    gpu_layers: int = 999
+    gpu_layers: int | None = None
     flash: str = 'auto'
     cache: str = 'f16'
     cache_k: str | None = None
@@ -69,7 +69,11 @@ class Settings:
                 raise ValueError(f'{key} must be blank or an integer in 1..1048576')
         if s.batch_size is not None and s.ubatch_size is not None and s.ubatch_size > s.batch_size:
             raise ValueError('Microbatch must not exceed logical batch size.')
-        for key, low, high in [('context',512,1048576),('slots',1,16),('gpu_layers',0,999),('draft_length',1,256)]:
+        if s.gpu_layers == '':
+            s.gpu_layers = None
+        if s.gpu_layers is not None and (type(s.gpu_layers) is not int or not 0 <= s.gpu_layers <= 999):
+            raise ValueError('GPU layers must be blank (automatic) or an integer in 0..999')
+        for key, low, high in [('context',512,1048576),('slots',1,16),('draft_length',1,256)]:
             value = getattr(s, key)
             if type(value) is not int or not low <= value <= high:
                 raise ValueError(f'{key} must be an integer in {low}..{high}')
@@ -190,6 +194,10 @@ def speculative_settings(s, timings=None):
 
 def launch_environment(s):
     env = engine_environment(s.engine)
+    if s.gpu_layers is None:
+        # An inherited explicit layer count prevents llama.cpp's fitter from
+        # choosing placement, just as an explicit --gpu-layers argument does.
+        env.pop('LLAMA_ARG_N_GPU_LAYERS', None)
     if s.cuda_graph_opt != 'default':
         env['GGML_CUDA_GRAPH_OPT'] = '1' if s.cuda_graph_opt == 'on' else '0'
     return env
@@ -258,8 +266,17 @@ def launch_args(s, port):
         args.append(flag)
         if value is not None:
             args.append(str(value))
-    for flag, value in [('--model',str(Path(s.model).expanduser().resolve())),('--host','127.0.0.1'),('--port',port),('--ctx-size',s.context),('--parallel',s.slots),('--gpu-layers',s.gpu_layers),('--device',s.device)]:
+    for flag, value in [('--model',str(Path(s.model).expanduser().resolve())),('--host','127.0.0.1'),('--port',port),('--ctx-size',s.context),('--parallel',s.slots),('--device',s.device)]:
         add(flag,value)
+    if s.gpu_layers is None:
+        if not {'--fit', '--fit-target'}.issubset(p['flags']):
+            raise ValueError('Automatic GPU layers require an engine with --fit and --fit-target. Select a compatible engine or enter a GPU layer count.')
+        # Keep context/slots explicit: fit placement to the requested window,
+        # including KV/compute buffers, rather than silently shrinking it.
+        add('--fit', 'on')
+        add('--fit-target', 1024)
+    else:
+        add('--gpu-layers', s.gpu_layers)
     add('--jinja')
     if s.backend_sampling:
         add('--backend-sampling')
