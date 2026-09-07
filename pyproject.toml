@@ -35,4 +35,4 @@ packages = ["lllm2"]
 
 [tool.hatch.build.targets.sdist]
 core-metadata-version = "2.4"
-include = ["/lllm2", "/tests", "/docs", "/README.md", "/LICENSE", "/NOTICE", "/pyproject.toml", "/uv.lock"]
+include = ["/lllm2", "/tests", "/docs", "/.github/scripts", "/README.md", "/LICENSE", "/NOTICE", "/pyproject.toml", "/uv.lock"]

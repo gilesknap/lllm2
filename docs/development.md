@@ -20,7 +20,7 @@ no GPU or model download is required. Preview the built documentation with
 
 ## CI and publishing setup
 
-Pull requests, pushes to `main` and `v*` tags run Python tests, browser tests,
+Pull requests, pushes to `main` and all tags run Python tests, browser tests,
 a strict docs build and distribution checks. CI installs the built wheel in
 isolation and checks its CLI, catalogue, recommendations and UI/template assets.
 Successful `main` builds deploy documentation; version tags publish the same
@@ -53,10 +53,14 @@ version and push it, for example for version `0.1.0`:
 
 ```bash
 git push origin main
-git tag v0.1.0
-git push origin v0.1.0
+git tag 0.1.0
+git push origin 0.1.0
 ```
 
-CI rejects tags that disagree with the built package version. Each release
+Tags can use the package version directly (`0.1.0`) or add a `v` prefix
+(`v0.1.0`). CI rejects tags that disagree with the built package version. Each release
 needs a new version. Once published, users install with `uv tool install lllm2`
 or upgrade with `uv tool upgrade lllm2`.
+
+The tagged commit must contain the workflow changes: fixing `main` does not
+rerun an existing tag.

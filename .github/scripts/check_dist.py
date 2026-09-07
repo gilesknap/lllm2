@@ -19,7 +19,7 @@ for name in ('static/index.html', 'static/panel.js', 'static/panel.css',
 installed_version = version('lllm2')
 if os.environ.get('GITHUB_REF_TYPE') == 'tag':
     tag = os.environ['GITHUB_REF_NAME']
-    assert tag == f'v{installed_version}', (
+    assert tag.removeprefix('v') == installed_version, (
         f'Tag {tag} does not match package version {installed_version}'
     )
 

@@ -8,9 +8,6 @@ then install the workbench:
 uv tool install lllm2
 ```
 
-Before the first PyPI release, use
-`uv tool install git+https://github.com/gilesknap/lllm2.git`.
-
 ## Prepare an engine
 
 Existing llama-server builds under the [engine search paths](reference.md#paths-and-ports)
