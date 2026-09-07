@@ -326,3 +326,41 @@ Feature availability now has its own full-width card outside the settings editor
 and follows the active draft through dedicated Launch/Experiments hosts. Model
 locations & engine setup also has a sibling card. Neither section is contained
 inside Customize or the launch configuration card.
+
+## Additional UI tweaks after PR #19
+
+Authorized after reviewing `pi.ui.ideas.md`; based on merged PR #19 at `8cfacb5`.
+These changes are on the separate `codex/ui-results-polish` branch.
+
+- Saved comparisons now have sortable sample rows with text-labelled status badges
+  and expandable context, timing, errors and exact evidence. Model/backend/context,
+  workload and cold/warm/replay distinctions remain visible. Sorting retains numeric
+  zero and puts missing rates last; expansion and keyboard focus survive refreshed
+  measurements and view changes. Result promotion keeps the existing eligibility checks.
+- Added CSV export, Copy table and Copy row in displayed order. Exports retain
+  individual samples and empty failed runs, source/quality status, model/build
+  identities where recorded, separate cold/processed-prefill rates, GPU/RSS metrics,
+  context estimates and settings. Text cells cannot become spreadsheet formulas.
+  Full JSON export still reads the complete results endpoint. Clipboard fallback
+  now supports multiline text in a selectable textarea.
+- Extracted the inline stylesheet to a formatted `static/panel.css`, with section
+  comments and an explicit CSS route. Existing styles retain their cascade order.
+  Added a keyboard-visible skip link to the active Launch/Experiments view without
+  changing its deep link or draft.
+
+Validation: 26 Python tests passed; the isolated browser suite passed its existing
+36 state/theme/viewport cases plus results views on desktop/mobile in both themes.
+New assertions cover numeric sorting, zero/missing rates, refreshed metrics without
+new samples, preserved open evidence/focus, promotion restrictions, CSV parsing via
+Python's csv module (including quotes/newlines), formula-like labels, multiline
+clipboard fallback, unchanged full JSON, keyboard skip targets and no launch/save
+side effects. A temporary backend check verified exact CSS bytes/content type and
+rejection of arbitrary static paths without constructing a real App/Store/engine.
+JavaScript syntax and diff checks passed. No GPU jobs or real downloads were run.
+Restart the idle panel before refreshing so the new stylesheet route is available.
+
+Follow-up review: “Try in Launch” and the available headroom-context action are
+visible on every eligible sample row, alongside Details. Samples share their run's
+settings; no first-sample restriction remains. Browser checks cover visibility with
+details closed and loading distinct runs' settings from sorted rows without
+starting an engine or changing saved preferences.
