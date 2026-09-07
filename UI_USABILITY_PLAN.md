@@ -358,3 +358,9 @@ side effects. A temporary backend check verified exact CSS bytes/content type an
 rejection of arbitrary static paths without constructing a real App/Store/engine.
 JavaScript syntax and diff checks passed. No GPU jobs or real downloads were run.
 Restart the idle panel before refreshing so the new stylesheet route is available.
+
+Follow-up review: “Try in Launch” and the available headroom-context action are
+visible on every eligible sample row, alongside Details. Samples share their run's
+settings; no first-sample restriction remains. Browser checks cover visibility with
+details closed and loading distinct runs' settings from sorted rows without
+starting an engine or changing saved preferences.

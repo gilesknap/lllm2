@@ -120,7 +120,7 @@ const assert=require('node:assert/strict');
   const sample={status:'complete',workload:'generate',input_tokens:1024,output_tokens:32,prefill_tok_s:120,decode_tok_s:25,peak_total_gpu_used_mib:4096,peak_engine_rss_mib:500};
   return [
    {...base,id:'cold',label:'Cold sample',started:'2026-09-07T09:02:00Z',samples:[sample],largest_observed_context:8192,recommended_context:7168},
-   {...base,id:'old',label:'Zero and missing',started:'2026-09-07T09:01:00Z',samples:[{...sample,decode_tok_s:0},{status:'failed',workload:'edit',error:'Sample failed, with "details"',output_tokens:0}]},
+   {...base,settings:{...baselineSettings,context:16384},id:'old',label:'Zero and missing',started:'2026-09-07T09:01:00Z',samples:[{...sample,decode_tok_s:0},{status:'failed',workload:'edit',error:'Sample failed, with "details"',output_tokens:0}]},
    {...base,id:'warm',label:'Warm run',started:'2026-09-07T09:03:00Z',measurement_mode:'warm-conversation',samples:[{status:'partial',workload:'long-code',turn:'append',processed_prefill_tok_s:90,decode_tok_s:40,processed_tokens:20,reused_tokens:80,input_tokens:100,output_tokens:10},{status:'complete',control:true,turn:'append',processed_prefill_tok_s:400,decode_tok_s:100,reused_tokens:0}]},
    {...base,id:'failed',label:'No samples',started:'2026-09-07T09:04:00Z',status:'failed',samples:[],error:'Engine did not start'},
    {...base,id:'bad-source',label:'=SUM(1,2)\n"quoted"',started:'2026-09-07T09:03:30Z',quality_status:'failed',samples:[{...sample,decode_tok_s:999,adherence:{status:'failed'}}]}
@@ -132,9 +132,11 @@ const assert=require('node:assert/strict');
  await run("switchView('experiments')");
  assert.equal(await run("document.querySelectorAll('#results>tr[data-result-key]').length"),7);
  assert.equal(await run("document.querySelectorAll('#results>.result-detail:not([hidden])').length"),0);
- assert.equal(await run("$('detail-warm-0').querySelector('[data-promote]')"),null);
- assert.equal(await run("$('detail-bad-source-0').querySelector('[data-promote]')"),null);
- assert.equal(await run("$('detail-failed-0').querySelector('[data-promote]')"),null);
+ for(const id of ['warm','bad-source','failed'])assert.equal(await run(`document.querySelector('#results [data-promote="${id}"]')`),null);
+ // Launch actions remain visible on every eligible run's sample, without opening details.
+ for(const key of ['cold-0','old-0','old-1'])assert.equal(await run(`$('promote-${key}').checkVisibility()`),true);
+ assert.equal(await run("$('context-cold-0').checkVisibility()"),true);
+ assert.equal(await run("$('context-old-0')"),null);
  await run("$('expand-cold-0').click();$('result-evidence-cold-0').open=true;$('expand-cold-0').focus();fixture.results[0].samples[0].decode_tok_s=75;await refreshResults()");
  assert.equal(await run("$('detail-cold-0').hidden"),false);
  assert.equal(await run("$('result-evidence-cold-0').open"),true);
@@ -145,6 +147,13 @@ const assert=require('node:assert/strict');
  await run("document.querySelector('[data-sort=decode]').click()");
  assert.equal(await run("document.querySelector('#results>tr[data-result-key]').dataset.resultKey"),'old-0');
  assert.deepEqual(await run("[...document.querySelectorAll('#results>tr[data-result-key]')].slice(-2).map(r=>r.dataset.resultKey)"),['old-1','failed-0']);
+ // After sorting, a later sample still loads its own run's settings, not another run's.
+ await run("$('promote-old-1').click();await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run('view'),'launch');assert.equal(await run('settings().context'),16384);
+ assert.deepEqual(await run("fixture.posts.filter(p=>p.path==='/api/result/preview').at(-1).data"),{result_id:'old',use_context:false});
+ await run("switchView('experiments');$('promote-cold-0').click();await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run('settings().context'),baselineSettings.context);
+ await run("switchView('experiments')");
  await run("fixture.exports=[];downloadText=(text,type,name)=>fixture.exports.push({text,type,name});$('export-csv').click()");
  const exported=await run('fixture.exports[0]');assert.equal(exported.name,'lllm2-results.csv');
  const parsed=JSON.parse(require('node:child_process').execFileSync('python3',['-c','import csv,json,sys; print(json.dumps(list(csv.DictReader(sys.stdin))))'],{input:exported.text.replace(/^\ufeff/,''),encoding:'utf8'}));

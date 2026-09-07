@@ -1179,6 +1179,12 @@ code {
   max-width: 250px;
   overflow-wrap: anywhere;
 }
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
 .result-status {
   display: inline-block;
   padding: 2px 7px;
