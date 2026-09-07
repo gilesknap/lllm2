@@ -1265,3 +1265,11 @@ code {
 section[tabindex="-1"], #comparisons {
   scroll-margin-top: 76px;
 }
+
+/* Keep experiment cost and comparison controls visible before starting a run. */
+.benchmark-estimate p {
+  margin: 0 0 6px;
+}
+#combination-heading {
+  margin: 0;
+}

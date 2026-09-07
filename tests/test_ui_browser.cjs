@@ -180,6 +180,47 @@ const assert=require('node:assert/strict');
   assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true);
   await p.shot(`${artifacts}/results-${theme}-${width}.png`);
  }
+ // Visible experiment controls: estimates react to inputs; selected settings stay independent.
+ await run("fixture.engine={running:false,ready:false};await poll();await inspect();resetExperiments();$('clear-combos').click()");
+ assert.equal(await run("$('combination-builder').checkVisibility() && !$('combination-builder').closest('details')"),true);
+ assert.equal(await run("$('benchmark-time').checkVisibility()"),true);
+ assert.match(await run("$('benchmark-time').textContent"),/2–3 minutes per configuration/);
+ await run("$('repeats').value=2;$('repeats').dispatchEvent(new Event('input'))");
+ assert.match(await run("$('benchmark-time').textContent"),/4–6 minutes/);
+ await run("$('search_context').click()");
+ assert.match(await run("$('benchmark-time').textContent"),/Context-search time is additional/);
+ await run("$('full_window').click()");
+ assert.match(await run("$('benchmark-time').textContent"),/no estimate/);
+ await run("resetExperiments();document.querySelector('#workloads input[value=source-copy]').click()");
+ assert.match(await run("$('benchmark-time').textContent"),/no estimate/);
+ await run("document.querySelectorAll('#workloads input:checked').forEach(x=>x.click())");
+ assert.match(await run("$('benchmark-time').textContent"),/Select a workload/);
+ await run("resetExperiments();$('context').value=128;slotNote()");
+ assert.match(await run("$('benchmark-time').textContent"),/Adjust the prompt/);
+ await run("fill(fixture.settings);await inspect()");
+ assert.equal(await run("document.querySelector('[data-mode=combinations]').disabled"),true);
+ const benchBefore=await run("fixture.posts.filter(p=>p.path==='/api/benchmark').length");
+ await run("$('add-combo').focus()");await key('Enter');
+ await run("$('cache').value='q4_0';edited('cache');await inspect();$('add-combo').click()");
+ assert.equal(await run("$('combo-count').textContent"),'2 selected');
+ assert.deepEqual(await run('combinations.map(s=>s.cache)'),['q8_0','q4_0']);
+ assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/benchmark').length"),benchBefore);
+ assert.equal(await run("document.querySelector('[data-mode=combinations]').disabled"),false);
+ for(const theme of ['light','dark'])for(const width of [1440,390]){
+  await p.call('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:theme}]});
+  await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
+  await run("$('benchmark-cost').closest('.benchmark-estimate').scrollIntoView({block:'start'});window.scrollBy(0,-90)");
+  assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true);
+  await p.shot(`${artifacts}/experiment-controls-${theme}-${width}.png`);
+ }
+ await run("document.querySelector('[data-mode=combinations]').click();await new Promise(r=>setTimeout(r,50))");
+ const submitted=await run("fixture.posts.filter(p=>p.path==='/api/benchmark').at(-1).data");
+ assert.equal(submitted.mode,'combinations');assert.deepEqual(submitted.combinations.map(s=>s.cache),['q8_0','q4_0']);
+ await run("$('clear-combos').click();await poll()");
+ assert.equal(await run("$('combo-count').textContent"),'0 selected');
+ assert.equal(await run("document.querySelector('[data-mode=combinations]').disabled"),true);
+ assert.equal(await run('JSON.stringify(fixture.saved)'),savedBefore);
+ console.log('Experiment controls passed: visible controls, reactive estimates, keyboard add, independent combinations, empty selection guard, mocked submission and responsive layouts.');
  console.log('Results checks passed: sorting, zero/missing metrics, modes, expansion/focus across refresh, eligibility, CSV quoting, multiline clipboard fallback, full JSON, skip links and unchanged drafts/defaults.');
  console.log('Artifacts: '+artifacts);
  console.log('Browser checks passed: toolbar, settings recovery, zero/Auto, separate drafts, stale response, download focus/completion, running context, clipboard fallback, disconnect, errors, unique IDs, 36 rendered state/theme/viewport combinations.');

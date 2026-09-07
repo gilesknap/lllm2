@@ -364,3 +364,22 @@ visible on every eligible sample row, alongside Details. Samples share their run
 settings; no first-sample restriction remains. Browser checks cover visibility with
 details closed and loading distinct runs' settings from sorted rows without
 starting an engine or changing saved preferences.
+
+
+## Experiment controls follow-up
+
+Separate branch `codex/ui-experiment-controls`, based on PR #20's `cf77d28`.
+
+- Compare selected combinations is an always-visible sibling card with a selected
+  count, setup guidance and the existing add/clear/run controls. Running an empty
+  selection is disabled, including after polling. Each addition snapshots its settings.
+- Rough speed-test timing is visible above the Run buttons and updates with inputs.
+  The existing Qwen/Vulkan guide applies to quick sweeps at 256 output tokens;
+  other selections explicitly show no estimate. Context-search time is additional.
+  The tooltip retains the estimate's basis and caveats; no new performance data is claimed.
+
+Validation: isolated Chrome suite passed its existing UI/results checks plus
+reactive timing, empty/invalid budgets, source workloads, keyboard addition,
+independent selected settings, mocked combination submission, empty selection after
+polling, and desktop/mobile layouts in both themes. JavaScript syntax and diff
+checks passed. All APIs were mocked; no real benchmark, engine or download was run.
