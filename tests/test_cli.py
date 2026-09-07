@@ -78,6 +78,8 @@ class CliTests(unittest.TestCase):
                 self.assertIn("gcc-toolset-13", hint)
             else:
                 self.assertIn("glslc", package_command)
+                self.assertIn("spirv-headers-devel", package_command.split())
+                self.assertNotIn("spirv-headers", package_command.split())
 
     def test_launch_arguments_and_cancellation(self):
         with patch.object(cli, "_launch", return_value=130) as launch:

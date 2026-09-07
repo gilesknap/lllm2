@@ -101,7 +101,7 @@ export CMAKE_PREFIX_PATH="$HOME/.local${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}
     if manager in {"dnf", "yum"}:
         packages = "git cmake gcc gcc-c++ make"
         if backend == "vulkan":
-            packages += " glslc vulkan-headers vulkan-loader-devel spirv-headers"
+            packages += " glslc vulkan-headers vulkan-loader-devel spirv-headers-devel"
     elif manager == "apt":
         packages = "git cmake build-essential"
         if backend == "vulkan":
