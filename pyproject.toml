@@ -1,6 +1,6 @@
 [project]
 name = "lllm2"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local NVIDIA LLM experimentation workbench"
 readme = "README.md"
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ GitHub = "https://github.com/gilesknap/lllm2"
 Documentation = "https://gilesknap.github.io/lllm2/"
 
 [dependency-groups]
-dev = ["build>=1.2,<2", "twine>=6,<7"]
+dev = ["build>=1.2,<2", "twine>=6,<7", "hatch-vcs>=0.5,<1"]
 docs = [
     "sphinx>=8,<9",
     "myst-parser>=4,<5",
@@ -25,8 +25,11 @@ docs = [
 ]
 
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.5,<1"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 # Keep metadata compatible with the release validator and PyPI upload tooling.

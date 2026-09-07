@@ -47,18 +47,20 @@ uses the workflow identity, with no PyPI API token in repository secrets.
 
 ## Release
 
-Set the new `version` in `pyproject.toml`, run `uv lock`, run the checks above
-and commit the changes to `main`. Then tag that commit with the matching
-version and push it, for example for version `0.1.0`:
+Run the checks above and merge the changes to `main`. Tag the merged commit
+with the new version and push it, for example:
 
 ```bash
-git push origin main
-git tag 0.1.0
-git push origin 0.1.0
+git switch main
+git pull --ff-only
+git tag 0.1.2
+git push origin refs/tags/0.1.2
 ```
 
-Tags can use the package version directly (`0.1.0`) or add a `v` prefix
-(`v0.1.0`). CI rejects tags that disagree with the built package version. Each release
+Hatch derives the package version from Git using `hatch-vcs`: `0.1.2` and
+`v0.1.2` both build version `0.1.2`. There is no version string to update in
+`pyproject.toml` or `uv.lock` for a release. Builds between tags get a development
+version. CI checks that the built wheel matches the release tag. Each release
 needs a new version. Once published, users install with `uv tool install lllm2`
 or upgrade with `uv tool upgrade lllm2`.
 
