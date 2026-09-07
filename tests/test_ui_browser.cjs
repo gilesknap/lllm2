@@ -18,7 +18,7 @@ const fs=require('node:fs');
 const path=require('node:path'),os=require('node:os');
 const root=path.resolve(__dirname,'..'),artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'lllm2-ui-'));
 const b=browser();
-const source=fs.readFileSync(root+'/lllm2/static/index.html','utf8').replace('<link rel="stylesheet" href="/static/panel.css">',()=>'<style>'+fs.readFileSync(root+'/lllm2/static/panel.css','utf8')+'</style>').replace('<script src="/static/panel.js"></script>',()=>'<script>'+fs.readFileSync(path.join(__dirname,'ui_fixture.js'),'utf8')+'</script><script>'+fs.readFileSync(root+'/lllm2/static/panel.js','utf8')+'</script>');
+const source=fs.readFileSync(root+'/src/lllm2/static/index.html','utf8').replace('<link rel="stylesheet" href="/static/panel.css">',()=>'<style>'+fs.readFileSync(root+'/src/lllm2/static/panel.css','utf8')+'</style>').replace('<script src="/static/panel.js"></script>',()=>'<script>'+fs.readFileSync(path.join(__dirname,'ui_fixture.js'),'utf8')+'</script><script>'+fs.readFileSync(root+'/src/lllm2/static/panel.js','utf8')+'</script>');
 fs.writeFileSync(artifacts+'/after.html',source);
 const assert=require('node:assert/strict');
 (async()=>{try{

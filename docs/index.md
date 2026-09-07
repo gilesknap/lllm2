@@ -1,22 +1,56 @@
-# lllm2
+---
+html_theme.sidebar_secondary.remove: true
+---
 
-Run local models and measure what works on your NVIDIA GPU. The browser panel
-downloads GGUF checkpoints, controls llama.cpp and compares speed, context
-capacity and settings. Launch a model for everyday use, or use **Experiments**
-to test changes before saving them.
-
-- **[Tutorial](tutorial.md):** install and serve your first model.
-- **[How-to](how-to.md):** use your own models, connect clients and compare settings.
-- **[Reference](reference.md):** commands, paths and ports.
-- **[Explanation](explanation.md):** what the measurements and defaults mean.
-- **[Development](development.md):** run checks and publish a release.
-
-```{toctree}
-:hidden:
-
-tutorial
-how-to
-reference
-explanation
-development
+```{include} ../README.md
+:end-before: <!-- README only content
 ```
+
+
+How the documentation is structured
+-----------------------------------
+
+Documentation is split into [four categories](https://diataxis.fr), also accessible from links in the top bar.
+
+<!-- https://sphinx-design.readthedocs.io/en/latest/grids.html -->
+
+::::{grid} 2
+:gutter: 4
+
+:::{grid-item-card} {material-regular}`directions_walk;2em`
+```{toctree}
+:maxdepth: 2
+tutorials
+```
++++
+Tutorials for installation and typical usage. New users start here.
+:::
+
+:::{grid-item-card} {material-regular}`directions;2em`
+```{toctree}
+:maxdepth: 2
+how-to
+```
++++
+Practical step-by-step guides for the more experienced user.
+:::
+
+:::{grid-item-card} {material-regular}`info;2em`
+```{toctree}
+:maxdepth: 2
+explanations
+```
++++
+Explanations of how it works and why it works that way.
+:::
+
+:::{grid-item-card} {material-regular}`menu_book;2em`
+```{toctree}
+:maxdepth: 2
+reference
+```
++++
+Technical reference material including APIs and release notes.
+:::
+
+::::

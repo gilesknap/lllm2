@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0  # hatch-vcs needs tags and history for the version.
+          fetch-depth: 0  # setuptools-scm needs tags and history for the version.
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'

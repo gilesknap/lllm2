@@ -1,0 +1,15 @@
+# Changes here will be overwritten by Copier
+_commit: 5.4.0
+_src_path: https://github.com/DiamondLightSource/python-copier-template.git
+author_email: giles.knap@diamond.ac.uk
+author_name: Giles Knap
+description: Local NVIDIA LLM experimentation workbench
+distribution_name: lllm2
+docker: false
+docs_type: sphinx
+git_platform: github.com
+github_org: gilesknap
+package_name: lllm2
+pypi: true
+repo_name: lllm2
+type_checker: mypy
