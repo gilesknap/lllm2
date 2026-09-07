@@ -19,6 +19,22 @@
     }
   },
   {
+    "id": "qwen3.5-35b-a3b",
+    "name": "Qwen3.5-35B-A3B",
+    "repo": "unsloth/Qwen3.5-35B-A3B-GGUF",
+    "file": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "size_gb": 22.0,
+    "max_ctx": 262144,
+    "kv_kib_per_token": 20,
+    "full_attention_layers": 10,
+    "low_vram_defaults": {
+      "max_vram_mib": 4096,
+      "context": 4096,
+      "batch_size": 128,
+      "ubatch_size": 64
+    }
+  },
+  {
     "id": "qwen3.6-35b-a3b",
     "name": "Qwen3.6-35B-A3B",
     "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
