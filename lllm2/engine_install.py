@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -19,6 +20,26 @@ BACKENDS = {
 }
 
 
+def _fix_vulkan_header_target(source: Path) -> list[str]:
+    """Repair upstream revisions that find SPIRV-Headers but omit its target.
+
+    Without the imported target, headers outside the compiler's default search
+    paths are invisible. Only modify the known broken CMake form in our clone.
+    """
+    cmake = source / "ggml/src/ggml-vulkan/CMakeLists.txt"
+    content = cmake.read_text()
+    original = "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)"
+    if ("find_package(SPIRV-Headers CONFIG REQUIRED)" not in content or
+            "SPIRV-Headers::SPIRV-Headers" in content or original not in content):
+        return []
+    cmake.write_text(content.replace(
+        original,
+        "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan SPIRV-Headers::SPIRV-Headers)",
+        1,
+    ))
+    return ["Link ggml-vulkan to SPIRV-Headers::SPIRV-Headers"]
+
+
 def missing_build_tools(backend: str) -> list[str]:
     """Return commands required before an unprivileged source build can run."""
     required = ["git", "cmake", "c++"]
@@ -28,10 +49,73 @@ def missing_build_tools(backend: str) -> list[str]:
 
 
 def prerequisite_hint(backend: str) -> str:
-    packages = "git cmake build-essential"
-    if backend == "vulkan":
-        packages += " glslc libvulkan-dev"
-    return f"sudo apt install {packages}"
+    """Suggest system packages using the distribution's ID and ancestry."""
+    try:
+        release = platform.freedesktop_os_release()
+    except OSError:
+        release = {}
+    distributions = [release.get("ID", ""), *release.get("ID_LIKE", "").split()]
+    manager = None
+    for distribution in distributions:
+        if distribution in {"rhel", "centos", "rocky", "almalinux", "ol", "fedora"}:
+            manager = "dnf" if shutil.which("dnf") or not shutil.which("yum") else "yum"
+            break
+        if distribution in {"debian", "ubuntu"}:
+            manager = "apt"
+            break
+    if manager is None:
+        manager = next((tool for tool in ("dnf", "yum", "apt") if shutil.which(tool)), None)
+
+    enterprise_linux_8 = (
+        release.get("VERSION_ID", "").split(".")[0] == "8"
+        and bool(set(distributions) & {"rhel", "centos", "rocky", "almalinux", "ol"})
+    )
+    if enterprise_linux_8 and backend == "vulkan":
+        # glslc was added to RHEL in 9.0; enabling CRB on EL8 does not provide it.
+        return f'''sudo {manager} install git cmake make python3.11 gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ vulkan-headers vulkan-loader-devel
+# Select the compilers explicitly; setting PATH alone can leave cc/c++ using GCC 8.
+# Keep these exports for the engine build too. They work in bash and zsh.
+export CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc
+export CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+export PATH="/opt/rh/gcc-toolset-13/root/usr/bin:$PATH"
+# Build glslc locally: RHEL 8 has no glslc package in its standard repositories.
+# Upstream instructions: https://github.com/google/shaderc#getting-and-building-shaderc
+# Use a fresh directory so existing builds are left intact.
+shaderc_work=$(mktemp -d)
+git clone https://github.com/google/shaderc.git "$shaderc_work/source" && (
+  cd "$shaderc_work/source" && python3.11 utils/git-sync-deps
+) && cmake -S "$shaderc_work/source" -B "$shaderc_work/build" -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE="$(command -v python3.11)" -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON -DSHADERC_ENABLE_WERROR_COMPILE=OFF &&
+cmake --build "$shaderc_work/build" --target glslc_exe --parallel 2 &&
+mkdir -p "$HOME/.local/bin" &&
+install -m 755 "$shaderc_work/build/glslc/glslc" "$HOME/.local/bin/glslc"
+export PATH="$HOME/.local/bin:$PATH"
+glslc --version
+# Install the matching SPIR-V headers and their CMake package (no compilation).
+cmake -S "$shaderc_work/source/third_party/spirv-headers" -B "$shaderc_work/headers-build" -DCMAKE_INSTALL_PREFIX="$HOME/.local" -DSPIRV_HEADERS_ENABLE_TESTS=OFF -DSPIRV_HEADERS_ENABLE_INSTALL=ON &&
+cmake --install "$shaderc_work/headers-build"
+export CMAKE_PREFIX_PATH="$HOME/.local${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"
+# Now rerun: lllm2 engines install vulkan
+# If the selected llama.cpp ref requires newer Vulkan headers, install
+# a matching Vulkan SDK as well: https://vulkan.lunarg.com/doc/sdk/latest/linux/getting_started.html'''
+
+    if manager in {"dnf", "yum"}:
+        packages = "git cmake gcc gcc-c++ make"
+        if backend == "vulkan":
+            packages += " glslc vulkan-headers vulkan-loader-devel spirv-headers"
+    elif manager == "apt":
+        packages = "git cmake build-essential"
+        if backend == "vulkan":
+            packages += " glslc libvulkan-dev spirv-headers"
+    else:
+        hint = "Install Git, CMake, a C/C++ compiler and Make using your system package manager."
+        if backend == "vulkan":
+            hint += " Also install glslc, the Vulkan development headers and loader, and SPIRV-Headers with its CMake package."
+        return hint
+    hint = f"sudo {manager} install {packages}"
+    if manager in {"dnf", "yum"} and backend == "vulkan":
+        hint += ("\n# If Vulkan packages are unavailable, enable the development repositories "
+                 "for your distribution or install the Vulkan SDK.")
+    return hint
 
 
 def install(backend: str, *, name: str = "", ref: str = "master",
@@ -56,7 +140,8 @@ def install(backend: str, *, name: str = "", ref: str = "master",
     missing = missing_build_tools(backend)
     if missing:
         raise RuntimeError("Missing build tools: " + ", ".join(missing) +
-                           ". Install prerequisites explicitly with: " + prerequisite_hint(backend))
+                           "\n\nInstall prerequisites, then rerun the engine install command:\n\n" +
+                           prerequisite_hint(backend))
 
     root = (root or config.ENGINE_HOME).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -77,11 +162,14 @@ def install(backend: str, *, name: str = "", ref: str = "master",
             ("build", ["cmake", "--build", str(build), "--target", "llama-server",
                        "--parallel", str(jobs or max(1, os.cpu_count() or 1))]),
         ]
+        build_adjustments = []
         for description, command in steps:
             try:
                 subprocess.run(command, check=True)
             except subprocess.CalledProcessError as error:
                 raise RuntimeError(f"Engine {description} failed with exit code {error.returncode}.") from error
+            if description == "clone" and backend == "vulkan":
+                build_adjustments = _fix_vulkan_header_target(source)
         staged.mkdir()
         for artifact in (build / "bin").iterdir():
             if artifact.is_file() and (artifact.name == "llama-server" or
@@ -103,6 +191,7 @@ def install(backend: str, *, name: str = "", ref: str = "master",
         (staged / "lllm2-engine.json").write_text(json.dumps({
             "repository": REPOSITORY, "requested_ref": ref, "revision": revision,
             "backend": backend, "cuda_architectures": cuda_architectures if backend == "cuda" else None,
+            "build_adjustments": build_adjustments,
         }, indent=2) + "\n")
         staged.rename(target)
     return target / "llama-server"
