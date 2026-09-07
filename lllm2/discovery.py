@@ -85,6 +85,24 @@ def command(args, timeout=10, env=None):
         return -1, str(e)
 
 
+def host_memory():
+    """System usage excludes reclaimable cache via Linux MemAvailable."""
+    try:
+        values = {}
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            key, value = line.split(':', 1)
+            if key in ('MemTotal', 'MemAvailable'):
+                values[key] = int(value.split()[0])
+        total, available = values['MemTotal'], values['MemAvailable']
+        if total <= 0 or not 0 <= available <= total:
+            raise ValueError('Invalid host memory counters')
+        return dict(total_gib=round(total / 2**20, 1),
+                    used_gib=round((total - available) / 2**20, 1),
+                    available_gib=round(available / 2**20, 1))
+    except (OSError, ValueError, KeyError, IndexError):
+        return dict(total_gib=None, used_gib=None, available_gib=None)
+
+
 def hardware():
     rc, out = command(['nvidia-smi', '--query-gpu=index,uuid,name,memory.total,memory.used,driver_version', '--format=csv,noheader,nounits'], 4)
     cards = []
@@ -93,7 +111,13 @@ def hardware():
             if len(row) == 6:
                 i, uuid, name, total, used, driver = [x.strip() for x in row]
                 cards.append(dict(index=i, uuid=uuid, name=name, total_mib=int(total), used_mib=int(used), driver=driver))
-    return dict(gpus=cards, error=None if cards else out[:500], ram_gib=round(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 2**30, 1))
+    ram = host_memory()
+    # Retain the legacy total-only field for existing consumers.
+    try:
+        total = round(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 2**30, 1)
+    except (OSError, ValueError, AttributeError):
+        total = ram['total_gib']
+    return dict(gpus=cards, error=None if cards else out[:500], ram_gib=total, ram=ram)
 
 
 def identity(path):
