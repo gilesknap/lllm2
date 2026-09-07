@@ -9,7 +9,14 @@
     "kv_kib_per_token": 64,
     "full_attention_layers": 16,
     "mtp": true,
-    "chat_template": "qwen3.8-27b.jinja"
+    "chat_template": "qwen3.8-27b.jinja",
+    "recommendation": {
+      "rank": 1,
+      "label": "Recommended",
+      "description": "Our default starting model.",
+      "variant": "UD-Q4_K_S",
+      "profile": "qwen38-dense-3090-cuda-general-65k-20260906"
+    }
   },
   {
     "id": "qwen3.6-35b-a3b",
@@ -29,7 +36,15 @@
     "max_ctx": 262144,
     "kv_kib_per_token": 20,
     "full_attention_layers": 10,
-    "mtp": true
+    "mtp": true,
+    "recommendation": {
+      "rank": 2,
+      "label": "Faster alternative",
+      "description": "Faster generation in our tested RTX 3090 coding workloads.",
+      "variant": "MTP build \u00b7 IQ4_XS",
+      "profile": "qwen36-moe-mtp-3090-cuda-general-65k-20260906",
+      "name": "Qwen3.6-35B-A3B"
+    }
   },
   {
     "id": "qwen3.6-35b-a3b-q4ks",
