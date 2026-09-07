@@ -109,7 +109,7 @@ class App:
                             ('historical benchmark evidence · qualified' if provenance['kind'] == 'benchmark' else 'manual preferences'),
                             notes=notes, evidence=provenance if provenance['kind'] == 'benchmark' else None)
             if source == 'saved':
-                raise ValueError('No saved defaults for this model and backend yet. Choose “Use as default” on a completed benchmark, or save the current settings.')
+                raise ValueError('No saved settings for this model and backend yet. Load a completed experiment into Launch or edit the draft, then choose “Save my settings”.')
             return starting_defaults(s)
         if path == '/api/default/load':
             s = Settings.parse(data['settings'])

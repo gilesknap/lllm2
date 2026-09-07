@@ -54,6 +54,7 @@ class Download:
             "id": self.id,
             "name": self.name,
             "file": self.file,
+            "target": str(self.target),
             "state": self.state,
             "detail": self.detail,
             "percent": self.percent,
