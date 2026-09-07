@@ -273,8 +273,29 @@ class CudaToolkitTests(unittest.TestCase):
             root = self._toolkit(Path(directory) / "cuda")
             with mock.patch.dict(os.environ, {"CUDA_HOME": str(root)}, clear=True):
                 self.assertEqual(cuda_toolkit_root(), root)
-            with mock.patch.dict(os.environ, {}, clear=True):
+            # An empty PATH, not an absent one: shutil.which falls back to
+            # os.defpath when PATH is unset, so a /usr/bin/nvcc would be found.
+            with mock.patch.dict(os.environ, {"PATH": ""}, clear=True):
                 self.assertIsNone(cuda_toolkit_root())
+
+    def test_prefers_the_toolkit_on_path_over_a_default_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            on_path = self._toolkit(root / "path-toolkit")
+            default = self._toolkit(root / "default-toolkit")
+            with (
+                mock.patch.object(
+                    engine_install, "CUDA_DEFAULT_ROOTS", (str(default),)
+                ),
+                mock.patch.dict(os.environ, {"PATH": str(on_path / "bin")}, clear=True),
+            ):
+                # CMake builds with this nvcc, so the checks must read this toolkit.
+                self.assertEqual(cuda_toolkit_root(), on_path)
+            with mock.patch.object(
+                engine_install, "CUDA_DEFAULT_ROOTS", (str(default),)
+            ):
+                with mock.patch.dict(os.environ, {"PATH": ""}, clear=True):
+                    self.assertEqual(cuda_toolkit_root(), default)
 
     def test_hint_exports_a_found_toolkit_instead_of_installing_one(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -334,6 +355,9 @@ class CudaToolkitTests(unittest.TestCase):
                 hint = prerequisite_hint("cuda", [])
             self.assertIn(f"supports GCC {major - 1} and older", hint)
             self.assertIn("export CXX=", hint)
+            # Without CUDAHOSTCXX, CMAKE_CUDA_HOST_COMPILER stays unset and nvcc
+            # keeps the default host compiler the toolkit just rejected.
+            self.assertIn("export CUDAHOSTCXX=", hint)
             with mock.patch.dict(
                 os.environ, {"CUDA_HOME": str(accepting), "CXX": compiler}, clear=True
             ):

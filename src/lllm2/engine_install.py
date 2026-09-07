@@ -187,6 +187,11 @@ def cuda_toolkit_root() -> Path | None:
         value = os.environ.get(variable)
         if value:
             candidates.append(Path(value))
+    # With no root variable set, CMake compiles with the nvcc it finds on PATH.
+    # Checking a default prefix first would inspect a toolkit the build ignores.
+    nvcc = shutil.which("nvcc")
+    if nvcc is not None:
+        candidates.append(Path(nvcc).resolve().parent.parent)
     for root in CUDA_DEFAULT_ROOTS:
         candidates.append(Path(root))
         parent = Path(root).parent
@@ -505,17 +510,24 @@ def host_compiler_hint() -> str:
         f"# {compiler} is GCC {printed}; this CUDA toolkit supports GCC {ceiling} and older.",
         "# Install a supported compiler, then select it for the build:",
     ]
+    # CC and CXX select the C++ compiler; nvcc keeps its own default host
+    # compiler unless CUDAHOSTCXX names one, so exporting all three is what
+    # actually moves the build onto the compiler installed here.
     if manager == "apt":
         lines.append(f"sudo apt install gcc-{ceiling} g++-{ceiling}")
         lines.append(f"export CC=/usr/bin/gcc-{ceiling}")
         lines.append(f"export CXX=/usr/bin/g++-{ceiling}")
+        lines.append(f"export CUDAHOSTCXX=/usr/bin/g++-{ceiling}")
     elif manager in {"dnf", "yum"}:
+        toolset = f"/opt/rh/gcc-toolset-{ceiling}/root/usr/bin"
         lines.append(f"sudo {manager} install gcc-toolset-{ceiling}")
-        lines.append(f"export CC=/opt/rh/gcc-toolset-{ceiling}/root/usr/bin/gcc")
-        lines.append(f"export CXX=/opt/rh/gcc-toolset-{ceiling}/root/usr/bin/g++")
+        lines.append(f"export CC={toolset}/gcc")
+        lines.append(f"export CXX={toolset}/g++")
+        lines.append(f"export CUDAHOSTCXX={toolset}/g++")
     else:
         lines.append(
-            f"# Install GCC {ceiling} or older, then export CC and CXX to point at it."
+            f"# Install GCC {ceiling} or older, then export CC, CXX and"
+            " CUDAHOSTCXX to point at it."
         )
     return "\n".join(lines)
 
