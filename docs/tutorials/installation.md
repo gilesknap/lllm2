@@ -61,10 +61,17 @@ lllm2 engines list
 ```
 
 This compiles llama.cpp into your user directory. System prerequisites are
-installed separately; missing build tools produce installation hints.
+installed separately, so the command checks for them first and prints the
+commands that install whatever is missing, before it downloads anything. The
+CUDA check covers `nvcc` and reports whether the toolkit is absent or merely
+missing from `PATH`; it also refuses a default compiler the installed toolkit
+rejects, and a toolkit too old to generate code for the installed GPU, naming a
+supported compiler and the CUDA release the card needs. Pass `--skip-checks` to build anyway when a
+dependency is installed somewhere the checks cannot see.
+
 For Vulkan, use `lllm2 engines install vulkan` with Vulkan development
-libraries and `glslc` installed. Use `--ref TAG` to choose a particular
-llama.cpp revision; the default is `master`.
+libraries, SPIRV-Headers and `glslc` installed. Use `--ref TAG` to choose a
+particular llama.cpp revision; the default is `master`.
 
 ## Start the panel
 

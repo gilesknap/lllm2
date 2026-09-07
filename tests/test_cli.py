@@ -124,8 +124,21 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(result.exit_code, 0, result.output)
             install.assert_called_once_with(
-                "cuda", ref="b123", name="test", jobs=4, cuda_architectures="86;89"
+                "cuda",
+                ref="b123",
+                name="test",
+                jobs=4,
+                cuda_architectures="86;89",
+                check_prerequisites=True,
             )
+
+    def test_skip_checks_disables_the_prerequisite_scan(self):
+        with patch.object(cli, "install", return_value="/engine") as install:
+            result = self.runner.invoke(
+                cli.app, ["engines", "install", "cuda", "--skip-checks"]
+            )
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertFalse(install.call_args.kwargs["check_prerequisites"])
 
     def test_missing_tools_print_instructions_without_building(self):
         for version in ("8.10", "9.0"):
@@ -142,13 +155,21 @@ class CliTests(unittest.TestCase):
                         None if tool == "glslc" else "/usr/bin/" + tool
                     ),
                 ),
+                patch("lllm2.engine_install._header_present", return_value=False),
+                patch("lllm2.engine_install._library_present", return_value=False),
+                patch(
+                    "lllm2.engine_install._cmake_package_present", return_value=False
+                ),
+                # An installed CUDA toolkit would make the hint probe the host
+                # compiler; this backend's advice does not depend on it.
+                patch("lllm2.engine_install._host_compiler_version", return_value=None),
                 patch("lllm2.engine_install.subprocess.run") as run,
                 contextlib.redirect_stderr(output),
             ):
                 self.assertEqual(cli.main(["engines", "install", "vulkan"]), 2)
                 run.assert_not_called()
             hint = output.getvalue()
-            self.assertIn("Missing build tools: glslc", hint)
+            self.assertIn("Missing build dependencies: glslc", hint)
             self.assertIn("sudo dnf install", hint)
             self.assertIn("vulkan-loader-devel", hint)
             package_command = next(

@@ -207,13 +207,21 @@ def install_engine(
             help="CUDA targets: native, all, all-major, or a quoted list such as '86;89'.",
         ),
     ] = "native",
+    skip_checks: Annotated[
+        bool,
+        typer.Option(
+            "--skip-checks",
+            help="Build without checking prerequisites, for unusual install layouts.",
+        ),
+    ] = False,
 ) -> None:
     """Build llama-server from source into LLLM2_ENGINE_HOME.
 
     Defaults to ~/.local/share/lllm2/engines. Existing builds are never
     overwritten. System packages must be installed separately; CUDA builds
     also require an installed NVIDIA CUDA toolkit and compatible compiler.
-    If build tools are missing, print prerequisite instructions and exit.
+    Missing prerequisites are reported with the commands that install them,
+    before anything is downloaded.
 
     Example: lllm2 engines install cuda --name my-cuda --jobs 8
     """
@@ -224,6 +232,7 @@ def install_engine(
             ref=ref,
             jobs=jobs,
             cuda_architectures=cuda_architectures,
+            check_prerequisites=not skip_checks,
         )
     )
 
