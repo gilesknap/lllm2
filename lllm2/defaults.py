@@ -71,7 +71,6 @@ def inherited_defaults(selection):
         notes.append('GPU layers: automatic. At startup the engine fits weights and buffers to available VRAM with a 1024 MiB margin, offloading to system RAM when needed. The engine log records actual placement.')
     else:
         s.gpu_layers = 999
-        notes.append('This engine lacks automatic memory fitting. GPU layers request full offload (999); enter a smaller count if the model does not fit.')
     devices = [d for d in p['devices'] if d.startswith(s.backend)]
     if s.device not in devices:
         s.device = devices[0] if devices else ''
@@ -83,6 +82,36 @@ def inherited_defaults(selection):
         s.cache = 'q8_0'
     else:
         notes.append('This binary cannot apply the inherited q8_0/flash settings; generic cache/context retained.')
+    host = hardware()
+    cards = host['gpus']
+    low_vram = entry.get('low_vram_defaults') if entry else None
+    if low_vram and len(cards) == 1 and 0 < cards[0]['total_mib'] <= low_vram['max_vram_mib']:
+        # A400 / 32 GiB RAM starting point. Keep the GGUF context limit intact
+        # for explicit experiments; the all-GPU planner cannot budget CPU weights.
+        ceiling = min(entry['max_ctx'], m['context'] or entry['max_ctx'])
+        s.context = max(512, min(low_vram['context'], ceiling) // 512 * 512)
+        s.slots = 1
+        s.speculation = 'none'
+        for key, flag, value in [('batch_size', '--batch-size', low_vram['batch_size']),
+                                 ('ubatch_size', '--ubatch-size', low_vram['ubatch_size']),
+                                 ('cache_ram_mib', '--cache-ram', 0),
+                                 ('context_checkpoints', '--ctx-checkpoints', 0)]:
+            if flag in p['flags']:
+                setattr(s, key, value)
+            else:
+                notes.append(f'Engine lacks {flag}; its built-in default will apply.')
+        if not automatic_layers:
+            s.gpu_layers = 0
+            notes.append('This engine lacks automatic memory fitting. Model layers stay on the CPU (0); use a fitting-capable engine for automatic GPU offloading.')
+        notes.append('Conservative starting settings for a 4 GiB GPU and 32 GiB system RAM: one conversation, up to 4K context, small prompt batches and speculation off. Prompt-cache RAM and recurrent checkpoints are disabled where supported. This is an unmeasured estimate; most weights stay in system RAM and CPU offloading can slow prompt processing.')
+        # Q4_K_M weights are about 20.5 GiB. Allow host runtime headroom even
+        # if automatic fitting keeps few or no layers on the GPU.
+        available = host.get('ram', {}).get('available_gib')
+        if available is not None and available < 24:
+            notes.append(f'Only {available:g} GiB system RAM is available. Aim for about 24 GiB available before loading this checkpoint to leave room for weights and runtime buffers.')
+        return dict(settings=s.dict(), source='Low-VRAM starting settings · estimates', notes=notes)
+    if not automatic_layers:
+        notes.append('This engine lacks automatic memory fitting. GPU layers request full offload (999); enter a smaller count if the model does not fit.')
     s.draft_length = 3
     if caps['draft-mtp']['status'] == 'available':
         s.speculation = 'draft-mtp'
@@ -97,7 +126,6 @@ def inherited_defaults(selection):
             s.chat_template = str(Path(__file__).with_name('templates') / entry['chat_template'])
         else:
             notes.append('Binary lacks the inherited chat-template override flag.')
-    cards = hardware()['gpus']
     if entry and len(cards) == 1 and s.cache == 'q8_0':
         rc, state = command(['systemctl', 'is-active', 'graphical.target'], 5)
         desktop = state.strip() != 'inactive'

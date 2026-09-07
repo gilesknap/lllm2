@@ -94,3 +94,69 @@ class GpuOffloadTests(unittest.TestCase):
                 patch.object(defaults, 'inherited_defaults') as inherited:
             self.assertEqual(defaults.starting_defaults(Settings()), measured)
             inherited.assert_not_called()
+
+
+class A400CatalogueDefaultsTests(unittest.TestCase):
+    flags = FLAGS + ['--batch-size', '--ubatch-size', '--cache-ram', '--ctx-checkpoints',
+                     '--flash-attn', '--cache-type-k', '--cache-type-v']
+
+    def resolve(self, *, total_mib=4096, available_gib=28, flags=None, cache=True, ceiling=262144):
+        entry = next(m for m in defaults.CATALOG if m['id'] == 'qwen3.5-35b-a3b')
+        selection = Settings(model='/models/' + entry['name'] + '/' + entry['file'],
+                             engine='/llama-server', context=65536, slots=4,
+                             gpu_layers=999, speculation='draft-mtp', batch_size=2048)
+        p = dict(PROBE, flags=self.flags if flags is None else flags)
+        m = dict(META, context=ceiling)
+        caps = {name: dict(status='available' if cache else 'unsupported', reason='test engine')
+                for name in ('flash', 'cache', 'draft-mtp')}
+        host = dict(gpus=[dict(name='NVIDIA RTX A400', total_mib=total_mib, uuid='gpu')],
+                    ram_gib=32, ram=dict(available_gib=available_gib))
+        with patch.object(defaults, 'probe', return_value=p), \
+                patch.object(defaults, 'metadata', return_value=m), \
+                patch.object(defaults, 'capabilities', return_value=caps), \
+                patch.object(defaults, 'hardware', return_value=host), \
+                patch.object(defaults, 'command', return_value=(0, '512')), \
+                patch.object(defaults, 'measured_defaults', return_value=(None, [])):
+            result = defaults.starting_defaults(selection)
+        s = Settings.parse(result['settings'])
+        with patch('lllm2.settings.probe', return_value=p), \
+                patch('lllm2.settings.metadata', return_value=m), \
+                patch('lllm2.settings.capabilities', return_value=caps):
+            args = launch_args(s, 1920)
+        return s, result, args
+
+    def test_a400_launch_uses_small_context_and_automatic_offload(self):
+        s, result, args = self.resolve()
+        self.assertEqual((s.context, s.slots, s.speculation), (4096, 1, 'none'))
+        self.assertEqual((s.batch_size, s.ubatch_size), (128, 64))
+        self.assertEqual((s.cache_ram_mib, s.context_checkpoints), (0, 0))
+        self.assertEqual((s.flash, s.cache), ('on', 'q8_0'))
+        self.assertIsNone(s.gpu_layers)
+        for flag, value in [('--ctx-size', '4096'), ('--parallel', '1'), ('--fit-target', '1024'),
+                            ('--batch-size', '128'), ('--ubatch-size', '64'),
+                            ('--cache-ram', '0'), ('--ctx-checkpoints', '0')]:
+            self.assertEqual(args[args.index(flag) + 1], value)
+        self.assertIn('estimates', result['source'])
+
+    def test_old_engine_keeps_weights_on_cpu_and_omits_unsupported_flags(self):
+        s, result, args = self.resolve(flags=FLAGS[:-2], cache=False)
+        self.assertEqual((s.gpu_layers, s.context, s.slots), (0, 4096, 1))
+        self.assertEqual(args[args.index('--gpu-layers') + 1], '0')
+        self.assertNotIn('--batch-size', args)
+        self.assertNotIn('--fit', args)
+        self.assertNotIn('full offload (999)', ' '.join(result['notes']))
+
+    def test_small_context_applies_without_quantized_cache_support(self):
+        s, _, _ = self.resolve(cache=False)
+        self.assertEqual((s.context, s.cache, s.speculation), (4096, 'f16', 'none'))
+
+    def test_checkpoint_ceiling_and_available_ram_are_respected(self):
+        s, result, _ = self.resolve(ceiling=2048, available_gib=16)
+        self.assertEqual(s.context, 2048)
+        self.assertIn('Only 16 GiB system RAM is available', ' '.join(result['notes']))
+
+    def test_larger_gpu_retains_existing_offload_defaults(self):
+        s, result, _ = self.resolve(total_mib=8192, cache=False)
+        self.assertEqual(result['source'], defaults.SOURCE)
+        self.assertIsNone(s.batch_size)
+        self.assertIsNone(s.cache_ram_mib)
