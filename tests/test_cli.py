@@ -16,14 +16,15 @@ class CliTests(unittest.TestCase):
     def test_help_does_not_start_services(self):
         with patch.object(cli, "_serve") as serve, patch.object(cli, "_launch") as launch:
             for command in ([], ["panel"], ["models"], ["engines"],
-                            ["engines", "list"], ["engines", "install"], ["launch"]):
+                            ["engines", "list"], ["engines", "install"], ["launch"],
+                            ["claude"], ["codex"], ["pi"]):
                 for flag in ("--help", "-h"):
                     with self.subTest(command=command, flag=flag):
                         result = self.runner.invoke(cli.app, [*command, flag])
                         self.assertEqual(result.exit_code, 0, result.output)
                         self.assertIn("Usage:", result.output)
             root = self.runner.invoke(cli.app, ["--help"])
-            for name in ("panel", "models", "engines", "launch"):
+            for name in ("panel", "models", "engines", "launch", "claude", "codex", "pi"):
                 self.assertIn(name, root.output)
             serve.assert_not_called()
             launch.assert_not_called()
@@ -107,6 +108,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("Error: Build failed", output.getvalue())
         with patch.object(cli, "_launch", return_value=130):
             self.assertEqual(cli.main(["launch"]), 130)
+
+    def test_harness_argument_forwarding(self):
+        for name in ('claude', 'codex', 'pi'):
+            for args in (["-p", "a prompt with spaces", "--model", "override"],
+                         ["exec", "--help"], ["--", "--help"],
+                         ["--unknown=value", "$(literal)", "--", "-x"]):
+                with self.subTest(name=name, args=args), \
+                        patch.object(cli, 'run_harness', return_value=7) as run:
+                    result = self.runner.invoke(cli.app, [name, *args])
+                    self.assertEqual(result.exit_code, 7, result.output)
+                    run.assert_called_once_with(name, args[1:] if args[0] == '--' else args)
 
 
 if __name__ == "__main__":

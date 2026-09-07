@@ -66,6 +66,12 @@ def inherited_defaults(selection):
     if not s.model or not s.engine:
         return dict(settings=s.dict(), source='generic fallback', notes=['Select a checkpoint and engine to load inherited tuning.'])
     p = probe(s.engine)
+    automatic_layers = {'--fit', '--fit-target'}.issubset(p['flags'])
+    if automatic_layers:
+        notes.append('GPU layers: automatic. At startup the engine fits weights and buffers to available VRAM with a 1024 MiB margin, offloading to system RAM when needed. The engine log records actual placement.')
+    else:
+        s.gpu_layers = 999
+        notes.append('This engine lacks automatic memory fitting. GPU layers request full offload (999); enter a smaller count if the model does not fit.')
     devices = [d for d in p['devices'] if d.startswith(s.backend)]
     if s.device not in devices:
         s.device = devices[0] if devices else ''
@@ -107,7 +113,14 @@ def inherited_defaults(selection):
                                             desktop=desktop, driver_reserve=reserve)
             notes.append('Context/slots use the inherited calibrated planner on this GPU; verify with a workload. They are estimates, not new measurements.')
         except ValueError as e:
-            notes.append(str(e) + ' Set a smaller model or explicit settings before launch.')
+            if automatic_layers:
+                s.context = min(32768, ceiling) // 512 * 512
+                s.context = max(512, s.context)
+                s.slots = 1
+                s.speculation = 'none'
+                notes.append('The full-GPU context estimate does not fit. Starting with one conversation, up to 32K context and speculation off; automatic placement may use system RAM. This is an unmeasured starting point; CPU offloading can slow prompt processing.')
+            else:
+                notes.append(str(e) + ' Set a smaller model or explicit settings before launch.')
     else:
         notes.append('No calibrated context recommendation: requires a recognised catalogue checkpoint, one detected NVIDIA GPU and q8_0 support.')
     return dict(settings=s.dict(), source=SOURCE, notes=notes)
