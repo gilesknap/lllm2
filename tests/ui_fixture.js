@@ -7,7 +7,7 @@ fixture.models=[{path:sample.model,catalog_id:'qwen3-8b',identity_verified:false
 fixture.engines=[{path:sample.engine,devices:['CUDA0']}];
 fixture.engine={running:false,ready:false};
 window.fetch=async (path,options={})=>{const data=options.body?JSON.parse(options.body):null;if(data)fixture.posts.push({path,data});if(fixture.disconnected)throw Error('Offline');if(fixture.delay&&path!='/api/status')await new Promise(r=>setTimeout(r,fixture.delay));let body={};switch(path){
-case '/api/status':body={token:'test',hardware:{gpus:[{name:'RTX A1000',used_mib:2048,total_mib:8192}],ram_gib:62,ram:{total_gib:62,used_gib:18,available_gib:44}},engine:fixture.engine,job:{status:'idle'},downloads:fixture.downloads,endpoint:'http://127.0.0.1:1920/v1',paths:{models:'/models',engines:['/engines']}};break;
+case '/api/status':body={token:'test',version:'1.2.3-test',hardware:{gpus:[{name:'RTX A1000',used_mib:2048,total_mib:8192}],ram_gib:62,ram:{total_gib:62,used_gib:18,available_gib:44}},engine:fixture.engine,job:{status:'idle'},downloads:fixture.downloads,endpoint:'http://127.0.0.1:1920/v1',paths:{models:'/models',engines:['/engines']}};break;
 case '/api/discover':body={models:fixture.models,catalog:fixture.catalog,engines:fixture.engines};break;
 case '/api/launch/select':body=fixture.models.length?{settings:{...sample,model:data.model||sample.model},source:'Estimated starting settings',notes:['Automatic fitting can use system RAM.']}:{reason:'Choose or download a model.'};break;
 case '/api/capabilities':body={features:{},engine:{devices:['CUDA0']}};break;

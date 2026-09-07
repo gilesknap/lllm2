@@ -10,11 +10,13 @@ from typing import Annotated
 
 import typer
 
+from . import __version__
 from .discovery import engines
 from .engine import Cancelled, Engine
 from .engine_install import install
 from .harness import run_harness
 from .launch import choose_launch, installed_models
+from .service import install_service
 from .settings import Settings
 
 
@@ -88,6 +90,10 @@ engine_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(engine_app, name="engines")
+service_app = typer.Typer(
+    help="Manage the panel systemd user service.", no_args_is_help=True
+)
+app.add_typer(service_app, name="service")
 
 Host = Annotated[
     str,
@@ -101,8 +107,27 @@ JsonOutput = Annotated[
 ]
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"lllm2 {__version__}")
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def workbench(ctx: typer.Context, host: Host = "127.0.0.1", port: Port = 8082) -> None:
+def workbench(
+    ctx: typer.Context,
+    host: Host = "127.0.0.1",
+    port: Port = 8082,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the installed version and exit.",
+        ),
+    ] = False,
+) -> None:
     """Local LLM workbench: browse models, build engines and serve a model.
 
     With no command, start the web panel. The top-level --host and --port
@@ -122,6 +147,31 @@ def panel(host: Host = "127.0.0.1", port: Port = 8082) -> None:
     Example: lllm2 panel --host 0.0.0.0 --port 8082
     """
     _serve(host, port)
+
+
+@service_app.command("install")
+def install_panel_service(
+    host: Host = "127.0.0.1",
+    port: Port = 8082,
+    start: Annotated[
+        bool,
+        typer.Option(
+            "--start/--no-start",
+            help="Start or restart the panel after enabling the service.",
+        ),
+    ] = True,
+) -> None:
+    """Install and enable the panel as a systemd user service (no sudo).
+
+    Uses this Python installation and saves panel paths and runtime environment.
+    Stop a foreground panel before starting the service. Rerun after moving
+    your installation or changing environment settings.
+    """
+    path = install_service(host=host, port=port, start=start)
+    typer.echo(f"Installed and enabled {path}")
+    if start:
+        typer.echo("Panel service started. Check: systemctl --user status lllm2-panel")
+    typer.echo("Logs: journalctl --user -u lllm2-panel -f")
 
 
 @app.command()

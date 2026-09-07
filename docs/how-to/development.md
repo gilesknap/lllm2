@@ -84,7 +84,7 @@ git push origin refs/tags/0.1.2
 `pyproject.toml` or `uv.lock` for a release. Builds between tags get a development
 version. It generates `src/lllm2/_version.py`, which is ignored by Git.
 CI checks that the built wheel matches the release tag. Each release
-needs a new version. Once published, users install with `uv tool install lllm2`
+needs a new version. Once published, users install with `uv tool install --upgrade lllm2`
 or upgrade with `uv tool upgrade lllm2`.
 
 The tagged commit must contain the workflow changes: fixing `main` does not

@@ -49,6 +49,32 @@ class CliTests(unittest.TestCase):
             serve.assert_not_called()
             launch.assert_not_called()
 
+    def test_version_exits_without_starting_panel(self):
+        with patch.object(cli, "_serve") as serve:
+            result = self.runner.invoke(cli.app, ["--version"])
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(result.output.strip(), f"lllm2 {cli.__version__}")
+            serve.assert_not_called()
+
+    def test_service_install_arguments(self):
+        with patch.object(
+            cli, "install_service", return_value="/config/lllm2-panel.service"
+        ) as install:
+            result = self.runner.invoke(
+                cli.app,
+                [
+                    "service",
+                    "install",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8090",
+                    "--no-start",
+                ],
+            )
+            self.assertEqual(result.exit_code, 0, result.output)
+            install.assert_called_once_with(host="127.0.0.1", port=8090, start=False)
+
     def test_default_and_explicit_panel(self):
         for args, expected in (
             ([], ("127.0.0.1", 8082)),
