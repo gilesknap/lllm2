@@ -3,4 +3,11 @@ name = "lllm2"
 version = "0.1.0"
 description = "Local NVIDIA LLM experimentation workbench"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["typer>=0.16,<1"]
+
+[project.scripts]
+lllm2 = "lllm2.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

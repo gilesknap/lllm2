@@ -196,20 +196,17 @@ class App:
         raise ValueError('Unknown action')
 
 
-def main():
-    parser = argparse.ArgumentParser(description='lllm2 local LLM workbench')
-    parser.add_argument('--port',type=int,default=8082)
-    parser.add_argument('--host',default='127.0.0.1',help='IPv4 bind address (default: localhost; use 0.0.0.0 for trusted-LAN access without authentication or TLS)')
-    args = parser.parse_args()
+def serve(host='127.0.0.1', port=8082):
     config.STATE_DIR.mkdir(parents=True,exist_ok=True)
     lock = (config.STATE_DIR/'panel.lock').open('w')
     try:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    except BlockingIOError:
-        parser.error('Another lllm2 panel owns this state directory.')
+    except BlockingIOError as error:
+        lock.close()
+        raise RuntimeError('Another lllm2 panel owns this state directory.') from error
     app = App()
     hostnames = {'127.0.0.1','localhost',socket.gethostname().lower(),socket.getfqdn().lower()}
-    allowed_hosts = {f'{host}:{args.port}' for host in hostnames}
+    allowed_hosts = {f'{name}:{port}' for name in hostnames}
 
     class Handler(BaseHTTPRequestHandler):
         def send(self,status,body,kind='application/json'):
@@ -228,7 +225,7 @@ def main():
         def valid_host(self):
             # The accepted socket identifies the local interface used by this
             # request, including LAN addresses on multi-interface workstations.
-            local_host = f'{self.connection.getsockname()[0]}:{args.port}'
+            local_host = f'{self.connection.getsockname()[0]}:{port}'
             if self.headers.get('Host','').lower() not in allowed_hosts | {local_host}:
                 self.send(403,dict(error='Use this workstation’s panel address or hostname.'))
                 return False
@@ -274,14 +271,14 @@ def main():
         def log_message(self,*args):
             pass
 
-    server = ThreadingHTTPServer((args.host,args.port),Handler)
+    server = ThreadingHTTPServer((host,port),Handler)
     def shutdown(*_):
         threading.Thread(target=server.shutdown,daemon=True).start()
     signal.signal(signal.SIGTERM,shutdown)
     signal.signal(signal.SIGINT,shutdown)
-    print(f'lllm2: http://127.0.0.1:{args.port}',flush=True)
-    if args.host != '127.0.0.1':
-        print(f'LAN panel: http://{socket.gethostname() if args.host == "0.0.0.0" else args.host}:{args.port} (listening on {args.host})',flush=True)
+    print(f'lllm2: http://127.0.0.1:{port}',flush=True)
+    if host != '127.0.0.1':
+        print(f'LAN panel: http://{socket.gethostname() if host == "0.0.0.0" else host}:{port} (listening on {host})',flush=True)
         print('LAN access has no login or TLS: anyone who can reach this port can control the workbench. Use only on a trusted network.',flush=True)
     try:
         server.serve_forever()
@@ -290,3 +287,11 @@ def main():
         app.engine.stop()
         server.server_close()
         lock.close()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='lllm2 local LLM workbench')
+    parser.add_argument('--port',type=int,default=8082)
+    parser.add_argument('--host',default='127.0.0.1',help='IPv4 bind address (default: localhost; use 0.0.0.0 for trusted-LAN access without authentication or TLS)')
+    args = parser.parse_args(argv)
+    serve(args.host, args.port)
