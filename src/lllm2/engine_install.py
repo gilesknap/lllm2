@@ -218,6 +218,7 @@ def install(
     backend: str,
     *,
     name: str = "",
+    force: bool = False,
     root: Path | None = None,
     progress: InstallProgress | None = None,
 ) -> Path:
@@ -233,7 +234,18 @@ def install(
         raise RuntimeError("Release CUDA engines require Linux x86_64.")
     report = progress or (lambda _phase, _completed, _total: None)
     report("Checking NVIDIA driver", 0, None)
-    track = cuda_track()
+    try:
+        track = cuda_track()
+    except RuntimeError as error:
+        if not force:
+            raise
+        track = "12"
+        report(
+            f"Warning: {error} Continuing with CUDA {CUDA_TRACKS[track]} "
+            "because --force was requested; GPU execution may fail.",
+            0,
+            None,
+        )
     name = name or f"llama-{LLAMA_CPP_REF}-cuda{CUDA_TRACKS[track]}"
     root = (root or config.ENGINE_HOME).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)

@@ -48,6 +48,18 @@ minor version because GPUs using PTX cannot rely on minor-version compatibility
 with older drivers. These requirements follow the dependency pins automatically.
 See [NVIDIA's compatibility guidance](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
 
+To try an older driver anyway, run:
+
+```bash
+lllm2 engines install cuda --force
+```
+
+If driver detection or compatibility checks fail, `--force` selects the CUDA 12
+bundle and prints a warning. Successful checks keep the normal bundle selection.
+Checksum, archive, metadata and startup checks still apply, and existing engines
+are preserved. A successful installation does not guarantee GPU inference will
+work: the startup check only runs `llama-server --help`.
+
 Each lllm2 release pins one llama.cpp revision and CUDA version per track.
 Releases with unchanged pins leave engine tarballs on their original release.
 The installer searches published releases for the newest matching tarball and checksum. Repeating the

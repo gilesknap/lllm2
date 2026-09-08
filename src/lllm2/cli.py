@@ -219,6 +219,13 @@ def install_engine(
         InstallBackend, typer.Argument(help="Release engine backend: cuda.")
     ],
     name: Annotated[str, typer.Option(help="Optional engine directory name.")] = "",
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Try the CUDA 12 bundle if driver checks fail. GPU execution may fail.",
+        ),
+    ] = False,
 ) -> None:
     """Download this lllm2 release's CUDA engine into LLLM2_ENGINE_HOME.
 
@@ -270,7 +277,7 @@ def install_engine(
                 console.print(amount, markup=False)
                 last_update = now
 
-        binary = install(backend.value, name=name, progress=report)
+        binary = install(backend.value, name=name, force=force, progress=report)
     print(binary)
 
 
