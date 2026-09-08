@@ -13,12 +13,15 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from . import __version__, config
 from .discovery import engine_environment
 from .engine_release import CUDA_TRACKS, LLAMA_CPP_REF, RELEASE_REPOSITORY, asset_name
 from .tls import download_context
+
+InstallProgress = Callable[[str, int, int | None], None]
 
 
 def cuda_track() -> str:
@@ -101,14 +104,29 @@ def provenance(binary: Path) -> dict:
     return record
 
 
-def _download(url: str, destination: Path) -> None:
+def _download(
+    url: str, destination: Path, *, progress: InstallProgress | None = None
+) -> None:
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "lllm2"})
         with urllib.request.urlopen(
             request, timeout=60, context=download_context()
         ) as response:
+            length = response.headers.get("Content-Length", "")
+            total = int(length) if length.isdecimal() and int(length) > 0 else None
+            completed = 0
+            if progress:
+                progress("Downloading engine", completed, total)
             with destination.open("wb") as output:
-                shutil.copyfileobj(response, output)
+                while chunk := response.read(1024 * 1024):
+                    output.write(chunk)
+                    completed += len(chunk)
+                    if progress:
+                        progress("Downloading engine", completed, total)
+            if total is not None and completed != total:
+                raise OSError(
+                    f"Download incomplete: received {completed} of {total} bytes"
+                )
     except (OSError, urllib.error.URLError) as error:
         if isinstance(error, urllib.error.HTTPError):
             error.close()
@@ -196,7 +214,13 @@ def _unpack(archive: Path, staged: Path) -> None:
                 (staged / name).symlink_to(flat_name(member.linkname))
 
 
-def install(backend: str, *, name: str = "", root: Path | None = None) -> Path:
+def install(
+    backend: str,
+    *,
+    name: str = "",
+    root: Path | None = None,
+    progress: InstallProgress | None = None,
+) -> Path:
     """Verify, stage, probe and atomically publish a release engine."""
     if backend != "cuda":
         raise ValueError(f"Unknown install backend {backend!r}; choose cuda.")
@@ -207,6 +231,8 @@ def install(backend: str, *, name: str = "", root: Path | None = None) -> Path:
             )
     if platform.system() != "Linux" or platform.machine() not in ("x86_64", "AMD64"):
         raise RuntimeError("Release CUDA engines require Linux x86_64.")
+    report = progress or (lambda _phase, _completed, _total: None)
+    report("Checking NVIDIA driver", 0, None)
     track = cuda_track()
     name = name or f"llama-{LLAMA_CPP_REF}-cuda{CUDA_TRACKS[track]}"
     root = (root or config.ENGINE_HOME).expanduser().resolve()
@@ -221,15 +247,18 @@ def install(backend: str, *, name: str = "", root: Path | None = None) -> Path:
             and binary.is_file()
             and os.access(binary, os.X_OK)
         ):
+            report("Engine already installed", 0, None)
             return binary
         raise FileExistsError(
             f"Engine already exists: {target}. Choose another --name; existing engines are never overwritten."
         )
     asset = asset_name(track)
+    report("Finding published engine", 0, None)
     url, checksum_url = _release_asset_urls(asset)
     with tempfile.TemporaryDirectory(prefix=f".{name}-", dir=root) as temporary:
         work = Path(temporary)
         archive, checksum, staged = work / asset, work / "checksum", work / "installed"
+        report("Downloading checksum", 0, None)
         _download(checksum_url, checksum)
         fields = checksum.read_text().split()
         if (
@@ -238,12 +267,15 @@ def install(backend: str, *, name: str = "", root: Path | None = None) -> Path:
             or fields[1] != asset
         ):
             raise RuntimeError("Invalid engine checksum file.")
-        _download(url, archive)
+        report("Downloading engine", 0, None)
+        _download(url, archive, progress=progress)
+        report("Verifying checksum", 0, None)
         with archive.open("rb") as downloaded:
             digest = hashlib.file_digest(downloaded, "sha256").hexdigest()
         if digest != fields[0].lower():
             raise RuntimeError("Engine checksum verification failed.")
         staged.mkdir()
+        report("Extracting engine", 0, None)
         try:
             _unpack(archive, staged)
         except tarfile.TarError as error:
@@ -256,6 +288,7 @@ def install(backend: str, *, name: str = "", root: Path | None = None) -> Path:
             )
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             raise RuntimeError("Engine archive has no executable llama-server.")
+        report("Checking engine startup", 0, None)
         try:
             check = subprocess.run(
                 [str(candidate), "--help"],
@@ -281,4 +314,5 @@ def install(backend: str, *, name: str = "", root: Path | None = None) -> Path:
         record["lllm2_version"] = __version__
         (staged / "lllm2-engine.json").write_text(json.dumps(record, indent=2) + "\n")
         staged.rename(target)
+    report("Engine installed", 0, None)
     return binary

@@ -12,3 +12,9 @@ Run `lllm2 COMMAND --help` for all options.
 | `lllm2 engines install cuda` | Download this release’s pinned CUDA engine; accepts `--name`. |
 | `lllm2 launch` | Serve in the foreground; accepts `--model`, `--engine`, `--backend CUDA\|Vulkan`, `--device` and `--timeout`. |
 | `lllm2 claude`, `lllm2 codex`, `lllm2 pi` | Connect an installed coding-agent CLI to the running model. |
+
+Engine installation shows download progress, transfer speed, and estimated time
+remaining, followed by checksum, extraction, and startup status. Progress goes to
+stderr; stdout contains the installed engine path. Redirected output uses periodic
+text updates instead of an animated bar. If the server does not provide a download
+size, the display shows bytes transferred without a percentage or time estimate.

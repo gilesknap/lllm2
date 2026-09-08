@@ -2,7 +2,7 @@ import contextlib
 import io
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from typer.testing import CliRunner
 
@@ -120,7 +120,53 @@ class CliTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(result.exit_code, 0, result.output)
-            install.assert_called_once_with("cuda", name="test")
+            install.assert_called_once_with("cuda", name="test", progress=ANY)
+
+    def test_install_progress_keeps_stdout_for_the_installed_path(self):
+        def install(_backend, *, name, progress):
+            progress("Checking NVIDIA driver", 0, None)
+            progress("Downloading engine", 0, None)
+            progress("Downloading engine", 500_000, 1_000_000)
+            progress("Downloading engine", 1_000_000, 1_000_000)
+            progress("Verifying checksum", 0, None)
+            progress("Extracting engine", 0, None)
+            progress("Checking engine startup", 0, None)
+            progress("Engine installed", 0, None)
+            return "/build/llama-server"
+
+        with patch.object(cli, "install", side_effect=install):
+            result = self.runner.invoke(cli.app, ["engines", "install", "cuda"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.stdout, "/build/llama-server\n")
+        for message in (
+            "Checking NVIDIA driver",
+            "Downloading engine",
+            "Downloaded 1.0 MB / 1.0 MB (100%)",
+            "Verifying checksum",
+            "Extracting engine",
+            "Checking engine startup",
+            "Engine installed",
+        ):
+            self.assertIn(message, result.stderr)
+        self.assertEqual(result.stderr.count("Downloading engine"), 1)
+        self.assertNotIn("\x1b[", result.stderr)
+
+    def test_unknown_size_download_has_periodic_log_updates(self):
+        def install(_backend, *, name, progress):
+            progress("Downloading engine", 0, None)
+            progress("Downloading engine", 1_000_000, None)
+            progress("Downloading engine", 2_000_000, None)
+            return "/build/llama-server"
+
+        with (
+            patch.object(cli, "install", side_effect=install),
+            patch.object(cli.time, "monotonic", side_effect=[0, 0, 11, 12]),
+        ):
+            result = self.runner.invoke(cli.app, ["engines", "install", "cuda"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Downloaded 1.0 MB", result.stderr)
+        self.assertNotIn("Downloaded 2.0 MB", result.stderr)
+        self.assertNotIn("%", result.stderr)
 
     def test_removed_install_options_are_rejected(self):
         for args in (

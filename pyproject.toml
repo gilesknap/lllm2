@@ -12,7 +12,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 description = "Local NVIDIA LLM experimentation workbench"
-dependencies = ["typer>=0.16,<1"]
+dependencies = ["typer>=0.16,<1", "rich>=13,<16"]
 dynamic = ["version"]
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

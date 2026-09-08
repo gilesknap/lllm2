@@ -16,6 +16,12 @@ from lllm2 import engine_install as installer
 from lllm2.engine_release import CUDA_TRACKS, LLAMA_CPP_REF, asset_name
 
 
+class DownloadResponse(io.BytesIO):
+    def __init__(self, data, length=None):
+        super().__init__(data)
+        self.headers = {} if length is None else {"Content-Length": str(length)}
+
+
 class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -54,11 +60,11 @@ class InstallTests(unittest.TestCase):
                 bundle.addfile(extra)
         return buffer.getvalue()
 
-    def install(self, archive=None, checksum=None, probe_code=0):
+    def install(self, archive=None, checksum=None, probe_code=0, progress=None):
         archive = self.archive() if archive is None else archive
         digest = checksum or hashlib.sha256(archive).hexdigest()
 
-        def download(url, destination):
+        def download(url, destination, **_kwargs):
             destination.write_bytes(
                 f"{digest}  {asset_name('13')}\n".encode()
                 if url == "checksum"
@@ -79,7 +85,7 @@ class InstallTests(unittest.TestCase):
                 ),
             ) as run,
         ):
-            binary = installer.install("cuda", root=self.root)
+            binary = installer.install("cuda", root=self.root, progress=progress)
             if run.called:
                 self.assertEqual(run.call_args.args[0][-1], "--help")
                 self.assertEqual(
@@ -137,7 +143,9 @@ class InstallTests(unittest.TestCase):
     def test_download_streams_bytes_and_reports_network_failure(self):
         destination = self.root / "download"
         with patch.object(
-            installer.urllib.request, "urlopen", return_value=io.BytesIO(b"downloaded")
+            installer.urllib.request,
+            "urlopen",
+            return_value=DownloadResponse(b"downloaded"),
         ):
             installer._download("https://example.invalid/engine", destination)
         self.assertEqual(destination.read_bytes(), b"downloaded")
@@ -150,6 +158,72 @@ class InstallTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "Could not download"),
         ):
             installer._download("https://example.invalid/engine", destination)
+
+    def test_download_progress_with_known_and_unknown_size(self):
+        data = b"x" * (2 * 1024 * 1024 + 7)
+        for length in (len(data), None, "invalid", "-1"):
+            updates = []
+            with patch.object(
+                installer.urllib.request,
+                "urlopen",
+                return_value=DownloadResponse(data, length),
+            ):
+                installer._download(
+                    "https://example.invalid/engine",
+                    self.root / "download",
+                    progress=lambda *event, updates=updates: updates.append(event),
+                )
+            total = length if isinstance(length, int) else None
+            self.assertEqual(
+                updates,
+                [
+                    ("Downloading engine", completed, total)
+                    for completed in (0, 1024 * 1024, 2 * 1024 * 1024, len(data))
+                ],
+            )
+            self.assertEqual((self.root / "download").read_bytes(), data)
+
+    def test_truncated_download_does_not_report_completion(self):
+        updates = []
+        with (
+            patch.object(
+                installer.urllib.request,
+                "urlopen",
+                return_value=DownloadResponse(b"partial", 100),
+            ),
+            self.assertRaisesRegex(RuntimeError, "Download incomplete"),
+        ):
+            installer._download(
+                "https://example.invalid/engine",
+                self.root / "download",
+                progress=lambda *event: updates.append(event),
+            )
+        self.assertEqual(updates[-1], ("Downloading engine", 7, 100))
+
+    def test_install_reports_stages_and_stops_at_failure(self):
+        stages = []
+        self.install(progress=lambda label, *_: stages.append(label))
+        self.assertEqual(
+            stages,
+            [
+                "Checking NVIDIA driver",
+                "Finding published engine",
+                "Downloading checksum",
+                "Downloading engine",
+                "Verifying checksum",
+                "Extracting engine",
+                "Checking engine startup",
+                "Engine installed",
+            ],
+        )
+        # Use a new root so that a cached installation cannot hide the failure.
+        self.root = self.root / "failed"
+        stages.clear()
+        with self.assertRaisesRegex(RuntimeError, "checksum verification"):
+            self.install(
+                checksum="0" * 64, progress=lambda label, *_: stages.append(label)
+            )
+        self.assertEqual(stages[-1], "Verifying checksum")
 
     def test_same_engine_is_reused_across_python_releases(self):
         self.metadata["lllm2_version"] = "0.2.0"

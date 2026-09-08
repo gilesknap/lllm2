@@ -5,11 +5,21 @@ from __future__ import annotations
 import json
 import signal
 import threading
+import time
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TaskProgressColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 
 from . import __version__
 from .discovery import engines
@@ -217,7 +227,51 @@ def install_engine(
 
     Example: lllm2 engines install cuda
     """
-    print(install(backend.value, name=name))
+    console = Console(stderr=True)
+    with Progress(
+        BarColumn(),
+        TaskProgressColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        disable=not console.is_terminal,
+        transient=True,
+        redirect_stdout=False,
+        redirect_stderr=False,
+    ) as display:
+        task = display.add_task("download", total=None, visible=False)
+        phase = ""
+        last_update = time.monotonic()
+
+        def report(label: str, completed: int, total: int | None) -> None:
+            nonlocal phase, last_update
+            downloading = label == "Downloading engine"
+            if label != phase:
+                phase = label
+                console.print(label, markup=False)
+                display.update(task, visible=downloading)
+                display.refresh()
+            if not downloading:
+                return
+            display.update(
+                task,
+                completed=completed,
+                total=total,
+                refresh=total is not None and completed == total,
+            )
+            now = time.monotonic()
+            if not console.is_terminal and (
+                now - last_update >= 10 or (total is not None and completed == total)
+            ):
+                amount = f"Downloaded {completed / 1_000_000:.1f} MB"
+                if total is not None:
+                    amount += f" / {total / 1_000_000:.1f} MB ({completed / total:.0%})"
+                console.print(amount, markup=False)
+                last_update = now
+
+        binary = install(backend.value, name=name, progress=report)
+    print(binary)
 
 
 @app.command()
