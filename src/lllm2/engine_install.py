@@ -22,8 +22,16 @@ from .engine_release import CUDA_TRACKS, LLAMA_CPP_REF, RELEASE_REPOSITORY, asse
 
 def cuda_track() -> str:
     """Select an artifact supported by both the NVIDIA driver and its GPUs."""
+    # PTX targets require a driver supporting the toolkit's major/minor version.
+    # Derive the floors from the build pins so future pin bumps stay consistent.
+    required = {
+        track: tuple(int(part) for part in version.split(".")[:2])
+        for track, version in CUDA_TRACKS.items()
+    }
+    floor = ".".join(str(part) for part in required["12"])
     message = (
-        "A working NVIDIA driver reporting CUDA 12 or newer in nvidia-smi is required."
+        f"Update or install the NVIDIA driver: nvidia-smi must report CUDA {floor} "
+        "or newer for the available engine bundles. No CUDA toolkit is required."
     )
     try:
         result = subprocess.run(
@@ -32,9 +40,9 @@ def cuda_track() -> str:
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(message) from error
     match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout)
-    if not match or int(match[1]) < 12:
+    if not match or (int(match[1]), int(match[2])) < required["12"]:
         raise RuntimeError(message)
-    if int(match[1]) == 12:
+    if (int(match[1]), int(match[2])) < required["13"]:
         return "12"
     # R580 reports CUDA 13 even on Pascal/Volta. Those GPUs need the CUDA 12
     # artifact: CUDA 13's compiler dropped targets below compute capability 7.5.

@@ -236,9 +236,9 @@ class InstallTests(unittest.TestCase):
 
     def test_driver_track_selection_and_errors(self):
         for version, track in (
-            ("12.0", "12"),
             ("12.9", "12"),
-            ("13.0", "13"),
+            ("13.0", "12"),
+            ("13.2", "12"),
             ("13.3", "13"),
             ("14.0", "13"),
         ):
@@ -256,7 +256,13 @@ class InstallTests(unittest.TestCase):
                 ),
             ):
                 self.assertEqual(installer.cuda_track(), track)
-        for output in ("CUDA Version: 11.8", "CUDA Version: N/A", ""):
+        for output in (
+            "CUDA Version: 11.8",
+            "CUDA Version: 12.0",
+            "CUDA Version: 12.8",
+            "CUDA Version: N/A",
+            "",
+        ):
             with (
                 patch.object(
                     installer.subprocess,
@@ -272,6 +278,40 @@ class InstallTests(unittest.TestCase):
         ):
             installer.cuda_track()
 
+    def test_driver_floors_follow_changed_cuda_pins(self):
+        with (
+            patch.dict(installer.CUDA_TRACKS, {"13": "13.4.1", "12": "12.10.1"}),
+            patch.object(
+                installer.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="CUDA Version: 13.3"
+                ),
+            ) as run,
+        ):
+            self.assertEqual(installer.cuda_track(), "12")
+            self.assertEqual(run.call_count, 1)
+            run.return_value.stdout = "CUDA Version: 12.9"
+            with self.assertRaisesRegex(RuntimeError, "CUDA 12.10"):
+                installer.cuda_track()
+
+    def test_old_driver_rejected_before_release_lookup_or_download(self):
+        with (
+            patch.object(
+                installer.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="CUDA Version: 12.8"
+                ),
+            ),
+            patch.object(installer, "_release_asset_urls") as lookup,
+            patch.object(installer, "_download") as download,
+            self.assertRaisesRegex(RuntimeError, "Update or install the NVIDIA driver"),
+        ):
+            installer.install("cuda", root=self.root)
+        lookup.assert_not_called()
+        download.assert_not_called()
+
     def test_old_gpu_on_cuda13_driver_uses_cuda12(self):
         for capability, expected in (
             ("5.2", "12"),
@@ -286,7 +326,7 @@ class InstallTests(unittest.TestCase):
                 installer.subprocess,
                 "run",
                 side_effect=[
-                    subprocess.CompletedProcess([], 0, stdout="CUDA Version: 13.0"),
+                    subprocess.CompletedProcess([], 0, stdout="CUDA Version: 13.3"),
                     subprocess.CompletedProcess([], 0, stdout=capability),
                 ],
             ):
@@ -296,7 +336,7 @@ class InstallTests(unittest.TestCase):
                 installer.subprocess,
                 "run",
                 side_effect=[
-                    subprocess.CompletedProcess([], 0, stdout="CUDA Version: 13.0"),
+                    subprocess.CompletedProcess([], 0, stdout="CUDA Version: 13.3"),
                     subprocess.CompletedProcess([], 0, stdout="N/A"),
                 ],
             ),

@@ -32,11 +32,20 @@ engine directory. You need a working NVIDIA driver; no CUDA toolkit, compiler,
 container runtime or module load is needed on the host. Artifacts target Linux
 x86_64 with glibc 2.28 or newer and an AVX2-capable CPU.
 
-The CUDA version reported by `nvidia-smi` selects the CUDA 13 track for drivers
-reporting 13 or newer, or CUDA 12.9 for drivers reporting 12.x. Maxwell, Pascal
-and Volta GPUs select CUDA 12 even on an R580 driver reporting CUDA 13, using
-`nvidia-smi`'s compute-capability query. See [NVIDIA's architecture support matrix](https://docs.nvidia.com/datacenter/tesla/drivers/cuda-toolkit-driver-and-architecture-matrix.html). NVIDIA's minor-version compatibility has limitations:
-GPUs using PTX may need a driver supporting the artifact's full CUDA version.
+The CUDA version reported by `nvidia-smi` determines which bundle the host
+NVIDIA driver supports:
+
+| Driver reports | Engine bundle |
+| --- | --- |
+| CUDA 13.3 or newer | CUDA 13.3.1 |
+| CUDA 12.9 through 13.2 | CUDA 12.9.1 |
+| Below CUDA 12.9 | Update the NVIDIA driver before installing an engine |
+
+Maxwell, Pascal and Volta GPUs select CUDA 12.9.1 even with a newer driver,
+using `nvidia-smi`'s compute-capability query. See [NVIDIA's architecture support matrix](https://docs.nvidia.com/datacenter/tesla/drivers/cuda-toolkit-driver-and-architecture-matrix.html).
+The installer conservatively requires support for the bundle's CUDA major and
+minor version because GPUs using PTX cannot rely on minor-version compatibility
+with older drivers. These requirements follow the dependency pins automatically.
 See [NVIDIA's compatibility guidance](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
 
 Each lllm2 release pins one llama.cpp revision and CUDA version per track.
