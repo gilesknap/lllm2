@@ -95,6 +95,8 @@ def _download(url: str, destination: Path) -> None:
             with destination.open("wb") as output:
                 shutil.copyfileobj(response, output)
     except (OSError, urllib.error.URLError) as error:
+        if isinstance(error, urllib.error.HTTPError):
+            error.close()
         raise RuntimeError(
             f"Could not download release engine from {url}: {error}"
         ) from error
@@ -113,6 +115,8 @@ def _release_asset_urls(asset: str) -> tuple[str, str]:
             with urllib.request.urlopen(request, timeout=30) as response:
                 releases = json.load(response)
         except (OSError, ValueError) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
             raise RuntimeError(
                 f"Could not find published engine releases: {error}"
             ) from error
