@@ -851,6 +851,7 @@ wheels = [
 name = "lllm2"
 source = { editable = "." }
 dependencies = [
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -883,7 +884,10 @@ docs = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "typer", specifier = ">=0.16,<1" }]
+requires-dist = [
+    { name = "rich", specifier = ">=13,<16" },
+    { name = "typer", specifier = ">=0.16,<1" },
+]
 
 [package.metadata.requires-dev]
 dev = [
