@@ -304,38 +304,61 @@ class InstallTests(unittest.TestCase):
         ):
             installer.cuda_track()
 
-    def test_release_tag_prefix_and_missing_assets(self):
+    def test_release_search_crosses_pages_and_ignores_python_version(self):
         asset = asset_name("13")
         release = {
             "assets": [
-                {"name": name, "browser_download_url": "https://example/" + name}
+                {
+                    "name": name,
+                    "state": "uploaded",
+                    "browser_download_url": "https://example/" + name,
+                }
                 for name in (asset, asset + ".sha256")
             ]
         }
-        missing = urllib.error.HTTPError("url", 404, "missing", None, None)
-        with patch.object(
-            installer.urllib.request,
-            "urlopen",
-            side_effect=[missing, io.BytesIO(json.dumps(release).encode())],
-        ) as request:
+        first_page = [
+            {"assets": []},
+            dict(release, draft=True),
+            dict(release, prerelease=True),
+            {"assets": release["assets"][:1]},
+        ]
+        with (
+            patch.object(installer, "__version__", "0.9.0.dev1"),
+            patch.object(
+                installer.urllib.request,
+                "urlopen",
+                side_effect=[
+                    io.BytesIO(json.dumps(page).encode())
+                    for page in (first_page, [release])
+                ],
+            ) as request,
+        ):
             self.assertEqual(
                 installer._release_asset_urls(asset)[0], "https://example/" + asset
             )
-            self.assertTrue(request.call_args.args[0].full_url.endswith("/v0.3.0"))
+            self.assertTrue(request.call_args.args[0].full_url.endswith("page=2"))
+
+    def test_missing_release_assets(self):
+        with (
+            patch.object(
+                installer.urllib.request, "urlopen", return_value=io.BytesIO(b"[]")
+            ),
+            self.assertRaisesRegex(RuntimeError, "No published release"),
+        ):
+            installer._release_asset_urls(asset_name("13"))
+
+    def test_release_api_error_is_not_treated_as_missing_pins(self):
         with (
             patch.object(
                 installer.urllib.request,
                 "urlopen",
-                return_value=io.BytesIO(b'{"assets": []}'),
+                side_effect=urllib.error.HTTPError(
+                    "url", 403, "rate limited", None, None
+                ),
             ),
-            self.assertRaisesRegex(RuntimeError, "no published"),
+            self.assertRaisesRegex(RuntimeError, "Could not find published"),
         ):
-            installer._release_asset_urls(asset)
-        with (
-            patch.object(installer, "__version__", "0.4.0.dev1"),
-            self.assertRaisesRegex(RuntimeError, "not a published"),
-        ):
-            installer._release_asset_urls(asset)
+            installer._release_asset_urls(asset_name("13"))
 
     def test_malformed_or_old_provenance_is_unmarked(self):
         binary = self.root / "llama-server"

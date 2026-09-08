@@ -58,7 +58,7 @@ jobs:
             "nvidia/cuda:${CUDA}-devel-rockylinux8" \
             bash /repo/scripts/build-engine.sh "$TRACK" "$VERSION"
       - name: Prepare test driver stub without a compiler
-        if: steps.reuse.outputs.found == 'true'
+        if: steps.reuse.outputs.found == 'true' && steps.reuse.outputs.published != 'true'
         env:
           CUDA: ${{ steps.contract.outputs.cuda }}
         run: |
@@ -71,6 +71,7 @@ jobs:
               cp -L "/usr/local/cuda-${toolkit_series}/lib64/stubs/libcuda.so" /checks/libcuda.so.1
             '
       - name: Test packaged engine with panel discovery
+        if: steps.reuse.outputs.published != 'true'
         run: |
           mkdir -p engine-smoke
           tar -xzf engine-dist/*.tar.gz -C engine-smoke
@@ -80,6 +81,7 @@ jobs:
             -v "$PWD/engine-checks:/driver:ro" -e LD_LIBRARY_PATH=/engine:/driver \
             rockylinux:8 /engine/llama-server --help
       - uses: actions/upload-artifact@v4
+        if: steps.reuse.outputs.published != 'true'
         with:
           name: engine-cuda${{ matrix.track }}
           path: engine-dist/

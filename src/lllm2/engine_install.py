@@ -1,4 +1,4 @@
-"""Download the CUDA engine belonging to the installed lllm2 release."""
+"""Download a published CUDA engine matching the installed dependency pins."""
 
 from __future__ import annotations
 
@@ -101,32 +101,35 @@ def _download(url: str, destination: Path) -> None:
 
 
 def _release_asset_urls(asset: str) -> tuple[str, str]:
-    # Tags may be either 1.2.3 or v1.2.3; use the actual tag, never latest.
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?", __version__):
-        raise RuntimeError(
-            f"lllm2 {__version__} is not a published release version; install a released lllm2 package to download its engine."
+    """Find the newest published release carrying this exact engine pin pair."""
+    page = 1
+    while True:
+        url = (
+            f"https://api.github.com/repos/{RELEASE_REPOSITORY}/releases"
+            f"?per_page=100&page={page}"
         )
-    for tag in (__version__, "v" + __version__):
-        url = f"https://api.github.com/repos/{RELEASE_REPOSITORY}/releases/tags/{tag}"
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "lllm2"})
             with urllib.request.urlopen(request, timeout=30) as response:
-                release = json.load(response)
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                continue
-            raise RuntimeError(f"Could not find release {tag}: {error}") from error
+                releases = json.load(response)
         except (OSError, ValueError) as error:
-            raise RuntimeError(f"Could not find release {tag}: {error}") from error
-        assets = {
-            item["name"]: item["browser_download_url"] for item in release["assets"]
-        }
-        if asset not in assets or asset + ".sha256" not in assets:
             raise RuntimeError(
-                f"lllm2 {__version__} has no published {asset} and checksum yet."
-            )
-        return assets[asset], assets[asset + ".sha256"]
-    raise RuntimeError(f"No GitHub release found for lllm2 {__version__}.")
+                f"Could not find published engine releases: {error}"
+            ) from error
+        if not releases:
+            break
+        for release in releases:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            assets = {
+                item["name"]: item["browser_download_url"]
+                for item in release["assets"]
+                if item.get("state") == "uploaded"
+            }
+            if asset in assets and asset + ".sha256" in assets:
+                return assets[asset], assets[asset + ".sha256"]
+        page += 1
+    raise RuntimeError(f"No published release contains {asset} and its checksum.")
 
 
 def _unpack(archive: Path, staged: Path) -> None:

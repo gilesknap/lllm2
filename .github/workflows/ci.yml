@@ -97,17 +97,28 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/download-artifact@v5
         with:
           name: dist
           path: release-dist
+      - name: Check for newly staged engines
+        id: engines
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          found=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq 'any(.artifacts[]; .name | startswith("engine-cuda"))')
+          echo "found=$found" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v5
+        if: steps.engines.outputs.found == 'true'
         with:
           pattern: engine-cuda*
           merge-multiple: true
           path: release-dist
-      - name: Publish wheel and engines together
+      - name: Publish distributions and any newly staged engines
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

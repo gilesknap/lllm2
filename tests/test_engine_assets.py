@@ -34,6 +34,7 @@ class EngineAssetTests(unittest.TestCase):
         }
         self.release = {
             "tag_name": "0.2.0",
+            "draft": True,
             "assets": [
                 {"name": name, "state": "uploaded"}
                 for name in (self.asset, self.asset + ".sha256")
@@ -75,6 +76,41 @@ class EngineAssetTests(unittest.TestCase):
         self.assertEqual((self.output / self.asset).read_bytes(), self.downloaded)
         self.assertEqual(run.call_count, 2)
         self.assertEqual(len(list(self.output.iterdir())), 2)
+
+    def test_published_pins_skip_download_and_leave_no_upload_files(self):
+        self.release["draft"] = False
+        with patch.object(subprocess, "run", side_effect=self.gh) as run:
+            self.assertTrue(reuse("13", self.output, "owner/repo"))
+        self.assertEqual(run.call_count, 1)
+        self.assertFalse(self.output.exists())
+
+    def test_published_release_takes_precedence_over_newer_draft(self):
+        published = dict(self.release, draft=False, tag_name="0.1.0")
+        with patch.object(
+            subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps([self.release, published])
+            ),
+        ) as run:
+            self.assertTrue(reuse("13", self.output, "owner/repo"))
+        self.assertEqual(run.call_count, 1)
+        self.assertFalse(self.output.exists())
+
+    def test_api_failure_does_not_trigger_rebuild(self):
+        with (
+            patch.object(
+                subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")
+            ),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            reuse("13", self.output, "owner/repo")
+
+    def test_prerelease_does_not_satisfy_public_installer(self):
+        self.release["prerelease"] = True
+        with patch.object(subprocess, "run", side_effect=self.gh) as run:
+            self.assertFalse(reuse("13", self.output, "owner/repo"))
+        self.assertEqual(run.call_count, 1)
 
     def test_each_track_is_independent_and_pin_changes_miss(self):
         with patch.object(subprocess, "run", side_effect=self.gh) as run:

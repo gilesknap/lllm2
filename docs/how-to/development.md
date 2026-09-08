@@ -95,14 +95,15 @@ rerun an existing tag.
 `src/lllm2/engine_release.py` defines the llama.cpp pin and both CUDA image
 versions. Change the pin in a normal PR when panel features need a newer engine.
 Version-tag CI first looks for matching llama.cpp/CUDA asset names in earlier
-GitHub releases. Each track reuses the exact tarball and checksum when its pins
-are unchanged; only a missing combination is built in NVIDIA's Rocky Linux 8
-development image. CI verifies checksums and engine metadata, checks each
+GitHub releases. Each track skips building, downloading and uploading when its exact tarball
+and checksum already exist on a published release; only a missing combination is built in NVIDIA's Rocky Linux 8
+development image. For new or draft-seeded artifacts, CI verifies checksums and engine metadata, checks each
 packaged binary with the panel probe, and attaches the tarballs, SHA-256 files
 and Python distributions to the same GitHub release. Runtime libraries retain
 their symlinks, so each library payload is stored only once.
 
-A Python-only release does not compile engines. Changing a CUDA pin rebuilds
+A Python-only release does not compile or attach engines. The installer finds
+matching pins on earlier published releases, independently of its package version. Changing a CUDA pin rebuilds
 that track; changing the llama.cpp pin rebuilds both. If changing the engine
 build configuration, change the engine pins too: artifact names are immutable
 identities, not a cache keyed by Python changes. Archive metadata records the
