@@ -39,8 +39,12 @@ def cuda_track() -> str:
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(message) from error
-    match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout)
-    if not match or (int(match[1]), int(match[2])) < required["12"]:
+    match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
+    if not match:
+        raise RuntimeError(
+            "Could not read the NVIDIA driver's supported CUDA version from nvidia-smi."
+        )
+    if (int(match[1]), int(match[2])) < required["12"]:
         raise RuntimeError(message)
     if (int(match[1]), int(match[2])) < required["13"]:
         return "12"
