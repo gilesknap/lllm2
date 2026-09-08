@@ -278,6 +278,59 @@ class InstallTests(unittest.TestCase):
         ):
             installer.cuda_track()
 
+    def test_cuda_umd_header_preserves_driver_and_gpu_selection(self):
+        header = """Tue Sep  8 11:16:23 2026
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.57.04              KMD Version: 610.57.04     CUDA UMD Version: {version}     |
++-----------------------------------------+------------------------+----------------------+
+|   0  NVIDIA RTX A1000               On  |   00000000:02:00.0  On |                  N/A |
+"""
+        for version, capability, expected in (
+            ("13.3", "8.6", "13"),
+            ("13.3", "7.0", "12"),
+            ("13.2", "8.6", "12"),
+            ("12.9", "8.6", "12"),
+        ):
+            with (
+                self.subTest(version=version, capability=capability),
+                patch.object(
+                    installer.subprocess,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess(
+                            [], 0, stdout=header.format(version=version)
+                        ),
+                        subprocess.CompletedProcess([], 0, stdout=capability),
+                    ],
+                ),
+            ):
+                self.assertEqual(installer.cuda_track(), expected)
+        with (
+            patch.object(
+                installer.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout=header.format(version="12.8")
+                ),
+            ),
+            self.assertRaisesRegex(RuntimeError, "Update or install the NVIDIA driver"),
+        ):
+            installer.cuda_track()
+
+    def test_unreadable_version_does_not_claim_driver_is_outdated(self):
+        with (
+            patch.object(
+                installer.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="CUDA UMD Version: N/A"
+                ),
+            ),
+            self.assertRaisesRegex(RuntimeError, "Could not read") as raised,
+        ):
+            installer.cuda_track()
+        self.assertNotIn("Update or install", str(raised.exception))
+
     def test_driver_floors_follow_changed_cuda_pins(self):
         with (
             patch.dict(installer.CUDA_TRACKS, {"13": "13.4.1", "12": "12.10.1"}),
