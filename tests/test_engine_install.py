@@ -245,8 +245,14 @@ class InstallTests(unittest.TestCase):
             with patch.object(
                 installer.subprocess,
                 "run",
-                return_value=subprocess.CompletedProcess(
-                    [], 0, stdout=f"CUDA Version: {version}"
+                side_effect=lambda command, version=version, **kwargs: (
+                    subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout=f"CUDA Version: {version}"
+                        if len(command) == 1
+                        else "8.6\n",
+                    )
                 ),
             ):
                 self.assertEqual(installer.cuda_track(), track)
@@ -263,6 +269,38 @@ class InstallTests(unittest.TestCase):
         with (
             patch.object(installer.subprocess, "run", side_effect=FileNotFoundError),
             self.assertRaisesRegex(RuntimeError, "NVIDIA driver"),
+        ):
+            installer.cuda_track()
+
+    def test_old_gpu_on_cuda13_driver_uses_cuda12(self):
+        for capability, expected in (
+            ("5.2", "12"),
+            ("6.1", "12"),
+            ("7.0", "12"),
+            ("7.5", "13"),
+            ("8.6", "13"),
+            ("12.0", "13"),
+            ("8.6\n7.0", "12"),
+        ):
+            with patch.object(
+                installer.subprocess,
+                "run",
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, stdout="CUDA Version: 13.0"),
+                    subprocess.CompletedProcess([], 0, stdout=capability),
+                ],
+            ):
+                self.assertEqual(installer.cuda_track(), expected)
+        with (
+            patch.object(
+                installer.subprocess,
+                "run",
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, stdout="CUDA Version: 13.0"),
+                    subprocess.CompletedProcess([], 0, stdout="N/A"),
+                ],
+            ),
+            self.assertRaisesRegex(RuntimeError, "compute capability"),
         ):
             installer.cuda_track()
 

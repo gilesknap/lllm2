@@ -21,7 +21,7 @@ from .engine_release import CUDA_TRACKS, LLAMA_CPP_REF, RELEASE_REPOSITORY, asse
 
 
 def cuda_track() -> str:
-    """Select the CUDA major family supported by the installed NVIDIA driver."""
+    """Select an artifact supported by both the NVIDIA driver and its GPUs."""
     message = (
         "A working NVIDIA driver reporting CUDA 12 or newer in nvidia-smi is required."
     )
@@ -34,7 +34,33 @@ def cuda_track() -> str:
     match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout)
     if not match or int(match[1]) < 12:
         raise RuntimeError(message)
-    return "13" if int(match[1]) >= 13 else "12"
+    if int(match[1]) == 12:
+        return "12"
+    # R580 reports CUDA 13 even on Pascal/Volta. Those GPUs need the CUDA 12
+    # artifact: CUDA 13's compiler dropped targets below compute capability 7.5.
+    try:
+        devices = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            "The NVIDIA driver could not report GPU compute capability."
+        ) from error
+    capabilities = []
+    for line in devices.stdout.strip().splitlines():
+        capability = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", line)
+        if not capability:
+            raise RuntimeError(
+                "The NVIDIA driver could not report GPU compute capability."
+            )
+        capabilities.append((int(capability[1]), int(capability[2])))
+    if not capabilities:
+        raise RuntimeError("The NVIDIA driver could not report GPU compute capability.")
+    return "12" if min(capabilities) < (7, 5) else "13"
 
 
 def matches_engine(record: dict, track: str | None = None) -> bool:
