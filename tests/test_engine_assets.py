@@ -45,7 +45,7 @@ class EngineAssetTests(unittest.TestCase):
     def gh(self, command, **kwargs):
         if command[:2] == ["gh", "api"]:
             return subprocess.CompletedProcess(
-                command, 0, stdout=json.dumps([[], [self.release]])
+                command, 0, stdout="[]\n" + json.dumps([self.release])
             )
         self.assertEqual(command[:3], ["gh", "release", "download"])
         self.assertEqual(command[3], "0.2.0")

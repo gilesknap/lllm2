@@ -14,15 +14,24 @@ from lllm2.engine_install import matches_engine
 from lllm2.engine_release import RELEASE_REPOSITORY, asset_name
 
 
+def pages(payload: str):
+    # Older gh versions emit adjacent JSON arrays and do not support --slurp.
+    decoder = json.JSONDecoder()
+    while payload := payload.lstrip():
+        page, end = decoder.raw_decode(payload)
+        yield page
+        payload = payload[end:]
+
+
 def reuse(track: str, destination: Path, repository: str) -> bool:
     asset = asset_name(track)
     result = subprocess.run(
-        ["gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases"],
+        ["gh", "api", "--paginate", f"repos/{repository}/releases"],
         check=True,
         capture_output=True,
         text=True,
     )
-    for page in json.loads(result.stdout):
+    for page in pages(result.stdout):
         for release in page:
             names = {
                 item["name"]
