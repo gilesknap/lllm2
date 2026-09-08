@@ -6,6 +6,7 @@ import json
 import signal
 import threading
 from enum import Enum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -13,7 +14,7 @@ import typer
 from . import __version__
 from .discovery import engines
 from .engine import Cancelled, Engine
-from .engine_install import install
+from .engine_install import install, provenance
 from .harness import run_harness
 from .launch import choose_launch, installed_models
 from .service import install_service
@@ -67,9 +68,8 @@ def _launch(
     return 0
 
 
-class BuildBackend(str, Enum):
+class InstallBackend(str, Enum):
     cuda = "cuda"
-    vulkan = "vulkan"
 
 
 class LaunchBackend(str, Enum):
@@ -86,7 +86,7 @@ app = typer.Typer(
     "Use COMMAND --help for command options.",
 )
 engine_app = typer.Typer(
-    help="Discover existing engines or build an isolated llama.cpp engine.",
+    help="Discover existing engines or download a release CUDA engine.",
     no_args_is_help=True,
 )
 app.add_typer(engine_app, name="engines")
@@ -128,7 +128,7 @@ def workbench(
         ),
     ] = False,
 ) -> None:
-    """Local LLM workbench: browse models, build engines and serve a model.
+    """Local LLM workbench: browse models, install engines and serve a model.
 
     With no command, start the web panel. The top-level --host and --port
     options configure that default panel; explicit commands have their own options.
@@ -183,49 +183,41 @@ def models(json_output: JsonOutput = False) -> None:
 @engine_app.command("list")
 def list_engines(json_output: JsonOutput = False) -> None:
     """List llama-server builds found in the configured engine search paths."""
-    _print_rows(engines(), json_output)
+    rows = [dict(row, provenance=provenance(Path(row["path"]))) for row in engines()]
+    if json_output:
+        _print_rows(rows, True)
+    elif not rows:
+        print("None found.")
+    else:
+        for row in rows:
+            record = row["provenance"]
+            print(row["path"])
+            if record:
+                marker = (
+                    " (matches running release)"
+                    if record.get("matches_release")
+                    else ""
+                )
+                print(
+                    f"  ref={record.get('requested_ref', '?')} CUDA={record.get('cuda_track', '?')} installed-by-lllm2={record.get('lllm2_version', '?')}{marker}"
+                )
 
 
 @engine_app.command("install")
 def install_engine(
     backend: Annotated[
-        BuildBackend, typer.Argument(help="GPU backend to compile: cuda or vulkan.")
+        InstallBackend, typer.Argument(help="Release engine backend: cuda.")
     ],
-    ref: Annotated[
-        str, typer.Option(help="llama.cpp branch or tag to clone.")
-    ] = "master",
-    name: Annotated[
-        str, typer.Option(help="Build directory name; defaults to llama-REF-BACKEND.")
-    ] = "",
-    jobs: Annotated[
-        int | None,
-        typer.Option(min=1, help="Parallel build jobs; defaults to CPU count."),
-    ] = None,
-    cuda_architectures: Annotated[
-        str,
-        typer.Option(
-            help="CUDA targets: native, all, all-major, or a quoted list such as '86;89'.",
-        ),
-    ] = "native",
+    name: Annotated[str, typer.Option(help="Optional engine directory name.")] = "",
 ) -> None:
-    """Build llama-server from source into LLLM2_ENGINE_HOME.
+    """Download this lllm2 release's CUDA engine into LLLM2_ENGINE_HOME.
 
-    Defaults to ~/.local/share/lllm2/engines. Existing builds are never
-    overwritten. System packages must be installed separately; CUDA builds
-    also require an installed NVIDIA CUDA toolkit and compatible compiler.
-    If build tools are missing, print prerequisite instructions and exit.
+    Requires an NVIDIA driver, with no host compiler or CUDA toolkit.
+    Existing engines are preserved; reinstalling this release is a no-op.
 
-    Example: lllm2 engines install cuda --name my-cuda --jobs 8
+    Example: lllm2 engines install cuda
     """
-    print(
-        install(
-            backend.value,
-            name=name,
-            ref=ref,
-            jobs=jobs,
-            cuda_architectures=cuda_architectures,
-        )
-    )
+    print(install(backend.value, name=name))
 
 
 @app.command()

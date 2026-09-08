@@ -85,8 +85,47 @@ jobs:
   dist:
     uses: ./.github/workflows/_dist.yml
 
+  engines:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    uses: ./.github/workflows/_engines.yml
+    permissions:
+      contents: write
+
+  release:
+    needs: [lint, test, browser, docs-build, dist, engines]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: release-dist
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: engine-cuda*
+          merge-multiple: true
+          path: release-dist
+      - name: Publish wheel and engines together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --json isDraft > release-state.json; then
+            if python3 -c 'import json; raise SystemExit(not json.load(open("release-state.json"))["isDraft"])'; then
+              gh release upload "$TAG" release-dist/* --clobber
+              gh release edit "$TAG" --draft=false
+            else
+              echo "Release $TAG is already published; preserving its assets."
+            fi
+          else
+            gh release create "$TAG" release-dist/* --verify-tag --generate-notes
+          fi
+
   pypi:
-    needs: [lint, test, browser, docs-build, dist]
+    needs: [release]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     uses: ./.github/workflows/_pypi.yml
     permissions:

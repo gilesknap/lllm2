@@ -1,153 +1,306 @@
-import shutil
+"""Release downloads are verified before any engine becomes discoverable."""
+
+import hashlib
+import io
+import json
+import os
 import subprocess
+import tarfile
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
-from lllm2.engine_install import (
-    _fix_gcc8_filesystem_link,
-    _fix_server_compatibility,
-    _fix_vulkan_header_target,
-)
+from lllm2 import engine_install as installer
+from lllm2.engine_release import CUDA_TRACKS, LLAMA_CPP_REF, asset_name
 
 
-class ServerCompatibilityTests(unittest.TestCase):
-    def test_fixed_source_compiles_and_preserves_member_types(self):
-        compiler = shutil.which("g++")
-        if compiler is None:
-            self.skipTest("C++ compiler unavailable")
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory)
-            server = source / "tools/server"
-            server.mkdir(parents=True)
-            context = server / "server-context.cpp"
-            context.write_text(
-                "#include <sstream>\nvoid format() { std::ostringstream s; s << std::setw(8) << 1; }\n"
+class InstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        for name, value in (("__version__", "0.3.0"),):
+            patcher = patch.object(installer, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (("system", "Linux"), ("machine", "x86_64")):
+            patcher = patch.object(installer.platform, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.metadata = {
+            "requested_ref": LLAMA_CPP_REF,
+            "cuda_track": CUDA_TRACKS["13"],
+            "lllm2_version": "0.3.0",
+            "backend": "cuda",
+            "architecture": "x86_64",
+            "glibc": "2.28",
+        }
+
+    def archive(self, extra=None):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+            for name, data in {
+                "./llama-server": b"#!/bin/sh\nexit 0\n",
+                "./lllm2-engine.json": json.dumps(self.metadata).encode(),
+                "./libggml-cuda.so": b"library",
+            }.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                member.mode = 0o755
+                bundle.addfile(member, io.BytesIO(data))
+            if extra:
+                bundle.addfile(extra)
+        return buffer.getvalue()
+
+    def install(self, archive=None, checksum=None, probe_code=0):
+        archive = self.archive() if archive is None else archive
+        digest = checksum or hashlib.sha256(archive).hexdigest()
+
+        def download(url, destination):
+            destination.write_bytes(
+                f"{digest}  {asset_name('13')}\n".encode()
+                if url == "checksum"
+                else archive
             )
-            schema = server / "server-schema.cpp"
-            schema.write_text("""#include <type_traits>
-template <typename T = int> struct field_num { field_num(const char *, T &) {} };
-struct { int tokens; struct { float temp; unsigned seed; } sampling; } params;
-void check() {
-    auto i = new field_num("tokens", params.tokens);
-    auto f = new field_num("temperature", params.sampling.temp);
-    auto u = new field_num("seed", params.sampling.seed);
-    static_assert(std::is_same<decltype(i), field_num<int>*>::value);
-    static_assert(std::is_same<decltype(f), field_num<float>*>::value);
-    static_assert(std::is_same<decltype(u), field_num<unsigned>*>::value);
-    delete i; delete f; delete u;
-}
-""")
-            self.assertEqual(len(_fix_server_compatibility(source)), 2)
-            self.assertEqual(_fix_server_compatibility(source), [])
-            result = subprocess.run(
-                [compiler, "-std=c++17", "-fsyntax-only", str(context), str(schema)],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_missing_and_already_fixed_sources_are_unchanged(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory)
-            self.assertEqual(_fix_server_compatibility(source), [])
-            server = source / "tools/server"
-            server.mkdir(parents=True)
-            contents = {
-                "server-context.cpp": "#include <iomanip>\n// std::setw\n",
-                "server-schema.cpp": 'new field_num<int>("tokens", params.tokens);\n',
-            }
-            for name, content in contents.items():
-                (server / name).write_text(content)
-            self.assertEqual(_fix_server_compatibility(source), [])
-            for name, content in contents.items():
-                self.assertEqual((server / name).read_text(), content)
-
-
-class FilesystemCompatibilityTests(unittest.TestCase):
-    def test_links_filesystem_across_shared_libraries(self):
-        compiler = shutil.which("g++")
-        if not compiler or not shutil.which("cmake") or not shutil.which("make"):
-            self.skipTest("CMake and C++ build tools unavailable")
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory)
-            cmake = source / "CMakeLists.txt"
-            cmake.write_text("""cmake_minimum_required(VERSION 3.14)
-project(filesystem_probe LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 17)
-add_library(ggml SHARED ggml.cpp)
-add_library(llama-common SHARED common.cpp)
-add_library(server-context STATIC context.cpp)
-set_property(TARGET server-context PROPERTY POSITION_INDEPENDENT_CODE ON)
-add_library(llama-server-impl SHARED server.cpp)
-target_link_libraries(llama-server-impl PRIVATE server-context llama-common ggml)
-add_executable(llama-server main.cpp)
-target_link_libraries(llama-server PRIVATE llama-server-impl)
-""")
-            for filename, function in (
-                ("ggml", "ggml_path"),
-                ("common", "common_path"),
-                ("context", "context_path"),
-            ):
-                (source / (filename + ".cpp")).write_text(
-                    "#include <filesystem>\n#include <string>\n"
-                    f"std::string {function}() {{ return std::filesystem::current_path().string(); }}\n"
+        with (
+            patch.object(installer, "cuda_track", return_value="13"),
+            patch.object(
+                installer, "_release_asset_urls", return_value=("archive", "checksum")
+            ),
+            patch.object(installer, "_download", side_effect=download),
+            patch.object(
+                installer.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], probe_code, stderr="probe failed"
+                ),
+            ) as run,
+        ):
+            binary = installer.install("cuda", root=self.root)
+            if run.called:
+                self.assertEqual(run.call_args.args[0][-1], "--help")
+                self.assertEqual(
+                    run.call_args.kwargs["env"]["LD_LIBRARY_PATH"].split(os.pathsep)[0],
+                    str(Path(run.call_args.args[0][0]).parent),
                 )
-            (source / "server.cpp").write_text("""#include <filesystem>
-#include <string>
-std::string ggml_path(), common_path(), context_path();
-bool check() {
-    return std::filesystem::path(ggml_path()).has_parent_path()
-        && common_path() == context_path();
-}
-""")
-            (source / "main.cpp").write_text(
-                "bool check(); int main() { return check() ? 0 : 1; }\n"
-            )
-            self.assertTrue(_fix_gcc8_filesystem_link(source))
-            self.assertEqual(_fix_gcc8_filesystem_link(source), [])
-            build = source / "build"
-            for command in (
-                [
-                    "cmake",
-                    "-S",
-                    str(source),
-                    "-B",
-                    str(build),
-                    "-G",
-                    "Unix Makefiles",
-                    "-DCMAKE_CXX_COMPILER=" + compiler,
-                ],
-                ["cmake", "--build", str(build)],
-            ):
-                result = subprocess.run(command, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return binary
 
+    def test_install_and_repeat_preserve_existing_engine(self):
+        old = self.root / "old-vulkan"
+        old.mkdir()
+        (old / "llama-server").write_text("old")
+        binary = self.install()
+        self.assertTrue(binary.is_file())
+        self.assertTrue(installer.provenance(binary)["matches_release"])
+        with (
+            patch.object(installer, "cuda_track", return_value="13"),
+            patch.object(installer, "_release_asset_urls") as lookup,
+            patch.object(installer, "_download") as download,
+        ):
+            self.assertEqual(installer.install("cuda", root=self.root), binary)
+            lookup.assert_not_called()
+            download.assert_not_called()
+        self.assertEqual((old / "llama-server").read_text(), "old")
+        self.assertFalse(list(self.root.glob(".*")))
 
-class VulkanCompatibilityTests(unittest.TestCase):
-    def test_only_repairs_missing_imported_target(self):
-        broken = (
-            "find_package(SPIRV-Headers CONFIG REQUIRED)\n"
-            "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)\n"
-        )
-        fixed = broken.replace(
-            "Vulkan::Vulkan)", "Vulkan::Vulkan SPIRV-Headers::SPIRV-Headers)"
-        )
-        older = "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)\n"
-        for content, expected in ((broken, fixed), (fixed, fixed), (older, older)):
+    def test_failed_checksum_and_probe_leave_no_engine(self):
+        for kwargs, message in (
+            ({"checksum": "0" * 64}, "checksum verification"),
+            ({"probe_code": 1}, "could not start"),
+        ):
             with (
-                self.subTest(content=content),
-                tempfile.TemporaryDirectory() as directory,
+                self.subTest(kwargs=kwargs),
+                self.assertRaisesRegex(RuntimeError, message),
             ):
-                source = Path(directory)
-                cmake = source / "ggml/src/ggml-vulkan/CMakeLists.txt"
-                cmake.parent.mkdir(parents=True)
-                cmake.write_text(content)
-                adjustments = _fix_vulkan_header_target(source)
-                self.assertEqual(cmake.read_text(), expected)
-                self.assertEqual(bool(adjustments), content == broken)
-                self.assertEqual(_fix_vulkan_header_target(source), [])
+                self.install(**kwargs)
+            self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_interrupted_download_cleans_staging(self):
+        def download(url, destination):
+            destination.write_bytes(b"partial")
+            raise RuntimeError("connection lost")
 
-if __name__ == "__main__":
-    unittest.main()
+        with (
+            patch.object(installer, "cuda_track", return_value="13"),
+            patch.object(
+                installer, "_release_asset_urls", return_value=("archive", "checksum")
+            ),
+            patch.object(installer, "_download", side_effect=download),
+            self.assertRaisesRegex(RuntimeError, "connection lost"),
+        ):
+            installer.install("cuda", root=self.root)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_download_streams_bytes_and_reports_network_failure(self):
+        destination = self.root / "download"
+        with patch.object(
+            installer.urllib.request, "urlopen", return_value=io.BytesIO(b"downloaded")
+        ):
+            installer._download("https://example.invalid/engine", destination)
+        self.assertEqual(destination.read_bytes(), b"downloaded")
+        with (
+            patch.object(
+                installer.urllib.request,
+                "urlopen",
+                side_effect=urllib.error.URLError("offline"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "Could not download"),
+        ):
+            installer._download("https://example.invalid/engine", destination)
+
+    def test_same_engine_is_reused_across_python_releases(self):
+        self.metadata["lllm2_version"] = "0.2.0"
+        binary = self.install()
+        record = installer.provenance(binary)
+        self.assertEqual(record["built_for_lllm2_version"], "0.2.0")
+        self.assertEqual(record["lllm2_version"], "0.3.0")
+        with patch.object(installer, "__version__", "0.4.0"):
+            self.assertTrue(installer.provenance(binary)["matches_release"])
+            self.assertEqual(self.install(), binary)
+        self.assertEqual(installer.provenance(binary)["lllm2_version"], "0.3.0")
+
+    def test_wrong_engine_pins_are_rejected(self):
+        for key, value in (
+            ("requested_ref", "b1"),
+            ("cuda_track", "12.0.0"),
+            ("architecture", "aarch64"),
+            ("glibc", "2.35"),
+        ):
+            original = self.metadata[key]
+            self.metadata[key] = value
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(RuntimeError, "metadata"),
+            ):
+                self.install()
+            self.assertEqual(list(self.root.iterdir()), [])
+            self.metadata[key] = original
+
+    def test_unsafe_archive_members_rejected(self):
+        for name, kind in (
+            ("../escape", tarfile.REGTYPE),
+            ("/escape", tarfile.REGTYPE),
+            ("link", tarfile.SYMTYPE),
+            ("hard", tarfile.LNKTYPE),
+            ("fifo", tarfile.FIFOTYPE),
+            ("./llama-server", tarfile.REGTYPE),
+        ):
+            member = tarfile.TarInfo(name)
+            member.type = kind
+            member.linkname = "../escape"
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(RuntimeError, "Unsafe"),
+            ):
+                self.install(archive=self.archive(member))
+            self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_internal_library_symlink_is_preserved(self):
+        member = tarfile.TarInfo("./libggml-cuda.so.0")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "libggml-cuda.so"
+        binary = self.install(archive=self.archive(member))
+        link = binary.with_name("libggml-cuda.so.0")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.read_bytes(), b"library")
+        self.assertEqual(os.readlink(link), "libggml-cuda.so")
+
+    def test_dangling_and_cyclic_links_are_rejected(self):
+        for target in ("missing", "cycle"):
+            member = tarfile.TarInfo("cycle")
+            member.type = tarfile.SYMTYPE
+            member.linkname = target
+            with (
+                self.subTest(target=target),
+                self.assertRaisesRegex(RuntimeError, "Unsafe"),
+            ):
+                self.install(archive=self.archive(member))
+            self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_existing_different_engine_is_not_overwritten(self):
+        binary = self.install()
+        binary.with_name("lllm2-engine.json").write_text("{}")
+        with self.assertRaises(FileExistsError):
+            self.install()
+        self.assertTrue(binary.is_file())
+
+    def test_invalid_names_and_backend(self):
+        for name in ("..", ".", "../outside", "/absolute", "has space"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                installer.install("cuda", name=name, root=self.root)
+        with self.assertRaises(ValueError):
+            installer.install("vulkan", root=self.root)
+
+    def test_driver_track_selection_and_errors(self):
+        for version, track in (
+            ("12.0", "12"),
+            ("12.9", "12"),
+            ("13.0", "13"),
+            ("13.3", "13"),
+            ("14.0", "13"),
+        ):
+            with patch.object(
+                installer.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout=f"CUDA Version: {version}"
+                ),
+            ):
+                self.assertEqual(installer.cuda_track(), track)
+        for output in ("CUDA Version: 11.8", "CUDA Version: N/A", ""):
+            with (
+                patch.object(
+                    installer.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout=output),
+                ),
+                self.assertRaisesRegex(RuntimeError, "NVIDIA driver"),
+            ):
+                installer.cuda_track()
+        with (
+            patch.object(installer.subprocess, "run", side_effect=FileNotFoundError),
+            self.assertRaisesRegex(RuntimeError, "NVIDIA driver"),
+        ):
+            installer.cuda_track()
+
+    def test_release_tag_prefix_and_missing_assets(self):
+        asset = asset_name("13")
+        release = {
+            "assets": [
+                {"name": name, "browser_download_url": "https://example/" + name}
+                for name in (asset, asset + ".sha256")
+            ]
+        }
+        missing = urllib.error.HTTPError("url", 404, "missing", None, None)
+        with patch.object(
+            installer.urllib.request,
+            "urlopen",
+            side_effect=[missing, io.BytesIO(json.dumps(release).encode())],
+        ) as request:
+            self.assertEqual(
+                installer._release_asset_urls(asset)[0], "https://example/" + asset
+            )
+            self.assertTrue(request.call_args.args[0].full_url.endswith("/v0.3.0"))
+        with (
+            patch.object(
+                installer.urllib.request,
+                "urlopen",
+                return_value=io.BytesIO(b'{"assets": []}'),
+            ),
+            self.assertRaisesRegex(RuntimeError, "no published"),
+        ):
+            installer._release_asset_urls(asset)
+        with (
+            patch.object(installer, "__version__", "0.4.0.dev1"),
+            self.assertRaisesRegex(RuntimeError, "not a published"),
+        ):
+            installer._release_asset_urls(asset)
+
+    def test_malformed_or_old_provenance_is_unmarked(self):
+        binary = self.root / "llama-server"
+        for data in ("[]", "not json", '{"requested_ref": "master"}'):
+            binary.with_name("lllm2-engine.json").write_text(data)
+            self.assertFalse(installer.provenance(binary).get("matches_release"))

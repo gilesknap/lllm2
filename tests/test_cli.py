@@ -98,7 +98,10 @@ class CliTests(unittest.TestCase):
             ):
                 result = self.runner.invoke(cli.app, [*args, "--json"])
                 self.assertEqual(result.exit_code, 0, result.output)
-                self.assertEqual(json.loads(result.output), rows)
+                self.assertEqual(
+                    json.loads(result.output),
+                    [dict(rows[0], provenance={})] if function == "engines" else rows,
+                )
                 result = self.runner.invoke(cli.app, args)
                 self.assertEqual(result.output.strip(), rows[0]["path"])
 
@@ -112,56 +115,27 @@ class CliTests(unittest.TestCase):
                     "engines",
                     "install",
                     "cuda",
-                    "--ref",
-                    "b123",
                     "--name",
                     "test",
-                    "--jobs",
-                    "4",
-                    "--cuda-architectures",
-                    "86;89",
                 ],
             )
             self.assertEqual(result.exit_code, 0, result.output)
-            install.assert_called_once_with(
-                "cuda", ref="b123", name="test", jobs=4, cuda_architectures="86;89"
-            )
+            install.assert_called_once_with("cuda", name="test")
 
-    def test_missing_tools_print_instructions_without_building(self):
-        for version in ("8.10", "9.0"):
-            output = io.StringIO()
-            with (
-                self.subTest(version=version),
-                patch(
-                    "lllm2.engine_install.platform.freedesktop_os_release",
-                    return_value={"ID": "rhel", "VERSION_ID": version},
-                ),
-                patch(
-                    "lllm2.engine_install.shutil.which",
-                    side_effect=lambda tool: (
-                        None if tool == "glslc" else "/usr/bin/" + tool
-                    ),
-                ),
-                patch("lllm2.engine_install.subprocess.run") as run,
-                contextlib.redirect_stderr(output),
-            ):
-                self.assertEqual(cli.main(["engines", "install", "vulkan"]), 2)
-                run.assert_not_called()
-            hint = output.getvalue()
-            self.assertIn("Missing build tools: glslc", hint)
-            self.assertIn("sudo dnf install", hint)
-            self.assertIn("vulkan-loader-devel", hint)
-            package_command = next(
-                line for line in hint.splitlines() if line.startswith("sudo ")
-            )
-            if version.startswith("8."):
-                self.assertNotIn("glslc", package_command)
-                self.assertIn("--target glslc_exe", hint)
-                self.assertIn("gcc-toolset-13", hint)
-            else:
-                self.assertIn("glslc", package_command)
-                self.assertIn("spirv-headers-devel", package_command.split())
-                self.assertNotIn("spirv-headers", package_command.split())
+    def test_removed_install_options_are_rejected(self):
+        for args in (
+            ["vulkan"],
+            ["cuda", "--ref", "master"],
+            ["cuda", "--jobs", "2"],
+            ["cuda", "--cuda-architectures", "native"],
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(
+                    self.runner.invoke(
+                        cli.app, ["engines", "install", *args]
+                    ).exit_code,
+                    2,
+                )
 
     def test_launch_arguments_and_cancellation(self):
         with patch.object(cli, "_launch", return_value=130) as launch:
