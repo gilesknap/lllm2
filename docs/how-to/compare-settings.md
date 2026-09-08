@@ -8,3 +8,7 @@ Inspect completed results and their evidence before loading a configuration
 into **Launch**. Click **Save my settings** to keep it. Launch and experiment
 drafts are separate; loading a result does not save it or restart the model.
 Export results as CSV for comparison or JSON for the full record.
+
+See [Experiment and model settings](../explanations/experiment-settings.md) for
+each workload, budget and customization control, including cold versus warm
+measurements and how to interpret the results.

@@ -360,6 +360,11 @@ dialog::backdrop {
   margin-left: 5px;
 }
 
+.workload-option {
+  display: inline-flex;
+  align-items: center;
+}
+
 .tip button {
   border: 0;
   background: none;
