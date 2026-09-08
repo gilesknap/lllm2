@@ -18,6 +18,7 @@ from pathlib import Path
 from . import __version__, config
 from .discovery import engine_environment
 from .engine_release import CUDA_TRACKS, LLAMA_CPP_REF, RELEASE_REPOSITORY, asset_name
+from .tls import download_context
 
 
 def cuda_track() -> str:
@@ -103,7 +104,9 @@ def provenance(binary: Path) -> dict:
 def _download(url: str, destination: Path) -> None:
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "lllm2"})
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(
+            request, timeout=60, context=download_context()
+        ) as response:
             with destination.open("wb") as output:
                 shutil.copyfileobj(response, output)
     except (OSError, urllib.error.URLError) as error:
@@ -124,7 +127,9 @@ def _release_asset_urls(asset: str) -> tuple[str, str]:
         )
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "lllm2"})
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(
+                request, timeout=30, context=download_context()
+            ) as response:
                 releases = json.load(response)
         except (OSError, ValueError) as error:
             if isinstance(error, urllib.error.HTTPError):

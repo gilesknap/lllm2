@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config
+from .tls import download_context
 
 CHUNK = 4 * 1024 * 1024
 USER_AGENT = "lllm2/0.1 (+https://github.com/gilesknap/lllm2)"
@@ -78,7 +79,7 @@ def _size_of(repo: str, file: str) -> int:
     req = urllib.request.Request(url_for(repo, file), method="HEAD")
     req.add_header("User-Agent", USER_AGENT)
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=60, context=download_context()) as r:
             return int(r.headers.get("Content-Length") or 0)
     except Exception:
         return 0
@@ -94,7 +95,7 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
     req.add_header("User-Agent", USER_AGENT)
     if resume:
         req.add_header("Range", f"bytes={resume}-")
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=60, context=download_context()) as r:
         # Servers may ignore Range; never append a full response to a partial.
         if resume and r.status != 206:
             resume = 0
