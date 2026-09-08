@@ -2,6 +2,7 @@ include LICENSE NOTICE README.md pyproject.toml uv.lock .copier-answers.yml
 recursive-include src/lllm2 *.py *.json *.html *.css *.js *.jinja
 recursive-include docs *.md *.py *.rst *.svg
 recursive-include tests *.py *.cjs *.js
+recursive-include scripts *.py *.sh
 recursive-include .github *.py *.yml *.md
 prune docs/_build
 prune docs/_api

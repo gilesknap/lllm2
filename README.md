@@ -17,8 +17,9 @@ lllm2 engines install cuda
 lllm2
 ```
 
-The engine build needs Git, CMake, a C++ compiler and the CUDA toolkit; install
-those separately. Existing builds can also be discovered. Open
+The engine is downloaded from the matching lllm2 release, with CUDA runtime
+libraries included. No host compiler or CUDA toolkit is needed. Existing builds
+can also be discovered. Open
 <http://127.0.0.1:8082>, download a model and click **Start**. The model API
 listens at `http://127.0.0.1:1920/v1`.
 

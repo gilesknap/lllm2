@@ -1,0 +1,89 @@
+name: Build release engines
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  # Draft assets can seed a release from a locally validated build.
+  # GitHub requires push access to include drafts in release listings.
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        track: ['12', '13']
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+      - run: uv sync --locked
+      - name: Read release contract
+        id: contract
+        env:
+          TRACK: ${{ matrix.track }}
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from lllm2 import __version__
+          from lllm2.engine_release import CUDA_TRACKS
+          print(f'version={__version__}')
+          print(f'cuda={CUDA_TRACKS[os.environ["TRACK"]]}')
+          PY
+      - name: Reuse release artifact when engine pins are unchanged
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TRACK: ${{ matrix.track }}
+        run: uv run python .github/scripts/reuse_engine.py "$TRACK" engine-dist
+      - name: Build and package in Rocky Linux 8
+        if: steps.reuse.outputs.found != 'true'
+        env:
+          TRACK: ${{ matrix.track }}
+          CUDA: ${{ steps.contract.outputs.cuda }}
+          VERSION: ${{ steps.contract.outputs.version }}
+        run: |
+          mkdir -p engine-dist engine-checks
+          docker run --rm -e BUILD_JOBS=4 \
+            -v "$PWD:/repo:ro" -v "$PWD/engine-dist:/out" \
+            -v "$PWD/engine-checks:/checks" \
+            "nvidia/cuda:${CUDA}-devel-rockylinux8" \
+            bash /repo/scripts/build-engine.sh "$TRACK" "$VERSION"
+      - name: Prepare test driver stub without a compiler
+        if: steps.reuse.outputs.found == 'true' && steps.reuse.outputs.published != 'true'
+        env:
+          CUDA: ${{ steps.contract.outputs.cuda }}
+        run: |
+          mkdir -p engine-checks
+          docker run --rm -e CUDA="$CUDA" -v "$PWD/engine-checks:/checks" \
+            rockylinux:8 bash -euc '
+              curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo -o /etc/yum.repos.d/cuda.repo
+              toolkit_series=${CUDA%.*}
+              dnf install -y "cuda-driver-devel-${toolkit_series//./-}"
+              cp -L "/usr/local/cuda-${toolkit_series}/lib64/stubs/libcuda.so" /checks/libcuda.so.1
+            '
+      - name: Test packaged engine with panel discovery
+        if: steps.reuse.outputs.published != 'true'
+        run: |
+          mkdir -p engine-smoke
+          tar -xzf engine-dist/*.tar.gz -C engine-smoke
+          # The hosted runner has no GPU driver. Keep its test stub outside the artifact.
+          LD_LIBRARY_PATH="$PWD/engine-checks" uv run python scripts/check-engine.py engine-smoke/llama-server
+          docker run --rm -v "$PWD/engine-smoke:/engine:ro" \
+            -v "$PWD/engine-checks:/driver:ro" -e LD_LIBRARY_PATH=/engine:/driver \
+            rockylinux:8 /engine/llama-server --help
+      - uses: actions/upload-artifact@v4
+        if: steps.reuse.outputs.published != 'true'
+        with:
+          name: engine-cuda${{ matrix.track }}
+          path: engine-dist/
+          if-no-files-found: error
+          compression-level: 0

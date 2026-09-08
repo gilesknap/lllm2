@@ -1,342 +1,275 @@
-"""Install isolated llama.cpp builds for both the CLI and future panel actions."""
+"""Download a published CUDA engine matching the installed dependency pins."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from . import config
-
-REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
-BACKENDS = {
-    "cuda": ["-DGGML_CUDA=ON", "-DGGML_NATIVE=OFF"],
-    "vulkan": ["-DGGML_VULKAN=ON", "-DGGML_NATIVE=OFF"],
-}
+from . import __version__, config
+from .discovery import engine_environment
+from .engine_release import CUDA_TRACKS, LLAMA_CPP_REF, RELEASE_REPOSITORY, asset_name
 
 
-def _fix_server_compatibility(source: Path) -> list[str]:
-    """Repair known server build failures, including GCC 8 new-expression CTAD."""
-    adjustments = []
-    context = source / "tools/server/server-context.cpp"
-    if context.is_file():
-        content = context.read_text()
-        if "std::setw" in content and not re.search(
-            r"#\s*include\s*<iomanip>", content
-        ):
-            context.write_text("#include <iomanip>\n" + content)
-            adjustments.append("Include iomanip for server-context std::setw")
-
-    schema = source / "tools/server/server-schema.cpp"
-    if schema.is_file():
-        content = schema.read_text()
-        # Preserve the member's exact type; field_num handles integers and floats.
-        # Restrict this workaround to named params members, not arbitrary expressions.
-        fixed = re.sub(
-            r'new field_num\(("[^"\n]+"), (params(?:\.[A-Za-z_]\w*)+)\)',
-            r"new field_num<decltype(\2)>(\1, \2)",
-            content,
-        )
-        if fixed != content:
-            schema.write_text(fixed)
-            adjustments.append(
-                "Use explicit field_num member types for GCC 8 compatibility"
-            )
-    return adjustments
-
-
-def _fix_gcc8_filesystem_link(source: Path) -> list[str]:
-    """Link GCC 8's separate filesystem library into its consumers."""
-    cmake = source / "CMakeLists.txt"
-    marker = "# lllm2: GCC 8 filesystem linkage"
-    content = cmake.read_text()
-    if marker in content:
-        return []
-    cmake.write_text(
-        content
-        + "\n"
-        + marker
-        + """
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
-   CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
-    foreach(target ggml llama-common server-context llama-server-impl llama-server)
-        if(TARGET ${target})
-            # Append a library (not a linker flag) so it follows object files.
-            set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARIES stdc++fs)
-        endif()
-    endforeach()
-endif()
-"""
+def cuda_track() -> str:
+    """Select an artifact supported by both the NVIDIA driver and its GPUs."""
+    # PTX targets require a driver supporting the toolkit's major/minor version.
+    # Derive the floors from the build pins so future pin bumps stay consistent.
+    required = {
+        track: tuple(int(part) for part in version.split(".")[:2])
+        for track, version in CUDA_TRACKS.items()
+    }
+    floor = ".".join(str(part) for part in required["12"])
+    message = (
+        f"Update or install the NVIDIA driver: nvidia-smi must report CUDA {floor} "
+        "or newer for the available engine bundles. No CUDA toolkit is required."
     )
-    return ["Link stdc++fs for GNU C++ compilers older than GCC 9"]
-
-
-def _fix_vulkan_header_target(source: Path) -> list[str]:
-    """Repair upstream revisions that find SPIRV-Headers but omit its target.
-
-    Without the imported target, headers outside the compiler's default search
-    paths are invisible. Only modify the known broken CMake form in our clone.
-    """
-    cmake = source / "ggml/src/ggml-vulkan/CMakeLists.txt"
-    content = cmake.read_text()
-    original = "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)"
-    if (
-        "find_package(SPIRV-Headers CONFIG REQUIRED)" not in content
-        or "SPIRV-Headers::SPIRV-Headers" in content
-        or original not in content
-    ):
-        return []
-    cmake.write_text(
-        content.replace(
-            original,
-            "target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan SPIRV-Headers::SPIRV-Headers)",
-            1,
-        )
-    )
-    return ["Link ggml-vulkan to SPIRV-Headers::SPIRV-Headers"]
-
-
-def missing_build_tools(backend: str) -> list[str]:
-    """Return commands required before an unprivileged source build can run."""
-    required = ["git", "cmake", "c++"]
-    if backend == "vulkan":
-        required.append("glslc")
-    return [name for name in required if shutil.which(name) is None]
-
-
-def prerequisite_hint(backend: str) -> str:
-    """Suggest system packages using the distribution's ID and ancestry."""
     try:
-        release = platform.freedesktop_os_release()
-    except OSError:
-        release = {}
-    distributions = [release.get("ID", ""), *release.get("ID_LIKE", "").split()]
-    manager = None
-    for distribution in distributions:
-        if distribution in {"rhel", "centos", "rocky", "almalinux", "ol", "fedora"}:
-            manager = "dnf" if shutil.which("dnf") or not shutil.which("yum") else "yum"
-            break
-        if distribution in {"debian", "ubuntu"}:
-            manager = "apt"
-            break
-    if manager is None:
-        manager = next(
-            (tool for tool in ("dnf", "yum", "apt") if shutil.which(tool)), None
+        result = subprocess.run(
+            ["nvidia-smi"], capture_output=True, text=True, timeout=15, check=True
         )
-
-    enterprise_linux_8 = release.get("VERSION_ID", "").split(".")[0] == "8" and bool(
-        set(distributions) & {"rhel", "centos", "rocky", "almalinux", "ol"}
-    )
-    if enterprise_linux_8 and backend == "vulkan":
-        # glslc was added to RHEL in 9.0; enabling CRB on EL8 does not provide it.
-        return f"""sudo {manager} install git cmake make python3.11 gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ vulkan-headers vulkan-loader-devel
-# Select the compilers explicitly; setting PATH alone can leave cc/c++ using GCC 8.
-# Keep these exports for the engine build too. They work in bash and zsh.
-export CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc
-export CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
-export PATH="/opt/rh/gcc-toolset-13/root/usr/bin:$PATH"
-# Build glslc locally: RHEL 8 has no glslc package in its standard repositories.
-# Upstream instructions: https://github.com/google/shaderc#getting-and-building-shaderc
-# Use a fresh directory so existing builds are left intact.
-shaderc_work=$(mktemp -d)
-git clone https://github.com/google/shaderc.git "$shaderc_work/source" && (
-  cd "$shaderc_work/source" && python3.11 utils/git-sync-deps
-) && cmake -S "$shaderc_work/source" -B "$shaderc_work/build" -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE="$(command -v python3.11)" -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON -DSHADERC_ENABLE_WERROR_COMPILE=OFF &&
-cmake --build "$shaderc_work/build" --target glslc_exe --parallel 2 &&
-mkdir -p "$HOME/.local/bin" &&
-install -m 755 "$shaderc_work/build/glslc/glslc" "$HOME/.local/bin/glslc"
-export PATH="$HOME/.local/bin:$PATH"
-glslc --version
-# Install the matching SPIR-V headers and their CMake package (no compilation).
-cmake -S "$shaderc_work/source/third_party/spirv-headers" -B "$shaderc_work/headers-build" -DCMAKE_INSTALL_PREFIX="$HOME/.local" -DSPIRV_HEADERS_ENABLE_TESTS=OFF -DSPIRV_HEADERS_ENABLE_INSTALL=ON &&
-cmake --install "$shaderc_work/headers-build"
-export CMAKE_PREFIX_PATH="$HOME/.local${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"
-# Now rerun: lllm2 engines install vulkan
-# If the selected llama.cpp ref requires newer Vulkan headers, install
-# a matching Vulkan SDK as well: https://vulkan.lunarg.com/doc/sdk/latest/linux/getting_started.html"""
-
-    if manager in {"dnf", "yum"}:
-        packages = "git cmake gcc gcc-c++ make"
-        if backend == "vulkan":
-            packages += " glslc vulkan-headers vulkan-loader-devel spirv-headers-devel"
-    elif manager == "apt":
-        packages = "git cmake build-essential"
-        if backend == "vulkan":
-            packages += " glslc libvulkan-dev spirv-headers"
-    else:
-        hint = "Install Git, CMake, a C/C++ compiler and Make using your system package manager."
-        if backend == "vulkan":
-            hint += " Also install glslc, the Vulkan development headers and loader, and SPIRV-Headers with its CMake package."
-        return hint
-    hint = f"sudo {manager} install {packages}"
-    if manager in {"dnf", "yum"} and backend == "vulkan":
-        hint += (
-            "\n# If Vulkan packages are unavailable, enable the development repositories "
-            "for your distribution or install the Vulkan SDK."
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(message) from error
+    match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout)
+    if not match or (int(match[1]), int(match[2])) < required["12"]:
+        raise RuntimeError(message)
+    if (int(match[1]), int(match[2])) < required["13"]:
+        return "12"
+    # R580 reports CUDA 13 even on Pascal/Volta. Those GPUs need the CUDA 12
+    # artifact: CUDA 13's compiler dropped targets below compute capability 7.5.
+    try:
+        devices = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
         )
-    return hint
-
-
-def install(
-    backend: str,
-    *,
-    name: str = "",
-    ref: str = "master",
-    jobs: int | None = None,
-    root: Path | None = None,
-    cuda_architectures: str = "native",
-) -> Path:
-    """Build llama-server in a staging tree, then atomically publish it.
-
-    The build itself never invokes sudo and never modifies an existing engine.
-    System prerequisites are deliberately kept as a separate, visible step.
-    """
-    if backend not in BACKENDS:
-        raise ValueError(f"Unknown backend {backend!r}; choose cuda or vulkan.")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", ref):
-        raise ValueError(
-            "Engine ref may contain only letters, digits, dot, underscore and dash."
-        )
-    name = name or f"llama-{ref}-{backend}"
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
-        raise ValueError(
-            "Engine name may contain only letters, digits, dot, underscore and dash."
-        )
-    if jobs is not None and jobs < 1:
-        raise ValueError("Build jobs must be at least one.")
-    if backend == "cuda" and not re.fullmatch(
-        r"(?:native|all|all-major|[0-9;]+)", cuda_architectures
-    ):
-        raise ValueError(
-            "CUDA architectures must be native, all, all-major, or a semicolon-separated numeric list."
-        )
-    missing = missing_build_tools(backend)
-    if missing:
+    except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(
-            "Missing build tools: "
-            + ", ".join(missing)
-            + "\n\nInstall prerequisites, then rerun the engine install command:\n\n"
-            + prerequisite_hint(backend)
-        )
+            "The NVIDIA driver could not report GPU compute capability."
+        ) from error
+    capabilities = []
+    for line in devices.stdout.strip().splitlines():
+        capability = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", line)
+        if not capability:
+            raise RuntimeError(
+                "The NVIDIA driver could not report GPU compute capability."
+            )
+        capabilities.append((int(capability[1]), int(capability[2])))
+    if not capabilities:
+        raise RuntimeError("The NVIDIA driver could not report GPU compute capability.")
+    return "12" if min(capabilities) < (7, 5) else "13"
 
+
+def matches_engine(record: dict, track: str | None = None) -> bool:
+    """Engine identity depends on its pins, independently of Python releases."""
+    return (
+        record.get("requested_ref") == LLAMA_CPP_REF
+        and record.get("backend") == "cuda"
+        and record.get("cuda_track") in CUDA_TRACKS.values()
+        and (track is None or record.get("cuda_track") == CUDA_TRACKS[track])
+        and record.get("architecture") == "x86_64"
+        and record.get("glibc") == "2.28"
+    )
+
+
+def provenance(binary: Path) -> dict:
+    """Read optional metadata without excluding older or hand-placed engines."""
+    try:
+        record = json.loads(binary.with_name("lllm2-engine.json").read_text())
+        if not isinstance(record, dict):
+            return {}
+    except (OSError, ValueError):
+        return {}
+    record["matches_release"] = matches_engine(record)
+
+    return record
+
+
+def _download(url: str, destination: Path) -> None:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "lllm2"})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            with destination.open("wb") as output:
+                shutil.copyfileobj(response, output)
+    except (OSError, urllib.error.URLError) as error:
+        if isinstance(error, urllib.error.HTTPError):
+            error.close()
+        raise RuntimeError(
+            f"Could not download release engine from {url}: {error}"
+        ) from error
+
+
+def _release_asset_urls(asset: str) -> tuple[str, str]:
+    """Find the newest published release carrying this exact engine pin pair."""
+    page = 1
+    while True:
+        url = (
+            f"https://api.github.com/repos/{RELEASE_REPOSITORY}/releases"
+            f"?per_page=100&page={page}"
+        )
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "lllm2"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                releases = json.load(response)
+        except (OSError, ValueError) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            raise RuntimeError(
+                f"Could not find published engine releases: {error}"
+            ) from error
+        if not releases:
+            break
+        for release in releases:
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            assets = {
+                item["name"]: item["browser_download_url"]
+                for item in release["assets"]
+                if item.get("state") == "uploaded"
+            }
+            if asset in assets and asset + ".sha256" in assets:
+                return assets[asset], assets[asset + ".sha256"]
+        page += 1
+    raise RuntimeError(f"No published release contains {asset} and its checksum.")
+
+
+def _unpack(archive: Path, staged: Path) -> None:
+    """Extract flat files and validated internal library symlinks."""
+
+    def flat_name(value: str) -> str:
+        name = value.removeprefix("./")
+        if "/" in name or name in ("", ".", ".."):
+            raise RuntimeError(f"Unsafe engine archive path: {value}")
+        return name
+
+    with tarfile.open(archive, "r:gz") as bundle:
+        members = {}
+        for member in bundle.getmembers():
+            if member.isdir() and member.name in (".", "./"):
+                continue
+            name = flat_name(member.name)
+            if name in members or not (member.isfile() or member.issym()):
+                raise RuntimeError(f"Unsafe engine archive member: {member.name}")
+            members[name] = member
+        # Validate the entire link graph before writing files. No link may leave
+        # the flat engine directory, dangle, form a cycle or point at a special file.
+        for name, member in members.items():
+            seen = {name}
+            while member.issym():
+                target = flat_name(member.linkname)
+                if target in seen or target not in members:
+                    raise RuntimeError(f"Unsafe engine archive link: {name}")
+                seen.add(target)
+                member = members[target]
+        for name, member in members.items():
+            if member.issym():
+                continue
+            source = bundle.extractfile(member)
+            if source is None:
+                raise RuntimeError(f"Missing engine archive member: {member.name}")
+            destination = staged / name
+            with source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output)
+            destination.chmod(0o755 if member.mode & 0o111 else 0o644)
+        for name, member in members.items():
+            if member.issym():
+                (staged / name).symlink_to(flat_name(member.linkname))
+
+
+def install(backend: str, *, name: str = "", root: Path | None = None) -> Path:
+    """Verify, stage, probe and atomically publish a release engine."""
+    if backend != "cuda":
+        raise ValueError(f"Unknown install backend {backend!r}; choose cuda.")
+    for label, value in (("ref", LLAMA_CPP_REF), ("name", name or LLAMA_CPP_REF)):
+        if value in (".", "..") or not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+            raise ValueError(
+                f"Engine {label} may contain only letters, digits, dot, underscore and dash."
+            )
+    if platform.system() != "Linux" or platform.machine() not in ("x86_64", "AMD64"):
+        raise RuntimeError("Release CUDA engines require Linux x86_64.")
+    track = cuda_track()
+    name = name or f"llama-{LLAMA_CPP_REF}-cuda{CUDA_TRACKS[track]}"
     root = (root or config.ENGINE_HOME).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = root / name
+    binary = target / "llama-server"
     if target.exists():
+        record = provenance(binary)
+        if (
+            record.get("matches_release")
+            and record.get("cuda_track") == CUDA_TRACKS[track]
+            and binary.is_file()
+            and os.access(binary, os.X_OK)
+        ):
+            return binary
         raise FileExistsError(
-            f"Engine already exists: {target}. Choose another --name; existing builds are never overwritten."
+            f"Engine already exists: {target}. Choose another --name; existing engines are never overwritten."
         )
+    asset = asset_name(track)
+    url, checksum_url = _release_asset_urls(asset)
     with tempfile.TemporaryDirectory(prefix=f".{name}-", dir=root) as temporary:
         work = Path(temporary)
-        source, build, staged = work / "source", work / "build", work / "installed"
-        configure = [
-            "cmake",
-            "-S",
-            str(source),
-            "-B",
-            str(build),
-            "-DCMAKE_BUILD_TYPE=Release",
-            *BACKENDS[backend],
-        ]
-        if backend == "cuda":
-            configure.append(f"-DCMAKE_CUDA_ARCHITECTURES={cuda_architectures}")
-        steps = [
-            (
-                "clone",
-                [
-                    "git",
-                    "clone",
-                    "--filter=blob:none",
-                    "--branch",
-                    ref,
-                    "--depth",
-                    "1",
-                    REPOSITORY,
-                    str(source),
-                ],
-            ),
-            ("configure", configure),
-            (
-                "build",
-                [
-                    "cmake",
-                    "--build",
-                    str(build),
-                    "--target",
-                    "llama-server",
-                    "--parallel",
-                    str(jobs or max(1, os.cpu_count() or 1)),
-                ],
-            ),
-        ]
-        build_adjustments = []
-        for description, command in steps:
-            try:
-                subprocess.run(command, check=True)
-            except subprocess.CalledProcessError as error:
-                raise RuntimeError(
-                    f"Engine {description} failed with exit code {error.returncode}."
-                ) from error
-            if description == "clone":
-                build_adjustments = _fix_server_compatibility(source)
-                build_adjustments.extend(_fix_gcc8_filesystem_link(source))
-                if backend == "vulkan":
-                    build_adjustments.extend(_fix_vulkan_header_target(source))
+        archive, checksum, staged = work / asset, work / "checksum", work / "installed"
+        _download(checksum_url, checksum)
+        fields = checksum.read_text().split()
+        if (
+            len(fields) != 2
+            or not re.fullmatch(r"[0-9a-fA-F]{64}", fields[0])
+            or fields[1] != asset
+        ):
+            raise RuntimeError("Invalid engine checksum file.")
+        _download(url, archive)
+        with archive.open("rb") as downloaded:
+            digest = hashlib.file_digest(downloaded, "sha256").hexdigest()
+        if digest != fields[0].lower():
+            raise RuntimeError("Engine checksum verification failed.")
         staged.mkdir()
-        for artifact in (build / "bin").iterdir():
-            if artifact.is_file() and (
-                artifact.name == "llama-server"
-                or artifact.suffix == ".so"
-                or ".so." in artifact.name
-            ):
-                shutil.copy2(artifact, staged / artifact.name, follow_symlinks=True)
-        binary = staged / "llama-server"
-        if not binary.is_file():
-            raise RuntimeError("Build completed without build/bin/llama-server.")
-        binary.chmod(binary.stat().st_mode | 0o111)
-        environment = os.environ.copy()
-        environment["LD_LIBRARY_PATH"] = str(staged) + (
-            os.pathsep + environment["LD_LIBRARY_PATH"]
-            if environment.get("LD_LIBRARY_PATH")
-            else ""
-        )
-        check = subprocess.run(
-            [str(binary), "--help"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=environment,
-        )
+        try:
+            _unpack(archive, staged)
+        except tarfile.TarError as error:
+            raise RuntimeError(f"Invalid engine archive: {error}") from error
+        candidate = staged / "llama-server"
+        record = provenance(candidate)
+        if not matches_engine(record, track):
+            raise RuntimeError(
+                "Engine metadata does not match this lllm2 release and CUDA track."
+            )
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise RuntimeError("Engine archive has no executable llama-server.")
+        try:
+            check = subprocess.run(
+                [str(candidate), "--help"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=engine_environment(candidate),
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(
+                f"Downloaded llama-server could not start: {error}"
+            ) from error
         if check.returncode:
             raise RuntimeError(
-                "Built llama-server could not start: " + check.stderr[-1000:]
+                "Downloaded llama-server could not start: " + check.stderr[-1000:]
             )
-        revision = subprocess.run(
-            ["git", "-C", str(source), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        (staged / "lllm2-engine.json").write_text(
-            json.dumps(
-                {
-                    "repository": REPOSITORY,
-                    "requested_ref": ref,
-                    "revision": revision,
-                    "backend": backend,
-                    "cuda_architectures": cuda_architectures
-                    if backend == "cuda"
-                    else None,
-                    "build_adjustments": build_adjustments,
-                },
-                indent=2,
-            )
-            + "\n"
-        )
+        # Release tarballs can be reused unchanged by later Python releases.
+        # Keep build provenance distinct from the version doing this installation.
+        record.pop("matches_release", None)
+        if "built_for_lllm2_version" not in record and "lllm2_version" in record:
+            record["built_for_lllm2_version"] = record["lllm2_version"]
+        record["lllm2_version"] = __version__
+        (staged / "lllm2-engine.json").write_text(json.dumps(record, indent=2) + "\n")
         staged.rename(target)
-    return target / "llama-server"
+    return binary

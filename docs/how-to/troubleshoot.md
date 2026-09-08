@@ -1,7 +1,7 @@
 # Troubleshoot
 
 - **No engine:** check `lllm2 engines list` and the configured search roots;
-  build CUDA or Vulkan if needed.
+  run `lllm2 engines install cuda` if needed.
 - **No GPU:** check `nvidia-smi` and the selected engine's device probe.
 - **Startup fails:** read the engine log, reduce context or GPU layers, and
   disable unsupported acceleration options. Automatic placement needs an

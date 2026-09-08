@@ -69,3 +69,10 @@ lockfiles/
 
 # ruff cache
 .ruff_cache/
+
+# Local release engine build artifacts
+.engine-build/
+.engine-dist/
+engine-dist/
+engine-smoke/
+engine-checks/
