@@ -41,7 +41,7 @@ See [NVIDIA's compatibility guidance](https://docs.nvidia.com/deploy/cuda-compat
 Each lllm2 release pins one llama.cpp revision and CUDA version per track.
 Releases with unchanged pins reuse identical engine tarballs. Repeating the
 install after a Python-only upgrade is a no-op too; older engines remain
-available. `engines list` shows the ref, CUDA version, installing lllm2 version
+available. `engines list` shows the ref, CUDA version, build and installation lllm2 versions
 and whether the engine matches the running package's pins. Use `--json`
 for full metadata or `--name` to choose an installation directory name.
 Development checkouts need a published lllm2 version to download release engines.

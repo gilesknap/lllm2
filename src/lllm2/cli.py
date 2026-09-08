@@ -199,7 +199,7 @@ def list_engines(json_output: JsonOutput = False) -> None:
                     else ""
                 )
                 print(
-                    f"  ref={record.get('requested_ref', '?')} CUDA={record.get('cuda_track', '?')} installed-by-lllm2={record.get('lllm2_version', '?')}{marker}"
+                    f"  ref={record.get('requested_ref', '?')} CUDA={record.get('cuda_track', '?')}; built for lllm2 {record.get('built_for_lllm2_version', record.get('lllm2_version', '?'))}; installed by lllm2 {record.get('lllm2_version', '?')}{marker}"
                 )
 
 

@@ -92,7 +92,7 @@ import sys
 stage, ref, revision, cuda, release, repository = sys.argv[1:]
 (pathlib.Path(stage) / 'lllm2-engine.json').write_text(json.dumps(dict(
     requested_ref=ref, revision=revision, cuda_track=cuda, built_for_lllm2_version=release,
-    repository=repository, backend='cuda', glibc='2.28', architecture='x86_64',
+    repository=repository, backend='cuda', glibc='2.28', architecture='x86_64', packaging_schema=1,
 ), indent=2) + '\n')
 PY
 cp "$work/source/LICENSE" "$stage/LICENSE.llama.cpp"
