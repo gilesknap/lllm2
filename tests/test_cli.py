@@ -120,10 +120,22 @@ class CliTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(result.exit_code, 0, result.output)
-            install.assert_called_once_with("cuda", name="test", progress=ANY)
+            install.assert_called_once_with(
+                "cuda", name="test", force=False, progress=ANY
+            )
+
+    def test_force_install_argument(self):
+        with patch.object(
+            cli, "install", return_value="/build/llama-server"
+        ) as install:
+            result = self.runner.invoke(
+                cli.app, ["engines", "install", "cuda", "--force"]
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        install.assert_called_once_with("cuda", name="", force=True, progress=ANY)
 
     def test_install_progress_keeps_stdout_for_the_installed_path(self):
-        def install(_backend, *, name, progress):
+        def install(_backend, *, name, force, progress):
             progress("Checking NVIDIA driver", 0, None)
             progress("Downloading engine", 0, None)
             progress("Downloading engine", 500_000, 1_000_000)
@@ -152,7 +164,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("\x1b[", result.stderr)
 
     def test_unknown_size_download_has_periodic_log_updates(self):
-        def install(_backend, *, name, progress):
+        def install(_backend, *, name, force, progress):
             progress("Downloading engine", 0, None)
             progress("Downloading engine", 1_000_000, None)
             progress("Downloading engine", 2_000_000, None)

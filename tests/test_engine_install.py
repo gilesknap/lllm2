@@ -60,19 +60,29 @@ class InstallTests(unittest.TestCase):
                 bundle.addfile(extra)
         return buffer.getvalue()
 
-    def install(self, archive=None, checksum=None, probe_code=0, progress=None):
+    def install(
+        self,
+        archive=None,
+        checksum=None,
+        probe_code=0,
+        progress=None,
+        force=False,
+        driver_error=None,
+    ):
         archive = self.archive() if archive is None else archive
         digest = checksum or hashlib.sha256(archive).hexdigest()
 
         def download(url, destination, **_kwargs):
             destination.write_bytes(
-                f"{digest}  {asset_name('13')}\n".encode()
+                f"{digest}  {asset_name('12' if driver_error else '13')}\n".encode()
                 if url == "checksum"
                 else archive
             )
 
         with (
-            patch.object(installer, "cuda_track", return_value="13"),
+            patch.object(
+                installer, "cuda_track", return_value="13", side_effect=driver_error
+            ),
             patch.object(
                 installer, "_release_asset_urls", return_value=("archive", "checksum")
             ),
@@ -85,7 +95,9 @@ class InstallTests(unittest.TestCase):
                 ),
             ) as run,
         ):
-            binary = installer.install("cuda", root=self.root, progress=progress)
+            binary = installer.install(
+                "cuda", root=self.root, progress=progress, force=force
+            )
             if run.called:
                 self.assertEqual(run.call_args.args[0][-1], "--help")
                 self.assertEqual(
@@ -93,6 +105,36 @@ class InstallTests(unittest.TestCase):
                     str(Path(run.call_args.args[0][0]).parent),
                 )
             return binary
+
+    def test_force_falls_back_to_cuda12_and_retains_verification(self):
+        self.metadata["cuda_track"] = CUDA_TRACKS["12"]
+        options = {"force": True, "driver_error": RuntimeError("Driver too old")}
+        for failure, message in (
+            ({"checksum": "0" * 64}, "checksum verification"),
+            ({"probe_code": 1}, "could not start"),
+        ):
+            with (
+                self.subTest(failure=failure),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.install(**options, **failure)
+            self.assertEqual(list(self.root.iterdir()), [])
+        stages = []
+        binary = self.install(
+            **options, progress=lambda label, *_: stages.append(label)
+        )
+        self.assertEqual(installer.provenance(binary)["cuda_track"], CUDA_TRACKS["12"])
+        self.assertTrue(
+            any("--force" in stage and "Driver too old" in stage for stage in stages)
+        )
+
+    def test_force_preserves_normal_selection_and_existing_engines(self):
+        binary = self.install(force=True)
+        self.assertEqual(installer.provenance(binary)["cuda_track"], CUDA_TRACKS["13"])
+        binary.with_name("lllm2-engine.json").write_text("{}")
+        with self.assertRaises(FileExistsError):
+            self.install(force=True)
+        self.assertTrue(binary.is_file())
 
     def test_install_and_repeat_preserve_existing_engine(self):
         old = self.root / "old-vulkan"
