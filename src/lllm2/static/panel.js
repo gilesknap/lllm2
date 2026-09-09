@@ -677,9 +677,10 @@ $('experiment-picker').addEventListener('cancel',()=>pickerSequence++);
 $('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if(!b||b.disabled)return;$('experiment-picker').close();attempt(()=>previewResult(b.dataset.result,b.dataset.headroom==='true'));};
 // Find models keeps discovery and catalogue actions separate from launch drafts.
 let findLoaded=false,findBusy=false,findEntries=[],removingId=null;
-let findSort={key:'fit_rank',direction:1};
+let findSort={key:null,direction:0};
 const findColumns=[['display_name','Model'],['repo','Publisher / repository'],['quant','Quantisation'],['size_gb','Size GB','number'],['fit','Suitability'],['task','Task'],['downloads','Downloads','number'],['likes','Likes','number'],['updated','Updated'],['license','Licence']];
-$('find-table').querySelector('thead').innerHTML='<tr>'+findColumns.map(([key,label,type])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}">${label} ↕</button>${type==='number'?`<input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max">`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" placeholder="Filter">`}</th>`).join('')+'<th scope="col">Catalogue</th></tr>';
+$('find-table').querySelector('thead').innerHTML='<tr>'+findColumns.map(([key,label])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}"><span>${label}</span><span aria-hidden="true">↕</span></button></th>`).join('')+'<th scope="col">Catalogue</th></tr><tr class="find-filter-row">'+findColumns.map(([key,label,type])=>`<td>${type==='number'?`<div class="find-number-filter"><input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max"></div>`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" placeholder="Filter ${label.toLowerCase()}">`}</td>`).join('')+'<td></td></tr>';
+
 function filteredFindEntries(){
  return findEntries.filter(e=>{
   if($('find-suitable').checked&&e.fit_rank>1)return false;
@@ -693,6 +694,7 @@ function filteredFindEntries(){
   }
   return true;
  }).sort((a,b)=>{
+  if(!findSort.key)return 0;
   const av=a[findSort.key],bv=b[findSort.key];
   if(av==null||bv==null)return av==null?(bv==null?0:1):-1;
   const comparison=typeof av==='number'?av-bv:String(av).localeCompare(String(bv));
@@ -704,7 +706,9 @@ function renderFind(){
  for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
   const key=button.dataset.findSort,active=key===findSort.key;
   button.parentElement.setAttribute('aria-sort',active?(findSort.direction===1?'ascending':'descending'):'none');
-  button.textContent=findColumns.find(c=>c[0]===key)[1]+(active?(findSort.direction===1?' ↑':' ↓'):' ↕');
+  const label=findColumns.find(c=>c[0]===key)[1],next=active?(findSort.direction===1?'Sort descending':'Clear sort'):'Sort ascending';
+  button.lastElementChild.textContent=active?(findSort.direction===1?'↑':'↓'):'↕';
+  button.title=next+' · '+label;button.setAttribute('aria-label',label+': '+next.toLowerCase());
  }
  $('find-table').querySelector('tbody').innerHTML=rows.map(e=>{
   const saved=(discovered.catalog||[]).some(c=>c.repo===e.repo&&c.file===e.file);
@@ -717,7 +721,7 @@ async function searchHF(refresh=false){
  $('find-status').textContent='Reading Hugging Face metadata…';
  try{
   const result=await api('/api/models/find',{query:$('find-query').value,refresh});
-  findEntries=result.entries;findLoaded=true;renderFind();
+  findEntries=result.entries.sort((a,b)=>a.fit_rank-b.fit_rank||b.downloads-a.downloads||b.updated.localeCompare(a.updated)||a.repo.localeCompare(b.repo));findLoaded=true;renderFind();
   $('find-status').textContent=`${result.repositories} repositories inspected · metadata fetched ${new Date(result.fetched_at*1000).toLocaleString()}. ${result.warning||''}`;
  }catch(e){$('find-status').textContent=e.message;}
  finally{findBusy=false;$('find-search').disabled=$('find-refresh').disabled=false;}
@@ -738,7 +742,7 @@ $('find-refresh').onclick=()=>searchHF(true);
 $('find-clear').onclick=()=>{for(const input of $('find-table').querySelectorAll('thead input'))input.value='';renderFind();};
 for(const id of ['find-suitable','find-instruct','find-quants'])$(id).onchange=renderFind;
 $('find-table').querySelector('thead').oninput=renderFind;
-$('find-table').querySelector('thead').onclick=e=>{const b=e.target.closest('[data-find-sort]');if(!b)return;const key=b.dataset.findSort;findSort={key,direction:findSort.key===key?-findSort.direction:1};renderFind();};
+$('find-table').querySelector('thead').onclick=e=>{const b=e.target.closest('[data-find-sort]');if(!b)return;const key=b.dataset.findSort;findSort=findSort.key!==key?{key,direction:1}:findSort.direction===1?{key,direction:-1}:{key:null,direction:0};renderFind();};
 $('find-table').querySelector('tbody').onclick=async e=>{
  const b=e.target.closest('[data-find-add]');if(!b||b.disabled)return;b.disabled=true;
  try{await api('/api/catalogue/add',{id:b.dataset.findAdd});await loadCatalogue();}catch(error){$('find-status').textContent=error.message;b.disabled=false;}

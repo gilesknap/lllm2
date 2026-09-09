@@ -4,7 +4,10 @@ Open **Find models** to search public, ungated GGUF repositories on Hugging Face
 A blank search inspects up to 30 popular repositories; enter a model or publisher
 to narrow the search. The pane reads metadata only until you queue a download.
 
-Click a column heading to sort in either direction. Use the filters below each
+Click a column heading to cycle through ascending, descending and no sort
+(the original suggestion order). Results scroll within a short window, keeping
+the horizontal scrollbar and catalogue close by. Titles and filters stay visible
+while scrolling vertically. Use the filters below each
 heading to match text or set numeric minimums and maximums. These filters apply
 to the fetched batch. **Clear column filters** resets them. The initial view
 shows likely suitable chat, instruct and coding models with 4–8 bit quantisations;

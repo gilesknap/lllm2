@@ -49,6 +49,16 @@ const assert=require('node:assert/strict');
  assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),2);
  await run("$('find-table').querySelector('[data-find-sort=size_gb]').click();$('find-table').querySelector('[data-find-sort=size_gb]').click()");
  assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Large/);
+ await run("$('find-table').querySelector('[data-find-sort=size_gb]').click()");
+ assert.equal(await run("$('find-table').querySelector('[data-find-sort=size_gb]').closest('th').getAttribute('aria-sort')"),'none');
+ assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Small/);
+ // Many rows scroll inside the fixed viewport; titles and filters never overlap.
+ await run("window.originalFindEntries=findEntries;findEntries=Array.from({length:40},(_,i)=>({...originalFindEntries[i%2],id:'row-'+i}));renderFind()");
+ assert.equal(await run("$('find-results-scroll').clientHeight<=300&&$('find-results-scroll').scrollHeight>$('find-results-scroll').clientHeight"),true);
+ await run("$('find-results-scroll').scrollTop=200;$('find-results-scroll').scrollLeft=900");
+ assert.equal(await run("(()=>{const input=$('find-table').querySelector('[data-find-filter=task]'),r=input.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===input;})()"),true);
+ await run("$('find-results-scroll').scrollTop=0;$('find-results-scroll').scrollLeft=0;findEntries=originalFindEntries;renderFind()");
+
  await run("const input=$('find-table').querySelector('[data-find-max=size_gb]');input.value='5';input.dispatchEvent(new Event('input',{bubbles:true}))");
  assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),1);
  assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Small/);
