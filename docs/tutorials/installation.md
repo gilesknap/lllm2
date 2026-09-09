@@ -42,7 +42,7 @@ To find another model, enter its name in **Search Hugging Face**, click
 :alt: My catalogue card in Find models, with Queue download beside a saved model.
 :width: 760px
 
-Queue a download from My catalogue. Screenshots use example data.
+Queue a download from My catalogue.
 ```
 
 Once the download finishes, click **Launch model** in the top navigation and
