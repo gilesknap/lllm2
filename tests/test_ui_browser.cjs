@@ -52,9 +52,19 @@ const assert=require('node:assert/strict');
  await run("$('find-table').querySelector('[data-find-sort=size_gb]').click()");
  assert.equal(await run("$('find-table').querySelector('[data-find-sort=size_gb]').closest('th').getAttribute('aria-sort')"),'none');
  assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Small/);
+ // Include and exclude terms compose within a column and across columns.
+ await run("const nameFilter=$('find-table').querySelector('[data-find-filter=display_name]');nameFilter.value='!sMaLl LAR';nameFilter.dispatchEvent(new Event('input',{bubbles:true}))");
+ assert.deepEqual(await run("filteredFindEntries().map(e=>e.display_name)"),['Large']);
+ await run("$('find-table').querySelector('[data-find-filter=license]').value='!mit';renderFind()");
+ assert.equal(await run('filteredFindEntries().length'),0);
+ await run("$('find-clear').click();$('find-table').querySelector('[data-find-filter=task]').value='!'+String.fromCharCode(34)+'chat / instruct'+String.fromCharCode(34);renderFind()");
+ assert.deepEqual(await run("filteredFindEntries().map(e=>e.display_name)"),['Large']);
+ await run("$('find-clear').click();$('find-table').querySelector('[data-find-filter=display_name]').value='!';renderFind()");
+ assert.equal(await run('filteredFindEntries().length'),2);
+ await run("$('find-clear').click()");
  // Many rows scroll inside the fixed viewport; titles and filters never overlap.
  await run("window.originalFindEntries=findEntries;findEntries=Array.from({length:40},(_,i)=>({...originalFindEntries[i%2],id:'row-'+i}));renderFind()");
- assert.equal(await run("$('find-results-scroll').clientHeight<=300&&$('find-results-scroll').scrollHeight>$('find-results-scroll').clientHeight"),true);
+ assert.equal(await run("$('find-results-scroll').clientHeight<=440&&$('find-results-scroll').scrollHeight>$('find-results-scroll').clientHeight"),true);
  await run("$('find-results-scroll').scrollTop=200;$('find-results-scroll').scrollLeft=900");
  assert.equal(await run("(()=>{const input=$('find-table').querySelector('[data-find-filter=task]'),r=input.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===input;})()"),true);
  await run("$('find-results-scroll').scrollTop=0;$('find-results-scroll').scrollLeft=0;findEntries=originalFindEntries;renderFind()");

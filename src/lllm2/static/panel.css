@@ -1280,7 +1280,7 @@ section[tabindex="-1"], #comparisons {
 }
 
 /* Keep both scrollbars near the catalogue, with titles and filters visible. */
-#find-results-scroll {height:300px;max-height:40vh;overflow:scroll;scrollbar-gutter:stable;border:1px solid var(--rule);border-radius:8px}
+#find-results-scroll {height:440px;max-height:65vh;overflow:scroll;scrollbar-gutter:stable;border:1px solid var(--rule);border-radius:8px}
 #find-table {min-width:1900px;width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed}
 #find-table thead {position:sticky;top:0;z-index:1;background:var(--card)}
 #find-table th {vertical-align:middle;padding:10px 8px 4px;width:170px;white-space:normal}
@@ -1295,5 +1295,12 @@ section[tabindex="-1"], #comparisons {
 #find-table td small {display:block;margin-top:5px;color:var(--dim)}
 #remove-model-dialog {max-width:720px;width:90%}
 #remove-model-files {white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
+#find-form {align-items:flex-end}
+#find-query,#find-form>button {height:40px}
 #find-form label {min-width:240px;flex:1 1 240px!important}
 @media(max-width:600px) {#find-form label {flex-basis:100%!important}}
+
+/* Catalogue membership stays visible beside the model name. */
+#find-table .find-in-catalogue td {color:var(--dim);background:color-mix(in srgb,var(--rule) 22%,var(--card))}
+#find-table .find-in-catalogue td a {color:var(--dim)}
+.find-catalogue-badge {display:inline-block;margin:4px 0 0 6px;padding:2px 6px;border:1px solid var(--rule);border-radius:4px;background:var(--card);color:var(--dim);font-size:11px;white-space:nowrap}

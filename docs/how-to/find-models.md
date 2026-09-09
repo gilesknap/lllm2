@@ -8,7 +8,10 @@ Click a column heading to cycle through ascending, descending and no sort
 (the original suggestion order). Results scroll within a short window, keeping
 the horizontal scrollbar and catalogue close by. Titles and filters stay visible
 while scrolling vertically. Use the filters below each
-heading to match text or set numeric minimums and maximums. These filters apply
+heading to match text or set numeric minimums and maximums. Text filters require
+all space-separated terms and ignore case. Prefix a term with `!` to exclude it:
+`!Qwen 29` excludes names containing “Qwen” and requires “29”. Double quotes
+group a phrase: `!"Qwen 29"` excludes that phrase while allowing other Qwen models. These filters apply
 to the fetched batch. **Clear column filters** resets them. The initial view
 shows likely suitable chat, instruct and coding models with 4–8 bit quantisations;
 uncheck those options to see other variants. Sort by **Model** to group variants

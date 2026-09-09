@@ -69,6 +69,7 @@
 <div class="row"><label class="check"><input id="find-suitable" type="checkbox" checked>Likely suitable only</label><label class="check"><input id="find-instruct" type="checkbox" checked>Chat / instruct / coding only</label><label class="check"><input id="find-quants" type="checkbox" checked>Prefer 4–8 bit variants</label><button id="find-clear" type="button">Clear column filters</button></div>
 
 <div class="scroll" id="find-results-scroll" tabindex="0" role="region" aria-label="Model results, scroll to see more rows and columns"><table id="find-table"><caption class="visually-hidden">Hugging Face model variants</caption><thead></thead><tbody></tbody></table></div>
+<p id="find-filter-help" class="muted">Text filters: <code>!Qwen 29</code> excludes “Qwen” and requires “29”. Use quotes for phrases, e.g. <code>!"Qwen 29"</code>. Matching ignores case.</p>
 <p id="find-count" role="status"></p></section>
 <section class="card"><h2>My catalogue</h2><p class="muted">Saved locally. Removing an entry can also delete its managed weights; saved experiments and settings are kept.</p><div id="catalog" aria-label="Model catalogue"></div></section>
 <section class="card"><section id="download-section" aria-label="Downloads" hidden><h3>Downloads</h3><div id="active-downloads"></div><p id="download-notice" role="status"></p></section></section>
