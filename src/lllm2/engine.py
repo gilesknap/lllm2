@@ -50,6 +50,7 @@ def gpu_processes(output):
         "firefox",
         "nautilus",
         "gnome-shell",
+        "gnome-system-monitor",
         "gnome-terminal-server",
         "xorg",
         "xwayland",
