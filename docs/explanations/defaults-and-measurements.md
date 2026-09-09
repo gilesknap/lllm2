@@ -18,7 +18,7 @@ the workload checks and failure evidence too.
 
 Context search tests large prompts and an output budget, retaining failed
 probes. A timeout is inconclusive, rather than proof of a memory limit.
-Try in Launch defaults to **Use tested context**, the largest successful probe.
-**Use 90% of tested context** selects a smaller, rounded-down estimate instead.
-Clear both options to keep the original context. Neither choice
+Try in Launch defaults to **Tested** context, the largest successful probe.
+**90%** selects a smaller, rounded-down estimate instead, and **Original**
+keeps the experiment's own context. Neither measured choice
 guarantees the same result with different workloads or memory use.

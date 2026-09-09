@@ -42,11 +42,12 @@ To find another model, enter its name in **Search Hugging Face**, click
 :alt: My catalogue card in Find models, with Queue download beside a saved model.
 :width: 760px
 
-Queue a download from My catalogue. Screenshots use example data.
+Queue a download from My catalogue.
 ```
 
 Once the download finishes, click **Launch model** in the top navigation and
-select the model under **Installed**. Already downloaded one? Start here.
+select the model under **Choose a model** (**Find more models →** takes you back
+to the catalogue). Already downloaded one? Start here.
 
 ## 2. Find its context window
 
@@ -64,13 +65,13 @@ Wait for the run to finish; context probes can take several minutes.
 Keep the defaults for your first baseline.
 ```
 
-Scroll further down to **Experiment history**. In the completed run's row,
-leave **Use tested context** checked and click **Try in Launch** to use the full
-successful context. Selecting **Use 90% of tested context** leaves some headroom;
-clearing both boxes keeps the experiment's original context.
+Scroll further down to **Experiment history**. Click the **▸** at the start of
+the completed run's row to expand it. Leave **Tested** selected under **Context**
+and click **Try in Launch** to use the full successful context. **90%** leaves
+some headroom; **Original** keeps the experiment's original context.
 
 ```{figure} ../images/tutorial-history.png
-:alt: Completed baseline row with Try in Launch and the two context checkboxes.
+:alt: Completed baseline row expanded, showing Try in Launch and the three context choices.
 :width: 760px
 
 Try in Launch brings the selected settings back to the Launch view.
