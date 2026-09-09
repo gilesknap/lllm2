@@ -1,5 +1,10 @@
 # UI improvements: open the panel, start a recommended model
 
+> **Historical record — not current instructions.** Archived 9 September 2026.
+> Scope, permissions, paths and next steps below describe the original session.
+> Use the [maintained documentation](../index.md) for current behaviour and
+> development guidance. See the [archive index](index.md) for context.
+
 Status: all four implementation slices complete; awaiting user review.
 Requested 6 September 2026; implementation authorized after the performance work finished.
 Rebased onto main at `09e50aa` before implementation.

@@ -1,5 +1,10 @@
 # RTX local inference performance review
 
+> **Historical record — not current instructions.** Archived 9 September 2026.
+> Scope, permissions, paths and next steps below describe the original session.
+> Use the [maintained documentation](../index.md) for current behaviour and
+> development guidance. See the [archive index](index.md) for context.
+
 Research date: 6 September 2026. Archived from the conversation at the user's
 request. This is a dated research snapshot, not a record of new local benchmarks.
 Implementation priorities and progress live in [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md).
