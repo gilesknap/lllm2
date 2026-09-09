@@ -1278,3 +1278,17 @@ section[tabindex="-1"], #comparisons {
 #combination-heading {
   margin: 0;
 }
+
+/* Metadata discovery uses a wide, horizontally scrollable comparison table. */
+#find-table {min-width:1500px;width:100%}
+#find-table th {vertical-align:top;min-width:110px}
+#find-table th:first-child {min-width:240px}
+#find-table th input {display:block;width:100%;min-width:0;margin-top:6px}
+#find-table td {vertical-align:top;white-space:normal;overflow-wrap:anywhere}
+#find-table td small {display:block;margin-top:5px;color:var(--muted)}
+#find-table td:nth-child(5) {min-width:220px}
+#remove-model-dialog {max-width:720px;width:90%}
+#remove-model-files {white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
+#find-form label {min-width:240px;flex:1 1 240px!important}
+#find-table th:last-child,#find-table td:last-child {position:sticky;right:0;min-width:140px;background:var(--card);box-shadow:-4px 0 8px #0002}
+@media(max-width:600px) {#find-form label {flex-basis:100%!important}}

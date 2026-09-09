@@ -271,8 +271,19 @@ function fill(s){
 }
 function rememberDraft(){drafts[view]={settings:settings(),defaults:loadedDefaults,engineOverride,savedExists,selectionNote};}
 async function switchView(next){
- if(next===view)return;
+ if(next==='find'){
+  queuedView=null;
+  $('launch-view').hidden=true;$('experiments-view').hidden=true;$('find-view').hidden=false;
+  for(const name of ['launch','experiments','find'])$('nav-'+name).setAttribute('aria-current',name===next?'page':'false');
+  $('skip-content').href='#find-view';
+  await loadCatalogue();if(!findLoaded)await searchHF();return;
+ }
  if(resolving||scanPending){queuedView=next;return;}
+ $('find-view').hidden=true;
+ $('launch-view').hidden=next!=='launch';$('experiments-view').hidden=next!=='experiments';
+ for(const name of ['launch','experiments','find'])$('nav-'+name).setAttribute('aria-current',name===next?'page':'false');
+ $('skip-content').href='#'+next+'-view';
+ if(next===view)return;
  rememberDraft();selectionSequence++;validationSequence++;clearTimeout(editTimer);resolving=false;validationSnapshot='';
  view=next;
  $('skip-content').href='#'+next+'-view';
@@ -292,8 +303,8 @@ async function switchView(next){
  fill(d.settings);renderRecommendations();await inspect();
  if(next==='experiments')await refreshResults();
 }
-for(const [id,next] of [['nav-launch','launch'],['nav-experiments','experiments']])$(id).onclick=e=>{e.preventDefault();location.hash=next;attempt(()=>switchView(next));};
-window.addEventListener('hashchange',()=>attempt(()=>switchView(location.hash==='#experiments'?'experiments':'launch')));
+for(const [id,next] of [['nav-launch','launch'],['nav-experiments','experiments'],['nav-find','find']])$(id).onclick=e=>{e.preventDefault();location.hash=next;attempt(()=>switchView(next));};
+window.addEventListener('hashchange',()=>attempt(()=>switchView(location.hash==='#find'?'find':location.hash==='#experiments'?'experiments':'launch')));
 function finishNavigation(){if(queuedView&&!resolving&&!scanPending){const next=queuedView;queuedView=null;attempt(()=>switchView(next));}}
 function defaultState(){
  if(!$('summary-title'))return;
@@ -404,26 +415,22 @@ function renderMarkup(id,markup){
  for(const id of open){const el=$(id);if(el)el.open=true;}
  if(focused)($(focused)||$('filter-'+modelFilter))?.focus({preventScroll:true});
 }
-function setModelFilter(filter){modelFilter=filter;renderRecommendations();}
+function setModelFilter(filter){if(filter==='catalog'){location.hash='find';attempt(()=>switchView('find'));return;}modelFilter='installed';renderRecommendations();}
 function renderRecommendations(){
  const catalog=discovered.catalog||[],models=discovered.models||[],selected=currentLaunch()?.model;
  const rank=m=>catalog.find(c=>c.id===m.catalog_id)?.recommendation?.rank||999;
  const rows=[...models].sort((a,b)=>rank(a)-rank(b)||a.path.localeCompare(b.path));
  $('filter-installed').textContent=`Installed (${models.length})`;$('filter-catalog').textContent=`Browse catalogue (${catalog.length})`;
  $('filter-installed').setAttribute('aria-pressed',String(modelFilter==='installed'));$('filter-catalog').setAttribute('aria-pressed',String(modelFilter==='catalog'));
- $('recommended-list').hidden=modelFilter!=='installed';$('catalog').hidden=modelFilter!=='catalog';
+ $('recommended-list').hidden=false;$('catalog').hidden=false;
  const badge=c=>c?.recommendation?` <span class="pill">${esc(c.recommendation.label)}</span>`:'';
  const details=(id,text)=>`<details id="${esc(id)}"><summary id="${esc(id)}-summary">Variant & location</summary>${esc(text)}</details>`;
  renderMarkup('recommended-list',rows.map(m=>{
   const c=catalog.find(c=>c.id===m.catalog_id),recommended=m.identity_verified?c:null;
   return `<div class="model-choice ${selected===m.path?'selected':''}"><div><b>${esc(modelName(m.path))}</b>${badge(recommended)}<small>${esc(c?.recommendation?.variant||c?.file||m.path.split('/').pop())} · Installed</small>${recommended?.recommendation?`<small>${esc(recommended.recommendation.description)}</small>`:''}${details('installed-detail-'+encodeURIComponent(m.path),m.path+(m.identity_verified?' · Verified checkpoint identity':' · No measured identity verified'))}</div><button id="installed-use-${esc(encodeURIComponent(m.path))}" aria-label="${esc(selected===m.path?'Selected: ':'Use model: ')}${esc(modelName(m.path))} · ${esc(m.path)}" data-select-model="${esc(m.path)}" ${selected===m.path?'disabled':''}>${selected===m.path?'Selected':'Use this model'}</button></div>`;
  }).join('')||'<p class="muted">No installed models found. Browse the catalogue to download one, or check your model locations below.</p><button id="empty-browse">Browse models</button>');
- renderMarkup('catalog',[...catalog].sort((a,b)=>(a.recommendation?.rank||999)-(b.recommendation?.rank||999)).map(c=>{
-  const copies=models.filter(m=>m.catalog_id===c.id),installed=copies.find(m=>m.path===selected)||copies[0];
-  const d=(statusState.downloads||[]).find(d=>d.id===c.id),active=d&&['queued','downloading'].includes(d.state);
-  return `<div class="model-choice"><div><b>${esc(c.recommendation?.name||c.name)}</b>${badge(c)}<small>${esc(c.recommendation?.variant||c.file)} · ${installed?'Installed':`${c.size_gb} GB · Available`}</small>${c.recommendation?`<small>${esc(c.recommendation.description)}</small>`:''}${details('catalog-detail-'+c.id,c.repo+' / '+c.file+(copies.length>1?' · Multiple copies: choose an exact path in Installed.':''))}</div>${installed&&!active?`<button id="catalog-use-${esc(c.id)}" aria-label="Use ${esc(c.name)} · ${esc(c.file)}" data-select-model="${esc(installed.path)}" ${installed.path===selected?'disabled':''}>${installed.path===selected?'Selected':'Use this model'}</button>`:`<button id="catalog-download-${esc(c.id)}" aria-label="${active?'Cancel download of':'Download'} ${esc(c.name)} · ${esc(c.file)}" data-download="${esc(c.id)}" data-active="${!!active}">${active?'Cancel download':d&&['error','cancelled'].includes(d.state)?'Retry download':'Download'}</button>`}</div>`;
- }).join('')||'<p class="muted">Catalogue unavailable. Check again to refresh discovery.</p>');
- $('model-browser-note').textContent=modelFilter==='catalog'?'Recommendations and speed evidence are from RTX 3090 workloads. Starting settings are qualified for your selected hardware.':'';
+ renderCatalogue();
+ $('model-browser-note').textContent='';
  modelControlsState();
 }
 function renderDownloads(){
@@ -433,20 +440,17 @@ function renderDownloads(){
  renderMarkup('active-downloads',ds.map(d=>`<div class="download-row" id="download-${esc(d.id)}"><div class="row"><div><h3>${esc(d.name)}</h3><small data-download-status></small></div><button id="download-action-${esc(d.id)}"></button></div><progress aria-label="${esc(d.name)} download progress"></progress><details id="download-detail-${esc(d.id)}"><summary id="download-summary-${esc(d.id)}">Download details</summary><small data-download-detail></small></details></div>`).join(''));
  for(const d of ds){
   const row=$('download-'+d.id),active=['queued','downloading'].includes(d.state),button=$('download-action-'+d.id);
-  const installed=discovered.models?.find(m=>m.path===d.target)||discovered.models?.find(m=>m.catalog_id===d.id);
   row.querySelector('[data-download-status]').textContent=`${d.state==='complete'?'Downloaded':d.state} · ${d.done_gb??0} / ${d.total_gb||'unknown'} GB${active?` · ${d.rate_mib_s??0} MiB/s`:''}`;
   row.querySelector('[data-download-detail]').textContent=[d.target,d.file,d.detail].filter(Boolean).join(' · ');
   const progress=row.querySelector('progress');progress.max=100;if(d.total_gb)progress.value=Math.min(100,Math.max(0,d.percent||0));else progress.removeAttribute('value');progress.hidden=!active;
   delete button.dataset.selectModel;delete button.dataset.download;delete button.dataset.active;
   if(d.state==='complete'){
-   button.textContent=installed?'Use this model':'Verify download';
-   if(installed){delete button.dataset.verify;button.dataset.selectModel=installed.path;}
-   else button.dataset.verify='true';
-  }else{delete button.dataset.verify;button.textContent=active?'Cancel download':'Retry download';button.dataset.download=d.id;button.dataset.active=String(active);}
+   button.hidden=true;delete button.dataset.verify;
+  }else{button.hidden=false;delete button.dataset.verify;button.textContent=active?'Cancel download':'Retry download';button.dataset.download=d.id;button.dataset.active=String(active);}
   button.setAttribute('aria-label',button.textContent+' · '+d.name);
   button.disabled=!connected||resolving||scanPending||pendingAction;
  }
- const notice=ds.some(d=>d.state==='complete')?'Download complete. Choose Use this model when you are ready; your current selection is preserved.':ds.some(d=>d.state==='error')?'A download failed. Open its details, then retry.':ds.some(d=>['queued','downloading'].includes(d.state))?'Downloading to the model workstation. You can continue using the panel.':'';
+ const notice=ds.some(d=>d.state==='complete')?'Download complete. Open Launch or Experiments to use the model.':ds.some(d=>d.state==='error')?'A download failed. Open its details, then retry.':ds.some(d=>['queued','downloading'].includes(d.state))?'Downloading to the model workstation. You can continue using the panel.':'';
  if($('download-notice').textContent!==notice)$('download-notice').textContent=notice;
  renderRecommendations();
 }
@@ -465,7 +469,7 @@ async function scan(){
   const running=statusState.engine?.running?statusState.engine.settings:statusState.job?.kind==='launch'&&statusState.job?.active?statusState.job.settings:null;
   if(initial&&running){loadedDefaults={settings:running,mode:'running',source:'Current model settings',notes:['Showing the current operation. No saved preferences changed.']};fill(running);await inspect();}
   else if(before.model){fill(before);await inspect();}
-  else if(initial){if(!data.models.length)modelFilter='catalog';await selectModel('');}
+  else if(initial){await selectModel('');}
   else{fill(before);await inspect();}
  }catch(e){if(n===selectionSequence)validationError='Discovery failed: '+e.message;}
  finally{scanPending=false;if(n===selectionSequence)resolving=false;defaultState();renderDownloads();launchState();finishNavigation();}
@@ -556,7 +560,7 @@ async function poll(){
 $('refresh').onclick=()=>attempt(scan);
 $('filter-installed').onclick=()=>setModelFilter('installed');
 $('filter-catalog').onclick=()=>setModelFilter('catalog');
-$('browse-models').onclick=()=>{setModelFilter('catalog');$('filter-catalog').focus();};
+$('browse-models').onclick=()=>{setModelFilter('catalog');$('nav-find').focus();};
 $('retry-setup').onclick=()=>attempt(async()=>{await poll();await scan();});
 function customize(open){$('customize').hidden=!open;$('customize-toggle').setAttribute('aria-expanded',String(open));}
 $('customize-toggle').onclick=()=>customize($('customize').hidden);
@@ -608,7 +612,7 @@ document.querySelectorAll('[data-agent]').forEach(b=>b.onclick=()=>{
 });
 async function downloadClick(e){
  if(e.target.closest('[data-verify]')){await scan();return;}
- if(e.target.closest('#empty-browse')){setModelFilter('catalog');$('filter-catalog').focus();return;}
+ if(e.target.closest('#empty-browse')){setModelFilter('catalog');$('nav-find').focus();return;}
  const variant=e.target.closest('[data-select-model]');
  if(variant){if(variant.disabled)return;await selectModel(variant.dataset.selectModel);return;}
  const b=e.target.closest('[data-download]');if(!b||b.disabled)return;
@@ -616,7 +620,7 @@ async function downloadClick(e){
  try{await api(b.dataset.active==='true'?'/api/download/cancel':'/api/download',{id});await poll();}
  finally{pendingDownloads.delete(id);renderDownloads();}
 }
-for(const id of ['catalog','recommended-list','active-downloads'])$(id).onclick=e=>attempt(()=>downloadClick(e));
+for(const id of ['recommended-list','active-downloads'])$(id).onclick=e=>attempt(()=>downloadClick(e));
 $('use-launch-settings').onclick=()=>attempt(async()=>{
  if(view!=='experiments')return;
  selectionSequence++;clearTimeout(editTimer);resolving=false;const d=structuredClone(drafts.launch);loadedDefaults=d.defaults;engineOverride=d.engineOverride;fill(d.settings);resetExperimentCeiling();await inspect();
@@ -671,4 +675,87 @@ $('load-experiment').onclick=()=>attempt(async()=>{
 $('experiment-picker-close').onclick=()=>{pickerSequence++;$('experiment-picker').close();};
 $('experiment-picker').addEventListener('cancel',()=>pickerSequence++);
 $('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if(!b||b.disabled)return;$('experiment-picker').close();attempt(()=>previewResult(b.dataset.result,b.dataset.headroom==='true'));};
-(async()=>{await poll();await scan();if(location.hash==='#experiments')await switchView('experiments');slotNote();setInterval(poll,2500);})();
+// Find models keeps discovery and catalogue actions separate from launch drafts.
+let findLoaded=false,findBusy=false,findEntries=[],removingId=null;
+let findSort={key:'fit_rank',direction:1};
+const findColumns=[['display_name','Model'],['repo','Publisher / repository'],['quant','Quantisation'],['size_gb','Size GB','number'],['fit','Suitability'],['task','Task'],['downloads','Downloads','number'],['likes','Likes','number'],['updated','Updated'],['license','Licence']];
+$('find-table').querySelector('thead').innerHTML='<tr>'+findColumns.map(([key,label,type])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}">${label} ↕</button>${type==='number'?`<input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max">`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" placeholder="Filter">`}</th>`).join('')+'<th scope="col">Catalogue</th></tr>';
+function filteredFindEntries(){
+ return findEntries.filter(e=>{
+  if($('find-suitable').checked&&e.fit_rank>1)return false;
+  if($('find-instruct').checked&&!e.instruct)return false;
+  if($('find-quants').checked&&!/^(?:I?Q)[4-8]/.test(e.quant))return false;
+  for(const input of $('find-table').querySelectorAll('[data-find-filter]'))if(!String(e[input.dataset.findFilter]??'').toLowerCase().includes(input.value.toLowerCase()))return false;
+  for(const input of $('find-table').querySelectorAll('[data-find-min],[data-find-max]')){
+   if(input.value==='')continue;
+   const key=input.dataset.findMin||input.dataset.findMax,value=e[key];
+   if(value==null||(input.dataset.findMin?value<Number(input.value):value>Number(input.value)))return false;
+  }
+  return true;
+ }).sort((a,b)=>{
+  const av=a[findSort.key],bv=b[findSort.key];
+  if(av==null||bv==null)return av==null?(bv==null?0:1):-1;
+  const comparison=typeof av==='number'?av-bv:String(av).localeCompare(String(bv));
+  return comparison*findSort.direction||(findSort.key==='fit_rank'?(b.downloads-a.downloads||b.updated.localeCompare(a.updated)):0)||a.repo.localeCompare(b.repo)||a.file.localeCompare(b.file);
+ });
+}
+function renderFind(){
+ const rows=filteredFindEntries();
+ for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
+  const key=button.dataset.findSort,active=key===findSort.key;
+  button.parentElement.setAttribute('aria-sort',active?(findSort.direction===1?'ascending':'descending'):'none');
+  button.textContent=findColumns.find(c=>c[0]===key)[1]+(active?(findSort.direction===1?' ↑':' ↓'):' ↕');
+ }
+ $('find-table').querySelector('tbody').innerHTML=rows.map(e=>{
+  const saved=(discovered.catalog||[]).some(c=>c.repo===e.repo&&c.file===e.file);
+  return '<tr>'+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a><small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+`<td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td></tr>`;
+ }).join('')||'<tr><td colspan="11">No matching variants. Try a different search or relax the filters.</td></tr>';
+ $('find-count').textContent=`${rows.length} of ${findEntries.length} variants shown.`;
+}
+async function searchHF(refresh=false){
+ if(findBusy)return;findBusy=true;$('find-search').disabled=$('find-refresh').disabled=true;
+ $('find-status').textContent='Reading Hugging Face metadata…';
+ try{
+  const result=await api('/api/models/find',{query:$('find-query').value,refresh});
+  findEntries=result.entries;findLoaded=true;renderFind();
+  $('find-status').textContent=`${result.repositories} repositories inspected · metadata fetched ${new Date(result.fetched_at*1000).toLocaleString()}. ${result.warning||''}`;
+ }catch(e){$('find-status').textContent=e.message;}
+ finally{findBusy=false;$('find-search').disabled=$('find-refresh').disabled=false;}
+}
+async function loadCatalogue(){
+ const result=await api('/api/catalogue',{});discovered.catalog=result.entries;renderRecommendations();renderFind();
+}
+function renderCatalogue(){
+ const entries=discovered.catalog||[];
+ renderMarkup('catalog',entries.map(e=>{
+  const job=(statusState.downloads||[]).find(d=>d.id===e.id),active=job&&['queued','downloading'].includes(job.state);
+  const installed=e.installed===true||(e.installed===undefined&&job?.state==='complete');
+  return `<div class="model-choice"><div><b>${esc(e.display_name||e.name)}</b><small>${esc(e.repo)} · ${esc(e.quant||e.file)} · ${esc(e.size_gb??'Unknown')} GB</small><small>${esc(e.fit||'')} ${installed?' · Downloaded':''}</small></div><div class="row">${installed&&!active?'<span class="pill">Downloaded</span>':`<button id="catalog-download-${esc(e.id)}" data-download="${esc(e.id)}" data-active="${!!active}">${active?'Cancel download':'Queue download'}</button>`}<button data-catalogue-remove="${esc(e.id)}" ${active?'disabled':''}>Remove…</button></div></div>`;
+ }).join('')||'<p>Your catalogue is empty. Add a variant from the results above.</p>');
+}
+$('find-form').onsubmit=e=>{e.preventDefault();searchHF();};
+$('find-refresh').onclick=()=>searchHF(true);
+$('find-clear').onclick=()=>{for(const input of $('find-table').querySelectorAll('thead input'))input.value='';renderFind();};
+for(const id of ['find-suitable','find-instruct','find-quants'])$(id).onchange=renderFind;
+$('find-table').querySelector('thead').oninput=renderFind;
+$('find-table').querySelector('thead').onclick=e=>{const b=e.target.closest('[data-find-sort]');if(!b)return;const key=b.dataset.findSort;findSort={key,direction:findSort.key===key?-findSort.direction:1};renderFind();};
+$('find-table').querySelector('tbody').onclick=async e=>{
+ const b=e.target.closest('[data-find-add]');if(!b||b.disabled)return;b.disabled=true;
+ try{await api('/api/catalogue/add',{id:b.dataset.findAdd});await loadCatalogue();}catch(error){$('find-status').textContent=error.message;b.disabled=false;}
+};
+$('catalog').onclick=e=>attempt(async()=>{
+ const remove=e.target.closest('[data-catalogue-remove]');if(!remove){await downloadClick(e);return;}if(remove.disabled)return;
+ const preview=await api('/api/catalogue/removal-preview',{id:remove.dataset.catalogueRemove});
+ removingId=remove.dataset.catalogueRemove;$('remove-model-name').textContent=preview.name;
+ $('remove-model-files').textContent=preview.paths.join('\n')||'No managed weights or partial downloads found.';
+ $('remove-model-weights').checked=false;$('remove-model-confirm').textContent='Remove from catalogue';$('remove-model-error').textContent='';$('remove-model-dialog').showModal();
+});
+$('remove-model-weights').onchange=()=>{$('remove-model-confirm').textContent=$('remove-model-weights').checked?'Remove and delete weights':'Remove from catalogue';};
+$('remove-model-cancel').onclick=()=>$('remove-model-dialog').close();
+$('remove-model-confirm').onclick=async()=>{
+ $('remove-model-confirm').disabled=true;
+ try{await api('/api/catalogue/remove',{id:removingId,delete_weights:$('remove-model-weights').checked});$('remove-model-dialog').close();$('find-query').focus();await scan();await loadCatalogue();await poll();}
+ catch(e){$('remove-model-error').textContent=e.message;}
+ finally{$('remove-model-confirm').disabled=false;}
+};
+(async()=>{await poll();await scan();if(['#find','#experiments'].includes(location.hash))await switchView(location.hash.slice(1));slotNote();setInterval(poll,2500);})();

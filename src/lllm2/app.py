@@ -12,8 +12,9 @@ from urllib.parse import urlparse
 
 from . import __version__, config, downloads
 from .bench import WORKLOADS, Bench
+from .catalogue import Catalogue, Finder, local_paths, suitability
 from .defaults import starting_defaults
-from .discovery import CATALOG, engines, hardware, probe
+from .discovery import engines, hardware, probe
 from .engine import Cancelled, Engine
 from .launch import choose_launch, installed_models
 from .recommendations import promotion_provenance, saved_qualifications
@@ -24,10 +25,25 @@ from .store import Store
 class App:
     def __init__(self):
         self.store = Store()
+        self.catalogue = Catalogue(self.store)
+        self.finder = Finder(self.store)
         self.engine = Engine()
         self.bench = Bench(self.engine, self.store)
         self.token = secrets.token_urlsafe(32)
         self.start_requests = {}
+
+    def catalogue_view(self):
+        host = hardware()
+        entries = self.catalogue.list()
+        for entry in entries:
+            paths = local_paths(entry)
+            entry.update(
+                suitability(
+                    entry.get("size_bytes") or (entry.get("size_gb") or 0) * 1e9, host
+                )
+            )
+            entry["installed"] = all(p.is_file() for p in paths)
+        return entries
 
     def default_key(self, s):
         return str(Path(s.model).expanduser().resolve()) + "|" + s.backend
@@ -66,9 +82,9 @@ class App:
             }
         if path == "/api/discover":
             return {
-                "models": installed_models(),
+                "models": installed_models(self.catalogue.list()),
                 "engines": engines(),
-                "catalog": CATALOG,
+                "catalog": self.catalogue_view(),
             }
         if path == "/api/launch/select":
             return choose_launch(
@@ -76,6 +92,7 @@ class App:
                 data.get("engine", ""),
                 data.get("backend", ""),
                 data.get("device", ""),
+                catalogue=self.catalogue.list(),
             )
         if path == "/api/launch/check":
             s = Settings.parse(data["settings"])
@@ -275,11 +292,50 @@ class App:
 
             threading.Thread(target=start, daemon=True).start()
             return {"ok": True}
+        if path == "/api/models/find":
+            return self.finder.search(
+                data.get("query", ""), hardware(), data.get("refresh") is True
+            )
+        if path == "/api/catalogue":
+            return {"entries": self.catalogue_view()}
+        if path == "/api/catalogue/add":
+            return self.catalogue.add(self.finder.candidate(data["id"]))
+        if path == "/api/catalogue/removal-preview":
+            entry = self.catalogue.get(data["id"])
+            return {
+                "name": entry.get("display_name", entry["name"]),
+                "paths": [
+                    str(p)
+                    for path in local_paths(entry)
+                    for p in (path, path.with_suffix(path.suffix + ".part"))
+                    if p.exists()
+                ],
+            }
+        if path == "/api/catalogue/remove":
+            with self.catalogue.lock, self.bench.lock:
+                entry = self.catalogue.get(data["id"])
+                running = self.engine.state()
+                if data.get("delete_weights") is True and self.bench.active:
+                    raise ValueError(
+                        "Wait for the current operation before deleting weights."
+                    )
+                settings = running.get("settings") or {}
+                protected = (
+                    [settings.get("model"), settings.get("drafter")]
+                    if running.get("running")
+                    else []
+                )
+                downloads.remove(
+                    entry,
+                    data.get("delete_weights") is True,
+                    protected,
+                    [e for e in self.catalogue.list() if e["id"] != entry["id"]],
+                )
+                self.catalogue.remove(entry["id"])
+            return {"ok": True}
         if path == "/api/download":
-            entry = next((e for e in CATALOG if e["id"] == data["id"]), None)
-            if entry is None:
-                raise ValueError("Unknown catalogue model.")
-            return downloads.start(entry).as_dict()
+            with self.catalogue.lock:
+                return downloads.start(self.catalogue.get(data["id"])).as_dict()
         if path == "/api/download/cancel":
             return {"cancelled": downloads.cancel(data["id"])}
         raise ValueError("Unknown action")
@@ -294,6 +350,7 @@ def serve(host="127.0.0.1", port=8082):
         lock.close()
         raise RuntimeError("Another lllm2 panel owns this state directory.") from error
     app = App()
+    downloads.configure(app.store)
     hostnames = {
         "127.0.0.1",
         "localhost",

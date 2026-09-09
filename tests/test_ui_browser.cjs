@@ -42,8 +42,38 @@ const assert=require('node:assert/strict');
  await run("switchView('experiments')");assert.equal(await run('settings().context'),8192);await run("switchView('launch')");
  assert.equal(await run("$('gpu-placement').value"),'auto');
 
+ // Find models sorts and filters metadata without changing launch/experiment drafts.
+ await run("fixture.findEntries=[{id:'hf-a',name:'Small',display_name:'Small',repo:'test/Small-Instruct',file:'small-Q4_K_M.gguf',quant:'Q4_K_M',size_gb:2,fit:'Likely GPU fit',fit_rank:0,reason:'3 GiB reserved',task:'Chat / instruct',instruct:true,downloads:100,likes:2,updated:'2026-09-01',license:'apache-2.0'},{id:'hf-b',name:'Large',display_name:'Large',repo:'test/Large-Instruct',file:'large-Q4_K_M.gguf',quant:'Q4_K_M',size_gb:20,fit:'Likely needs CPU offload',fit_rank:1,reason:'4 GiB reserved',task:'Coding',instruct:true,downloads:200,likes:4,updated:'2026-09-02',license:'mit'}];await switchView('find')");
+ assert.equal(await run("$('find-view').hidden"),false);
+ assert.equal(await run("$('launch-view').hidden"),true);
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),2);
+ await run("$('find-table').querySelector('[data-find-sort=size_gb]').click();$('find-table').querySelector('[data-find-sort=size_gb]').click()");
+ assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Large/);
+ await run("const input=$('find-table').querySelector('[data-find-max=size_gb]');input.value='5';input.dispatchEvent(new Event('input',{bubbles:true}))");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),1);
+ assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Small/);
+ await run("$('find-table').querySelector('[data-find-add]').click();new Promise(r=>setTimeout(r,40))");
+ assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),true);
+ await run("$('catalog').querySelector('[data-catalogue-remove=hf-a]').click();new Promise(r=>setTimeout(r,40))");
+ assert.equal(await run("$('remove-model-weights').checked"),false);
+ await run("$('remove-model-cancel').click()");
+ assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),true);
+ await run("$('catalog').querySelector('[data-catalogue-remove=hf-a]').click();await new Promise(r=>setTimeout(r,40));$('remove-model-weights').checked=true;$('remove-model-confirm').click();await new Promise(r=>setTimeout(r,100))");
+ assert.equal(await run("fixture.posts.find(p=>p.path==='/api/catalogue/remove').data.delete_weights"),true);
+ assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),false);
+ await run("$('find-clear').click()");
+ for(const width of [1440,390]){
+  await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
+  assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true);
+  await p.shot(`${artifacts}/find-models-${width}.png`);
+ }
+ await p.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+ await run("switchView('launch')");
+ assert.equal(await run('settings().context'),65536);
+ await run("switchView('experiments')");assert.equal(await run('settings().context'),8192);await run("switchView('launch')");
+
  // An intervening poll must not re-enable a download whose POST is pending.
- await run("setModelFilter('catalog');fixture.delay=100;$('catalog-download-moe').click();await poll();$('catalog-download-moe').click();await new Promise(r=>setTimeout(r,200));fixture.delay=0");
+ await run("await switchView('find');fixture.delay=100;$('catalog-download-moe').click();await poll();$('catalog-download-moe').click();await new Promise(r=>setTimeout(r,200));fixture.delay=0");
  assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/download').length"),1);
  // A slow rescan can finish after navigation or an edit without replacing the draft.
  await run("fixture.delay=100;scan();switchView('experiments');await new Promise(r=>setTimeout(r,400));fixture.delay=0");
@@ -57,7 +87,7 @@ const assert=require('node:assert/strict');
  await run("setModelFilter('installed')");assert.equal(await run("$('download-section').hidden"),false);
  await run("fixture.models.push({path:'/models/new/dense.gguf',catalog_id:'dense',identity_verified:true,metadata:{context:262144}});fixture.downloads[0].state='complete';poll()");
  assert.equal(await run('settings().context'),49152);assert.equal(await run('settings().model'),'/models/Qwen3-8B/model.gguf');
- assert.equal(await run("$('download-action-dense').textContent"),'Use this model');
+ assert.equal(await run("$('download-action-dense').hidden"),true);await run("switchView('launch')");
  // Ready guidance must use the running snapshot after edits.
  await run("fixture.engine={running:true,ready:true,pid:123,settings:{...fixture.settings,context:32768}};poll()");
  assert.match(await run("$('connect-context').textContent"),/32,768/);
