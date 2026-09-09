@@ -18,11 +18,19 @@ const fs=require('node:fs');
 const path=require('node:path'),os=require('node:os');
 const root=path.resolve(__dirname,'..'),artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'lllm2-ui-'));
 const b=browser();
+async function waitForPanel(page,timeoutMs=30000){
+ const deadline=Date.now()+timeoutMs;
+ while(Date.now()<deadline){
+  if(await page.eval("document.readyState==='complete' && document.getElementById('app-version')?.textContent==='Version 1.2.3-test' && document.getElementById('start')?.disabled===false"))return;
+  await new Promise(resolve=>setTimeout(resolve,100));
+ }
+ throw Error('Panel did not finish loading and become ready to start within '+timeoutMs+'ms');
+}
 const source=fs.readFileSync(root+'/src/lllm2/static/index.html','utf8').replace('<link rel="stylesheet" href="/static/panel.css">',()=>'<style>'+fs.readFileSync(root+'/src/lllm2/static/panel.css','utf8')+'</style>').replace('<script src="/static/panel.js"></script>',()=>'<script>'+fs.readFileSync(path.join(__dirname,'ui_fixture.js'),'utf8')+'</script><script>'+fs.readFileSync(root+'/src/lllm2/static/panel.js','utf8')+'</script>');
 fs.writeFileSync(artifacts+'/after.html',source);
 const assert=require('node:assert/strict');
 (async()=>{try{
- const p=await b.open('file://'+artifacts+'/after.html');await new Promise(r=>setTimeout(r,600));
+ const p=await b.open('file://'+artifacts+'/after.html');await waitForPanel(p);
  assert.equal(await p.eval("document.getElementById('app-version').textContent"),'Version 1.2.3-test');
  const run=expr=>p.eval(expr.includes('await ')?'(async()=>{'+expr+'})()':expr);
  assert.equal(await run('$(' + JSON.stringify('start') + ').disabled'),false);
