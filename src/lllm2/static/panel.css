@@ -1181,7 +1181,6 @@ code {
 }
 .result-name {
   min-width: 190px;
-  max-width: 250px;
   overflow-wrap: anywhere;
 }
 .result-actions {
@@ -1311,6 +1310,7 @@ section[tabindex="-1"], #comparisons {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .context-load-actions .check { margin: 0; }
