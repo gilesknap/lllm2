@@ -45,6 +45,22 @@ class App:
             entry["installed"] = all(p.is_file() for p in paths)
         return entries
 
+    def result_settings(self, result, data):
+        settings = Settings.parse(result["settings"])
+        if data.get("use_context"):
+            field = (
+                "recommended_context"
+                if data.get("reserve_headroom") is True
+                else "largest_observed_context"
+            )
+            context = result.get(field)
+            if type(context) is not int or context <= 0:
+                raise ValueError(
+                    "This result has no usable context measurement for that choice."
+                )
+            settings.context = context * settings.slots
+        return settings
+
     def default_key(self, s):
         return str(Path(s.model).expanduser().resolve()) + "|" + s.backend
 
@@ -111,6 +127,16 @@ class App:
                 "saved_exists": self.store.get("default", self.default_key(s))
                 is not None,
             }
+        if path == "/api/results/delete":
+            with self.bench.lock:
+                if self.bench.active:
+                    raise ValueError(
+                        "Wait for the current operation to finish before deleting experiment history."
+                    )
+                deleted = self.store.delete_results(
+                    data.get("result_ids"), data.get("failed_only") is True
+                )
+            return {"deleted": deleted}
         if path == "/api/result/preview":
             r = self.store.get("result", data["result_id"])
             if not r or r["status"] != "complete" or not r["samples"]:
@@ -122,20 +148,20 @@ class App:
                 raise ValueError(
                     "This result cannot be used as a general measured configuration."
                 )
-            s = Settings.parse(r["settings"])
-            if data.get("use_context"):
-                if not r.get("recommended_context"):
-                    raise ValueError("This result has no successful context probe.")
-                s.context = r["recommended_context"] * s.slots
+            s = self.result_settings(r, data)
             return {
                 "settings": s.dict(),
                 "source": "Experiment result · for next launch",
                 "notes": [
                     "Review before starting or saving. Saved preferences are unchanged."
                 ],
-                "evidence": promotion_provenance(r, s, data.get("use_context")),
+                "evidence": promotion_provenance(
+                    r, s, data.get("use_context"), data.get("reserve_headroom") is True
+                ),
                 "result_id": r["id"],
                 "use_context": bool(data.get("use_context")),
+                "reserve_headroom": bool(data.get("use_context"))
+                and data.get("reserve_headroom") is True,
             }
         if path == "/api/capabilities":
             s = Settings.parse(data["settings"])
@@ -208,12 +234,10 @@ class App:
                     raise ValueError(
                         "Source adherence failed; this result cannot be promoted as a measured baseline."
                     )
-                s = Settings.parse(r["settings"])
-                if data.get("use_context"):
-                    if not r["recommended_context"]:
-                        raise ValueError("This run has no successful context probe.")
-                    s.context = r["recommended_context"] * s.slots
-                provenance = promotion_provenance(r, s, data.get("use_context"))
+                s = self.result_settings(r, data)
+                provenance = promotion_provenance(
+                    r, s, data.get("use_context"), data.get("reserve_headroom") is True
+                )
             else:
                 s = Settings.parse(data["settings"])
             launch_args(s, config.ENGINE_PORT)

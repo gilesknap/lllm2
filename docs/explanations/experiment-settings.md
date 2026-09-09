@@ -221,7 +221,7 @@ Cold speed samples start a fresh engine and disable prompt caching. Benchmark
 requests use temperature zero and seed 42; these are fixed measurement settings,
 not additional controls in this editor.
 
-In **Saved comparisons**, compare the same checkpoint, build, workload, token
+In **Experiment history**, compare the same checkpoint, build, workload, token
 budgets and measurement mode. **Prefill tok/s** measures prompt reading;
 **Decode tok/s** measures generated tokens. Warm processed-prefill rates describe
 only newly processed tokens and belong in a separate comparison. Inspect total
@@ -234,9 +234,12 @@ A brief peak can fall between samples. **Export CSV** and **Copy table** use the
 current displayed sample order and retain partial or failed entries. **Export
 full JSON** keeps the complete records and diagnostics.
 
-**Try in Launch** loads an eligible result for review. **Try with headroom context**
-also applies the context-search estimate when one is available. Warm-only evidence,
-failed source adherence and incomplete runs cannot be promoted this way. Neither
-action saves settings or restarts the model: review the draft, save it if desired,
-then start or restart to apply it. See also
+**Try in Launch** loads an eligible result’s settings for review. **Use tested
+context** is checked by default and uses the largest context that passed the
+search. **Use 90% of tested context** selects the rounded-down headroom estimate
+instead. Only one option can be checked; clear both to use the original context.
+The options appear only when a successful context measurement exists.
+Warm-only evidence, failed source adherence and incomplete runs cannot be
+promoted this way. Loading does not save settings or restart the model:
+review the draft, save it if desired, then start or restart to apply it. See also
 [Defaults and measurements](defaults-and-measurements.md).
