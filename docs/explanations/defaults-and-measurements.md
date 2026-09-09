@@ -18,5 +18,7 @@ the workload checks and failure evidence too.
 
 Context search tests large prompts and an output budget, retaining failed
 probes. A timeout is inconclusive, rather than proof of a memory limit.
-Recommended context applies headroom to a successful probe; it remains an
-estimate for other workloads.
+Try in Launch defaults to **Use tested context**, the largest successful probe.
+**Use 90% of tested context** selects a smaller, rounded-down estimate instead.
+Clear both options to keep the original context. Neither choice
+guarantees the same result with different workloads or memory use.

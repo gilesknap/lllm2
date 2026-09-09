@@ -188,7 +188,7 @@ def measured_defaults(selection):
         ]
 
 
-def promotion_provenance(result, settings, use_context):
+def promotion_provenance(result, settings, use_context, reserve_headroom=False):
     """Keep source evidence without copying raw prompts, logs or GPU traces."""
     return {
         "kind": "benchmark",
@@ -249,7 +249,13 @@ def promotion_provenance(result, settings, use_context):
             "largest_observed_context": result.get("largest_observed_context"),
             "recommended_context": result.get("recommended_context"),
             "search_status": result.get("context_search_status"),
-            "used_headroom_estimate": bool(use_context),
+            "used_headroom_estimate": bool(use_context and reserve_headroom),
+            "loaded_context": "headroom"
+            if use_context and reserve_headroom
+            else "tested"
+            if use_context
+            else "original",
+            "loaded_total": settings.context,
         },
         "note": "A completed sample is execution evidence, not a measured gain. Headroom context, if selected, is an estimate.",
     }

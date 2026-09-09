@@ -71,3 +71,35 @@ class Store:
     def delete(self, kind, key):
         with self.lock, self.db:
             self.db.execute("DELETE FROM objects WHERE kind=? AND key=?", (kind, key))
+
+    def delete_results(self, result_ids, failed_only=False):
+        """Delete full records and summaries together, after validating every run."""
+        if (
+            not isinstance(result_ids, list)
+            or not 1 <= len(result_ids) <= 10000
+            or any(not isinstance(key, str) or not key for key in result_ids)
+        ):
+            raise ValueError("Select between 1 and 10,000 experiment runs.")
+        allowed = (
+            {"failed", "cancelled"}
+            if failed_only
+            else {"complete", "failed", "cancelled", "interrupted"}
+        )
+        with self.lock, self.db:
+            found = []
+            for key in dict.fromkeys(result_ids):
+                row = self.db.execute(
+                    "SELECT value FROM objects WHERE kind='result' AND key=?", (key,)
+                ).fetchone()
+                if row is None:
+                    continue
+                if json.loads(row[0]).get("status") not in allowed:
+                    raise ValueError(
+                        "An experiment is running or its status has changed. Refresh history and try again."
+                    )
+                found.append(key)
+            self.db.executemany(
+                "DELETE FROM objects WHERE kind IN ('result','summary') AND key=?",
+                [(key,) for key in found],
+            )
+        return found

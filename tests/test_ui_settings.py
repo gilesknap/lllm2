@@ -104,6 +104,52 @@ class SettingsRecoveryTests(unittest.TestCase):
             self.app.store.get("default", self.app.default_key(self.settings)), saved
         )
 
+    def test_load_and_save_tested_context_with_optional_headroom(self):
+        result = {
+            **self.result,
+            "settings": {**self.settings.dict(), "slots": 2, "context": 8192},
+            "largest_observed_context": 16384,
+            "recommended_context": 14592,
+        }
+        self.app.store.put("result", "measured", result)
+        for use_context, headroom, expected, choice in (
+            (False, False, 8192, "original"),
+            (True, False, 32768, "tested"),
+            (True, True, 29184, "headroom"),
+        ):
+            data = {
+                "result_id": "measured",
+                "use_context": use_context,
+                "reserve_headroom": headroom,
+            }
+            with self.subTest(choice=choice):
+                preview = self.app.action("/api/result/preview", data)
+                self.assertEqual(preview["settings"]["context"], expected)
+                self.assertEqual(preview["reserve_headroom"], use_context and headroom)
+                with patch("lllm2.app.launch_args"):
+                    saved = self.app.action("/api/default/save", data)
+                self.assertEqual(saved["context"], expected)
+                evidence = self.app.store.get(
+                    "default-evidence", self.app.default_key(self.settings)
+                )
+                self.assertEqual(evidence["context"]["loaded_context"], choice)
+                self.assertEqual(
+                    evidence["context"]["used_headroom_estimate"],
+                    use_context and headroom,
+                )
+                self.assertEqual(self.app.store.get("result", "measured"), result)
+
+    def test_tested_context_does_not_silently_use_headroom(self):
+        self.app.store.put(
+            "result", "measured", {**self.result, "largest_observed_context": None}
+        )
+        for route in ("/api/result/preview", "/api/default/save"):
+            with (
+                self.subTest(route=route),
+                self.assertRaisesRegex(ValueError, "context measurement"),
+            ):
+                self.app.action(route, {"result_id": "measured", "use_context": True})
+
     def test_ineligible_experiments_cannot_be_loaded_or_saved(self):
         for change in (
             {"measurement_mode": "warm-conversation"},

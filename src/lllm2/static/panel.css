@@ -1181,7 +1181,6 @@ code {
 }
 .result-name {
   min-width: 190px;
-  max-width: 250px;
   overflow-wrap: anywhere;
 }
 .result-actions {
@@ -1189,6 +1188,9 @@ code {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+.result-actions .context-load-actions {
+  flex-basis: 100%;
 }
 .result-status {
   display: inline-block;
@@ -1304,3 +1306,14 @@ section[tabindex="-1"], #comparisons {
 #find-table .find-in-catalogue td {color:var(--dim);background:color-mix(in srgb,var(--rule) 22%,var(--card))}
 #find-table .find-in-catalogue td a {color:var(--dim)}
 .find-catalogue-badge {display:inline-block;margin:4px 0 0 6px;padding:2px 6px;border:1px solid var(--rule);border-radius:4px;background:var(--card);color:var(--dim);font-size:11px;white-space:nowrap}
+
+#delete-results-dialog {max-width:600px;width:90%}
+
+.context-load-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.context-load-actions .check { margin: 0; }

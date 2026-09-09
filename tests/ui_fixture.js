@@ -7,7 +7,7 @@ fixture.models=[{path:sample.model,catalog_id:'qwen3-8b',identity_verified:false
 fixture.engines=[{path:sample.engine,devices:['CUDA0']}];
 fixture.engine={running:false,ready:false};
 window.fetch=async (path,options={})=>{const data=options.body?JSON.parse(options.body):null;if(data)fixture.posts.push({path,data});if(fixture.disconnected)throw Error('Offline');if(fixture.delay&&path!='/api/status')await new Promise(r=>setTimeout(r,fixture.delay));let body={};switch(path){
-case '/api/status':body={token:'test',version:'1.2.3-test',hardware:{gpus:[{name:'RTX A1000',used_mib:2048,total_mib:8192}],ram_gib:62,ram:{total_gib:62,used_gib:18,available_gib:44}},engine:fixture.engine,job:{status:'idle'},downloads:fixture.downloads,endpoint:'http://127.0.0.1:1920/v1',paths:{models:'/models',engines:['/engines']}};break;
+case '/api/status':body={token:'test',version:'1.2.3-test',hardware:{gpus:[{name:'RTX A1000',used_mib:2048,total_mib:8192}],ram_gib:62,ram:{total_gib:62,used_gib:18,available_gib:44}},engine:fixture.engine,job:fixture.job||{status:'idle'},downloads:fixture.downloads,endpoint:'http://127.0.0.1:1920/v1',paths:{models:'/models',engines:['/engines']}};break;
 case '/api/catalogue':body={entries:fixture.catalog};break;
 case '/api/models/find':body={entries:fixture.findEntries||[],repositories:2,fetched_at:Date.now()/1000};break;
 case '/api/catalogue/add':fixture.catalog.push(fixture.findEntries.find(e=>e.id===data.id));break;
@@ -19,8 +19,9 @@ case '/api/capabilities':body={features:{},engine:{devices:['CUDA0']}};break;
 case '/api/launch/check':body={valid:!fixture.checkError,error:fixture.checkError,saved_exists:!!fixture.saved};break;
 case '/api/default/resolve':body={settings:data.source==='saved'?fixture.saved:sample,source:data.source==='saved'?'Saved defaults · manual preferences':'Estimated starting settings'};break;
 case '/api/default/save':fixture.saved=data.result_id?fixture.results.find(r=>r.id===data.result_id).settings:data.settings;body=fixture.saved;break;
+case '/api/results/delete':{const deleted=fixture.results.filter(r=>data.result_ids.includes(r.id)).map(r=>r.id);fixture.results=fixture.results.filter(r=>!deleted.includes(r.id));body={deleted};break;}
 case '/api/results':body=fixture.results;break;
 case '/api/results/export':body=fixture.fullResults||fixture.results;break;
-case '/api/result/preview':{const r=fixture.results.find(r=>r.id===data.result_id);body={settings:r.settings,source:'Experiment result',result_id:r.id,evidence:{kind:'benchmark'},notes:[]};break;}
+case '/api/result/preview':{const r=fixture.results.find(r=>r.id===data.result_id);body={settings:{...r.settings,...(data.use_context?{context:(data.reserve_headroom?r.recommended_context:r.largest_observed_context)*r.settings.slots}:{})},source:'Experiment result',result_id:r.id,use_context:!!data.use_context,reserve_headroom:!!data.reserve_headroom,evidence:{kind:'benchmark'},notes:[]};break;}
 case '/api/start':fixture.engine={running:true,ready:true,settings:data.settings,pid:123};break;
 }return {ok:true,json:async()=>structuredClone(body)};};

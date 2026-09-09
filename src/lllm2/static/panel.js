@@ -76,6 +76,9 @@ function message(s,error=false){$('message').textContent=s;$('message').style.di
 async function api(path,data){const r=await fetch(path,{signal:AbortSignal.timeout(path==='/api/start'?15000:path==='/api/status'?10000:180000),...(data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-LLLM2-Token':token},body:JSON.stringify(data)})});const d=await r.json();if(!r.ok)throw Error(d.error||r.statusText);return d;}
 async function attempt(fn){try{await fn();}catch(e){message(e.message,true);}}
 let resultSort={key:'started',direction:'descending'}, resultRequest=0;
+let resultDeletion=null,resultDeleteBusy=false;
+const deletableResult=r=>['complete','failed','cancelled','interrupted'].includes(r.status);
+const failedResult=r=>['failed','cancelled'].includes(r.status);
 const expandedResults=new Set();
 const resultFormat=value=>Number.isFinite(value)?value.toLocaleString(undefined,{maximumFractionDigits:1}):'—';
 const sampleMode=(r,s)=>r.measurement_mode==='warm-conversation'?(s?.control?'Uncached replay':'Warm conversation'):'Cold benchmark';
@@ -111,15 +114,59 @@ function renderResults(){
  const liveKeys=new Set(rows.map(row=>row.key));for(const key of expandedResults)if(!liveKeys.has(key))expandedResults.delete(key);
  renderMarkup('results',rows.map(row=>{
   const {r,s,key}=row,warm=r.measurement_mode==='warm-conversation',status=sampleStatus(r,s),expanded=expandedResults.has(key);
-  return `<tr data-result-key="${key}"><td class="result-name"><b>${esc(r.label)}</b><small>${esc(s?.workload||'No sample')} · ${esc(sampleMode(r,s))}${s?.turn?' · '+esc(s.turn):''}</small><small class="result-model" title="${esc(r.settings.model)}">${esc(modelName(r.settings.model))} · ${esc(r.settings.backend)} · ${fmt(Math.floor(r.settings.context/r.settings.slots))} context</small><small>${esc(r.started)}</small><div class="result-actions">${!resultBlock(r)?`<button id="promote-${key}" data-promote="${esc(r.id)}">Try in Launch</button>${r.recommended_context?`<button id="context-${key}" data-context="${esc(r.id)}">Try with headroom context</button>`:''}`:''}<button id="expand-${key}" data-expand="${key}" aria-expanded="${expanded}" aria-controls="detail-${key}" aria-label="${expanded?'Hide':'Show'} details for ${esc(r.label)}, sample ${row.i+1}">${expanded?'Hide details':'Details'}</button></div></td>
+  return `<tr data-result-key="${key}"><td class="result-name"><b>${esc(r.label)}</b><small>${esc(s?.workload||'No sample')} · ${esc(sampleMode(r,s))}${s?.turn?' · '+esc(s.turn):''}</small><small class="result-model" title="${esc(r.settings.model)}">${esc(modelName(r.settings.model))} · ${esc(r.settings.backend)} · ${fmt(Math.floor(r.settings.context/r.settings.slots))} context</small><small>${esc(r.started)}</small><div class="result-actions">${!resultBlock(r)?`<span class="context-load-actions"><button id="promote-${key}" data-promote="${esc(r.id)}" data-has-context="${!!r.largest_observed_context}">Try in Launch</button>${r.largest_observed_context?headroomControl():''}</span>`:''}<button id="expand-${key}" data-expand="${key}" aria-expanded="${expanded}" aria-controls="detail-${key}" aria-label="${expanded?'Hide':'Show'} details for ${esc(r.label)}, sample ${row.i+1}">${expanded?'Hide details':'Details'}</button><button id="delete-run-${key}" data-delete-result="${esc(r.id)}" aria-label="Delete entire run: ${esc(r.label)}" ${deletableResult(r)?'':'disabled'}>Delete run…</button></div></td>
   <td>${statusBadge(status)}${status!==r.status?`<small>Run: ${esc(r.status)}</small>`:''}${r.quality_status==='failed'||s?.adherence?.status==='failed'?'<small class="error">Adherence failed</small>':''}</td>
   <td>${fmt(warm?s?.processed_prefill_tok_s:s?.prefill_tok_s)}${warm?'<small>Processed tokens only</small>':''}</td><td>${fmt(s?.decode_tok_s)}</td><td>${fmt(s?.input_tokens)} / ${fmt(s?.output_tokens)}</td><td>${fmt(s?.peak_total_gpu_used_mib)}</td></tr>
   <tr class="result-detail" id="detail-${key}" ${expanded?'':'hidden'}><td colspan="6">${resultDetails(row)}</td></tr>`;
  }).join('')||'<tr><td colspan="6">No experiments yet.</td></tr>');
+ resultDeleteControls();
 }
+function resultDeleteControls(){
+ const blocked=!connected||!!statusState.job?.active||resultDeleteBusy;
+ const failed=results.filter(failedResult).length;
+ $('delete-failed-results').disabled=blocked||!failed;
+ $('delete-failed-results').textContent=`Delete failed / cancelled${failed?' ('+failed+')':''}…`;
+ for(const button of document.querySelectorAll('[data-delete-result]')){
+  const run=results.find(r=>r.id===button.dataset.deleteResult);
+  button.disabled=blocked||!run||!deletableResult(run);
+ }
+}
+function openResultDeletion(runs,failedOnly){
+ if(!runs.length||resultDeleteBusy)return;
+ resultDeletion={result_ids:runs.map(r=>r.id),failed_only:failedOnly};
+ const samples=runs.reduce((n,r)=>n+r.samples.length,0);
+ $('delete-results-description').textContent=runs.length===1?`Delete “${runs[0].label}” (${runs[0].status}), with ${samples} sample${samples===1?'':'s'}?`:`Delete these ${runs.length} failed/cancelled runs, with ${samples} samples?`;
+ $('delete-results-confirm').textContent=`Delete ${runs.length} run${runs.length===1?'':'s'}`;
+ $('delete-results-error').textContent='';$('delete-results-dialog').showModal();$('delete-results-cancel').focus();
+}
+function forgetDeletedResultSources(ids){
+ const forget=source=>source?.mode==='result'&&ids.includes(source.result_id)?{settings:source.settings,mode:'custom',source:'Custom settings · source experiment deleted',notes:['The source experiment was deleted. These settings can still be saved manually.']}:source;
+ loadedDefaults=forget(loadedDefaults);
+ for(const draft of Object.values(drafts))if(draft)draft.defaults=forget(draft.defaults);
+ defaultState();
+}
+$('delete-failed-results').onclick=()=>openResultDeletion(results.filter(failedResult),true);
+$('delete-results-cancel').onclick=()=>$('delete-results-dialog').close();
+$('delete-results-dialog').addEventListener('cancel',e=>{if(resultDeleteBusy)e.preventDefault();});
+$('delete-results-confirm').onclick=async()=>{
+ if(resultDeleteBusy||!resultDeletion)return;
+ resultDeleteBusy=true;resultDeleteControls();$('delete-results-confirm').disabled=$('delete-results-cancel').disabled=true;
+ const selected=resultDeletion;
+ try{
+  const response=await api('/api/results/delete',selected);
+  // Invalidate earlier GETs so they cannot resurrect rows after deletion.
+  resultRequest++;const removed=new Set(selected.result_ids);
+  results=results.filter(r=>!removed.has(r.id));lastResults=JSON.stringify(results);
+  forgetDeletedResultSources(selected.result_ids);renderResults();
+  $('delete-results-dialog').close();$('comparisons').focus();
+  message(`Deleted ${response.deleted.length} experiment run${response.deleted.length===1?'':'s'}.`);
+  await refreshResults();
+ }catch(e){$('delete-results-error').textContent=e.message;}
+ finally{resultDeleteBusy=false;$('delete-results-confirm').disabled=$('delete-results-cancel').disabled=false;resultDeleteControls();}
+};
 async function refreshResults(){
  const n=++resultRequest,data=await api('/api/results');if(n!==resultRequest)return;
- const key=JSON.stringify(data);if(key===lastResults)return;lastResults=key;results=data;renderResults();
+ const key=JSON.stringify(data);if(key===lastResults){resultDeleteControls();return;}lastResults=key;results=data;renderResults();resultDeleteControls();
 }
 // Numeric rates and measurement modes remain separate in spreadsheet exports.
 const resultColumns=[
@@ -550,10 +597,10 @@ async function poll(){
   $('job-detail').textContent=[s.job.phase,s.job.error,...(s.job.skipped||[]).map(x=>`${x.option}: ${x.reason}`)].filter(Boolean).join(' · ');
   $('bar').style.width=s.job.total?`${100*(s.job.completed||0)/s.job.total}%`:'0%';
   $('logs').textContent=[(s.engine.argv||[]).join(' '),'',...(s.engine.logs||[])].join('\n');
-  renderDownloads();launchState();
+  renderDownloads();launchState();resultDeleteControls();
   const complete=(s.downloads||[]).filter(d=>d.state==='complete').map(d=>d.id).sort().join('|');
   if(complete!==lastDownloads){if(!discoveredOnce)lastDownloads=complete;else if(!scanPending&&await scan())lastDownloads=complete;}
-  if(view==='experiments'){try{await refreshResults();}catch(e){message('Comparisons could not be refreshed: '+e.message,true);}}
+  if(view==='experiments'){try{await refreshResults();}catch(e){message('Experiment history could not be refreshed: '+e.message,true);}}
  }catch(e){connected=false;launchState();}
  finally{pollPending=false;}
 }
@@ -581,7 +628,7 @@ document.addEventListener('click',e=>{if(!$('load-menu').contains(e.target))$('l
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('load-menu').open){$('load-menu').open=false;$('load-menu').querySelector('summary').focus();}});
 $('save-default').onclick=()=>attempt(async()=>{
  const selected=settings(),key=snapshot(),savedView=view,provenance=loadedDefaults?.mode==='result'&&sameSettings(selected,loadedDefaults.settings)?loadedDefaults:null;
- const saved=await api('/api/default/save',provenance?{result_id:provenance.result_id,use_context:provenance.use_context}:{settings:selected});
+ const saved=await api('/api/default/save',provenance?{result_id:provenance.result_id,use_context:provenance.use_context,reserve_headroom:provenance.reserve_headroom}:{settings:selected});
  if(key===snapshot()&&savedView===view){loadedDefaults={settings:saved,mode:'saved',source:provenance?'My saved settings · experiment evidence':'My saved settings · manual preferences',notes:provenance?.notes||['Manual preferences are not a measured benefit.'],evidence:provenance?.evidence};savedExists=true;savedFeedback='Saved';defaultState();}
  message('Settings saved for this model and backend.');
 });
@@ -643,10 +690,19 @@ function renderCombinations(){
 }
 $('add-combo').onclick=()=>{combinations.push(structuredClone(settings()));renderCombinations();};
 $('clear-combos').onclick=()=>{combinations=[];renderCombinations();};
+let contextChoice='tested';
+function headroomControl(){
+ return `<label class="check"><input type="checkbox" data-context-choice="tested" ${contextChoice==='tested'?'checked':''}>Use tested context</label><label class="check"><input type="checkbox" data-context-choice="headroom" ${contextChoice==='headroom'?'checked':''}>Use 90% of tested context</label>`;
+}
+document.addEventListener('change',e=>{
+ if(!e.target.matches('[data-context-choice]'))return;
+ contextChoice=e.target.checked?e.target.dataset.contextChoice:'original';
+ document.querySelectorAll('[data-context-choice]').forEach(input=>input.checked=input.dataset.contextChoice===contextChoice);
+});
 async function previewResult(id,useContext=false){
  const n=++selectionSequence;validationSequence++;resolving=true;validationSnapshot='';launchState();
  try{
-  const d=await api('/api/result/preview',{result_id:id,use_context:useContext});
+  const d=await api('/api/result/preview',{result_id:id,use_context:useContext,...(useContext?{reserve_headroom:contextChoice==='headroom'}:{})});
   if(n!==selectionSequence)return;
   const expected=n+(view==='launch'?0:1);resolving=false;await switchView('launch');
   if(selectionSequence!==expected)return;
@@ -655,13 +711,14 @@ async function previewResult(id,useContext=false){
  }finally{if(n===selectionSequence){resolving=false;defaultState();launchState();finishNavigation();}}
 }
 $('results').onclick=e=>{
+ const remove=e.target.closest('[data-delete-result]');if(remove){if(!remove.disabled)openResultDeletion([results.find(r=>r.id===remove.dataset.deleteResult)].filter(Boolean),false);return;}
  const expand=e.target.closest('[data-expand]');
  if(expand){
   const key=expand.dataset.expand,open=!expandedResults.has(key);if(open)expandedResults.add(key);else expandedResults.delete(key);
   expand.setAttribute('aria-expanded',String(open));expand.setAttribute('aria-label',expand.getAttribute('aria-label').replace(/^(Show|Hide)/,open?'Hide':'Show'));expand.textContent=open?'Hide details':'Details';$('detail-'+key).hidden=!open;return;
  }
  const copy=e.target.closest('[data-copy-row]');if(copy){const row=resultRows().find(r=>r.key===copy.dataset.copyRow);if(row)attempt(()=>copyText(tableText([row],'\t'),'Result row',false));return;}
- const b=e.target.closest('[data-promote],[data-context]');if(b)attempt(()=>previewResult(b.dataset.promote||b.dataset.context,!!b.dataset.context));
+ const b=e.target.closest('[data-promote]');if(b)attempt(()=>previewResult(b.dataset.promote,b.dataset.hasContext==='true'&&contextChoice!=='original'));
 };
 function resultBlock(r){return r.measurement_mode==='warm-conversation'?'Warm-only evidence':r.quality_status==='failed'?'Source adherence failed':r.status!=='complete'||!r.samples?.length?'No completed samples':'';}
 $('load-experiment').onclick=()=>attempt(async()=>{
@@ -669,12 +726,12 @@ $('load-experiment').onclick=()=>attempt(async()=>{
  const n=++pickerSequence;
  try{
   const rows=await api('/api/results');if(n!==pickerSequence||!$('experiment-picker').open)return;
-  $('experiment-options').innerHTML=rows.map(r=>{const reason=resultBlock(r);return `<div class="experiment-option"><b>${esc(r.label||'Experiment')}</b><small>${esc(r.started)} · ${esc(r.settings.backend)} · ${Number(r.settings.context).toLocaleString()} total tokens</small><small>${esc([...new Set(r.samples.map(s=>s.workload).filter(Boolean))].join(', ')||r.measurement_mode||'Cold benchmark')}</small><small>${esc(r.settings.model)}</small><small>${reason?esc(reason):'Completed experiment · execution evidence'}</small><button data-result="${esc(r.id)}" ${reason?'disabled':''}>Load into Launch</button>${!reason&&r.recommended_context?` <button data-result="${esc(r.id)}" data-headroom="true">Load with headroom estimate</button>`:''}</div>`;}).join('')||'<p>No experiments yet. Run an experiment from the Experiments view, then return here.</p>';
+  $('experiment-options').innerHTML=rows.map(r=>{const reason=resultBlock(r);return `<div class="experiment-option"><b>${esc(r.label||'Experiment')}</b><small>${esc(r.started)} · ${esc(r.settings.backend)} · ${Number(r.settings.context).toLocaleString()} total tokens</small><small>${esc([...new Set(r.samples.map(s=>s.workload).filter(Boolean))].join(', ')||r.measurement_mode||'Cold benchmark')}</small><small>${esc(r.settings.model)}</small><small>${reason?esc(reason):'Completed experiment · execution evidence'}</small><span class="context-load-actions"><button data-result="${esc(r.id)}" data-has-context="${!!r.largest_observed_context}" ${reason?'disabled':''}>Try in Launch</button>${!reason&&r.largest_observed_context?headroomControl():''}</span></div>`;}).join('')||'<p>No experiments yet. Run an experiment from the Experiments view, then return here.</p>';
  }catch(e){if(n===pickerSequence){$('experiment-options').textContent='';$('experiment-picker-error').textContent='Could not load experiments. Close and try again. '+e.message;}}
 });
 $('experiment-picker-close').onclick=()=>{pickerSequence++;$('experiment-picker').close();};
 $('experiment-picker').addEventListener('cancel',()=>pickerSequence++);
-$('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if(!b||b.disabled)return;$('experiment-picker').close();attempt(()=>previewResult(b.dataset.result,b.dataset.headroom==='true'));};
+$('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if(!b||b.disabled)return;$('experiment-picker').close();attempt(()=>previewResult(b.dataset.result,b.dataset.hasContext==='true'&&contextChoice!=='original'));};
 // Find models keeps discovery and catalogue actions separate from launch drafts.
 let findLoaded=false,findBusy=false,findEntries=[],removingId=null;
 let findSort={key:null,direction:0};
