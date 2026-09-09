@@ -16,18 +16,19 @@ See [Experiment and model settings](../explanations/experiment-settings.md) for
 each workload, budget and customization control, including cold versus warm
 measurements and how to interpret the results.
 
-**Try in Launch** copies the experiment settings into Launch. **Use tested
-context** is checked by default and applies the largest successful context,
-keeping the slot count. **Use 90% of tested context** selects the smaller,
-rounded-down estimate instead. Selecting either option clears the other;
-leave both unchecked to keep the experiment's original context. These options
-appear only when a successful context measurement exists. Loading does not
+**Try in Launch** copies the experiment settings into Launch. Expand a row with
+the **▸** control to reach it, together with **Copy row** and **Delete run…**.
+The **Context** choice defaults to **Tested**, which applies the largest
+successful context, keeping the slot count. **90%** selects the smaller,
+rounded-down estimate instead; **Original** keeps the experiment's own context.
+The choice appears only when a successful context measurement exists.
+Loading does not
 start the model or save preferences; review Launch, then save or restart explicitly.
 
 ## Manage experiment history
 
 **Experiment history** contains individual runs, with one row per sample.
-Choose **Delete run…** on any row to remove that entire run, including all its
+Expand a row and choose **Delete run…** to remove that entire run, including all its
 samples, logs and context probes. **Delete failed / cancelled…** selects every
 run whose overall status is failed or cancelled. It keeps completed runs even
 when an individual sample or quality check failed, and keeps interrupted runs

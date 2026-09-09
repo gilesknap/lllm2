@@ -184,12 +184,17 @@ const assert=require('node:assert/strict');
  assert.equal(await run("document.querySelectorAll('#results>tr[data-result-key]').length"),7);
  assert.equal(await run("document.querySelectorAll('#results>.result-detail:not([hidden])').length"),0);
  for(const id of ['warm','bad-source','failed'])assert.equal(await run(`document.querySelector('#results [data-promote="${id}"]')`),null);
- // Launch actions remain visible on every eligible run's sample, without opening details.
- for(const key of ['cold-0','old-0','old-1'])assert.equal(await run(`$('promote-${key}').checkVisibility()`),true);
- assert.equal(await run("$('promote-cold-0').checkVisibility()"),true);
+ // Launch actions sit in each eligible sample's detail row; rows stay compact until expanded.
+ for(const key of ['cold-0','old-0','old-1'])assert.equal(await run(`$('promote-${key}').checkVisibility()`),false);
+ assert.equal(await run("document.querySelectorAll('#results>tr[data-result-key] button').length"),7);
+ assert.equal(await run("$('expand-cold-0').textContent"),'▸');
  assert.equal(await run("$('context-old-0')"),null);
  await run("$('expand-cold-0').click();$('result-evidence-cold-0').open=true;$('expand-cold-0').focus();fixture.results[0].samples[0].decode_tok_s=75;await refreshResults()");
  assert.equal(await run("$('detail-cold-0').hidden"),false);
+ assert.equal(await run("$('expand-cold-0').textContent"),'▾');
+ assert.equal(await run("$('promote-cold-0').checkVisibility()"),true);
+ assert.equal(await run("$('delete-run-cold-0').checkVisibility()&&$('copy-row-cold-0').checkVisibility()"),true);
+ assert.equal(await run("$('detail-cold-0').querySelector('.result-actions')===$('detail-cold-0').querySelector('td').firstElementChild"),true);
  assert.equal(await run("$('result-evidence-cold-0').open"),true);
  assert.equal(await run('document.activeElement.id'),'expand-cold-0');
  assert.match(await run("document.querySelector('[data-result-key=\"cold-0\"]').textContent"),/75/);
@@ -306,6 +311,10 @@ const assert=require('node:assert/strict');
  // Tested context loads the measured maximum unless the optional margin is selected.
  await run("switchView('experiments')");
  assert.equal(await run("document.querySelector('#results [data-context-choice=headroom]').checked"),false);
+ assert.equal(await run("document.querySelector('#results [data-context-choice=tested]').checked"),true);
+ assert.equal(await run("[...document.querySelectorAll('#results [data-context-choice]')].every(i=>i.type==='radio')"),true);
+ assert.match(await run("document.querySelector('#results [data-context-choice=tested]').parentElement.textContent"),/Tested \(8,192\)/);
+ assert.match(await run("document.querySelector('#results [data-context-choice=headroom]').parentElement.textContent"),/90% \(7,168\)/);
  assert.equal(await run("$('promote-cold-0').textContent"),'Try in Launch');
  assert.equal(await run("$('promote-cold-0').parentElement.querySelector('[data-context-choice=headroom]').checked"),false);
  await run("$('promote-cold-0').click();await new Promise(r=>setTimeout(r,60))");
@@ -315,10 +324,11 @@ const assert=require('node:assert/strict');
  assert.equal(await run('settings().context'),7168);
  assert.equal(await run('loadedDefaults.reserve_headroom'),true);
  assert.equal(await run("contextChoice"),'headroom');
- await run("document.querySelector('#results [data-context-choice=headroom]').click();$('save-default').click();await new Promise(r=>setTimeout(r,60))");
+ await run("document.querySelector('#results [data-context-choice=original]').click();$('save-default').click();await new Promise(r=>setTimeout(r,60))");
  assert.deepEqual(await run("fixture.posts.filter(p=>p.path==='/api/default/save').at(-1).data"),{result_id:'cold',use_context:true,reserve_headroom:true});
- // Clearing both options restores the original context; picker shares the same choices.
- assert.equal(await run("document.querySelectorAll('[data-context-choice]:checked').length"),0);
+ // Original restores the experiment's own context; picker shares the same choices.
+ assert.equal(await run("contextChoice"),'original');
+ assert.equal(await run("document.querySelectorAll('[data-context-choice]:checked').length"),await run("document.querySelectorAll('[data-context-choice=original]').length"));
  await run("switchView('experiments');$('promote-cold-0').click();await new Promise(r=>setTimeout(r,60))");
  assert.equal(await run('settings().context'),baselineSettings.context);
  assert.deepEqual(await run("fixture.posts.filter(p=>p.path==='/api/result/preview').at(-1).data"),{result_id:'cold',use_context:false});
