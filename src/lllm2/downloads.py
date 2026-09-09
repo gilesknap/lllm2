@@ -8,14 +8,18 @@ handler that started it.
 
 from __future__ import annotations
 
+import queue
+import shutil
 import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import quote
 
 from . import config
+from .catalogue import files, local_paths
 from .tls import download_context
 
 CHUNK = 4 * 1024 * 1024
@@ -31,6 +35,8 @@ class Download:
     repo: str
     file: str
     target: Path
+    directory: Path | None = None
+    revision: str = "main"
     total: int = 0
     done: int = 0
     state: str = "queued"  # queued | downloading | complete | error | cancelled
@@ -67,16 +73,19 @@ class Download:
 
 #: Live and recently finished downloads, keyed by catalogue id.
 _downloads: dict[str, Download] = {}
-_lock = threading.Lock()
+_lock = threading.RLock()
+_queue: queue.Queue[Download] = queue.Queue()
+_worker = None
+_store = None
 
 
-def url_for(repo: str, file: str) -> str:
-    return f"https://huggingface.co/{repo}/resolve/main/{file}"
+def url_for(repo: str, file: str, revision: str = "main") -> str:
+    return f"https://huggingface.co/{quote(repo, safe='/')}/resolve/{quote(revision, safe='')}/{quote(file, safe='/')}"
 
 
-def _size_of(repo: str, file: str) -> int:
+def _size_of(repo: str, file: str, revision: str = "main") -> int:
     """Content-Length without fetching the body, so the bar knows the whole job."""
-    req = urllib.request.Request(url_for(repo, file), method="HEAD")
+    req = urllib.request.Request(url_for(repo, file, revision), method="HEAD")
     req.add_header("User-Agent", USER_AGENT)
     try:
         with urllib.request.urlopen(req, timeout=60, context=download_context()) as r:
@@ -88,10 +97,11 @@ def _size_of(repo: str, file: str) -> int:
 def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
     """One file, resuming a part file if there is one. ``base`` is bytes already
     finished in this download, so progress runs across the whole job."""
+    target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_suffix(target.suffix + ".part")
     part.parent.mkdir(parents=True, exist_ok=True)
     resume = part.stat().st_size if part.exists() else 0
-    req = urllib.request.Request(url_for(dl.repo, file))
+    req = urllib.request.Request(url_for(dl.repo, file, dl.revision))
     req.add_header("User-Agent", USER_AGENT)
     if resume:
         req.add_header("Range", f"bytes={resume}-")
@@ -129,16 +139,40 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
 
 
 def _run(dl: Download) -> None:
-    jobs = [(dl.file, dl.target)] + [(e, dl.target.parent / e) for e in dl.extras]
+    jobs = [(dl.file, dl.target)] + [
+        (e, (dl.directory or dl.target.parent) / e) for e in dl.extras
+    ]
     try:
-        dl.state = "downloading"
+        with _lock:
+            if dl._cancel.is_set():
+                dl.state = "cancelled"
+                return
+            dl.state = "downloading"
+            dl.started = time.time()
         # Size the whole job up front: a bar that resets when the projector
         # starts reads as a fault rather than as the second of two files.
-        dl.total = sum(_size_of(dl.repo, f) for f, _ in jobs)
+        dl.total = sum(_size_of(dl.repo, f, dl.revision) for f, _ in jobs)
+        occupied = sum(
+            target.stat().st_size
+            if target.is_file()
+            else target.with_suffix(target.suffix + ".part").stat().st_size
+            if target.with_suffix(target.suffix + ".part").is_file()
+            else 0
+            for _, target in jobs
+        )
+        directory = dl.directory or dl.target.parent
+        directory.mkdir(parents=True, exist_ok=True)
+        if dl.total and max(0, dl.total - occupied) > shutil.disk_usage(directory).free:
+            raise ValueError("Not enough free disk space for this download.")
         base = 0
         for file, target in jobs:
-            dl.file = file
+            if dl._cancel.is_set():
+                dl.state = "cancelled"
+                return
             if target.exists():
+                from . import gguf
+
+                gguf.header(target)
                 base += target.stat().st_size
                 dl.done = base
                 continue
@@ -149,7 +183,7 @@ def _run(dl: Download) -> None:
         dl.detail = f"saved to {dl.target.parent}"
     except urllib.error.HTTPError as e:
         dl.state = "error"
-        dl.detail = f"HTTP {e.code} for {url_for(dl.repo, dl.file)}"
+        dl.detail = f"HTTP {e.code} for {url_for(dl.repo, dl.file, dl.revision)}"
     except Exception as e:
         dl.state = "error"
         dl.detail = str(e)
@@ -161,26 +195,110 @@ def start(entry: dict) -> Download:
         existing = _downloads.get(entry["id"])
         if existing and existing.state in {"queued", "downloading"}:
             return existing
-        target = config.MODELS_DIR / entry["name"] / entry["file"]
+        paths = local_paths(entry)
+        target = paths[0]
         dl = Download(
             id=entry["id"],
             name=entry["name"],
             repo=entry["repo"],
             file=entry["file"],
             target=target,
-            extras=[entry["mmproj"]] if entry.get("mmproj") else [],
+            extras=files(entry)[1:],
+            revision=entry.get("revision", "main"),
+            directory=config.MODELS_DIR / entry["name"],
         )
+        if _store:
+            _store.put("download-job", entry["id"], {"entry": entry, "state": "queued"})
         _downloads[entry["id"]] = dl
-    threading.Thread(target=_run, args=(dl,), daemon=True).start()
+        _queue.put(dl)
+        ensure_worker()
     return dl
 
 
+def configure(store):
+    """Restore pending jobs in insertion order, including jobs with no bytes yet."""
+    global _store
+    _store = store
+    for job in reversed(store.list("download-job")):
+        if job["state"] in {"queued", "downloading"}:
+            start(job["entry"])
+
+
+def ensure_worker():
+    global _worker
+    if _worker and _worker.is_alive():
+        return
+
+    def work():
+        while True:
+            dl = _queue.get()
+            try:
+                _run(dl)
+            finally:
+                with _lock:
+                    if _store and _downloads.get(dl.id) is dl:
+                        saved = _store.get("download-job", dl.id)
+                        if saved:
+                            _store.put(
+                                "download-job", dl.id, {**saved, "state": dl.state}
+                            )
+                _queue.task_done()
+
+    _worker = threading.Thread(target=work, daemon=True)
+    _worker.start()
+
+
 def cancel(model_id: str) -> bool:
-    dl = _downloads.get(model_id)
-    if dl and dl.state in {"queued", "downloading"}:
-        dl._cancel.set()
-        return True
-    return False
+    with _lock:
+        dl = _downloads.get(model_id)
+        if dl and dl.state in {"queued", "downloading"}:
+            dl._cancel.set()
+            if dl.state == "queued":
+                dl.state = "cancelled"
+            if _store:
+                saved = _store.get("download-job", model_id)
+                if saved:
+                    _store.put(
+                        "download-job", model_id, {**saved, "state": "cancelled"}
+                    )
+            return True
+        return False
+
+
+def remove(entry, delete_weights=False, protected=(), other_entries=()):
+    """Serialize against queue submissions; never remove another model's files."""
+    with _lock:
+        dl = _downloads.get(entry["id"])
+        if dl and dl.state in {"queued", "downloading"}:
+            raise ValueError(
+                "Cancel the download and wait for it to stop before removing this model."
+            )
+        paths = local_paths(entry)
+        targets = [
+            p for path in paths for p in (path, path.with_suffix(path.suffix + ".part"))
+        ]
+        if delete_weights:
+            resolved = {p.resolve() for p in targets}
+            if resolved.intersection(
+                Path(p).expanduser().resolve() for p in protected if p
+            ):
+                raise ValueError(
+                    "Stop the running model or experiment before deleting its weights."
+                )
+            shared = {p.resolve() for e in other_entries for p in local_paths(e)}
+            if resolved.intersection(shared):
+                raise ValueError(
+                    "These weights are shared by another catalogue entry. Remove only the catalogue entry."
+                )
+            # Validate every path before deleting any; never recursively remove directories.
+            for target in targets:
+                if target.exists() and not target.is_file():
+                    raise ValueError("Expected a model file, not a directory.")
+            for target in targets:
+                target.unlink(missing_ok=True)
+        _downloads.pop(entry["id"], None)
+        if _store:
+            _store.delete("download-job", entry["id"])
 
 
 def all_downloads() -> list[dict]:

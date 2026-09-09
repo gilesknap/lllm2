@@ -67,3 +67,7 @@ class Store:
                     (kind,),
                 )
             ]
+
+    def delete(self, kind, key):
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM objects WHERE kind=? AND key=?", (kind, key))

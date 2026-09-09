@@ -1,5 +1,10 @@
 # UI usability and visual polish
 
+> **Historical record — not current instructions.** Archived 9 September 2026.
+> Scope, permissions, paths and next steps below describe the original session.
+> Use the [maintained documentation](../index.md) for current behaviour and
+> development guidance. See the [archive index](index.md) for context.
+
 Status: all three implementation slices complete; validated 7 September 2026.
 Requested 7 September 2026. Execution authorized 7 September 2026. Progress and validation are recorded below.
 

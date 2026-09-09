@@ -7,7 +7,8 @@ from .recommendations import PROFILES, fingerprint
 from .settings import Settings, launch_args
 
 
-def installed_models():
+def installed_models(catalogue=None):
+    catalogue = CATALOG if catalogue is None else catalogue
     found = models()
     for model in found:
         model["catalog_id"] = None
@@ -30,7 +31,7 @@ def installed_models():
                 entry = next(
                     (
                         m
-                        for m in CATALOG
+                        for m in catalogue
                         if m.get("recommendation", {}).get("profile") == profile["id"]
                     ),
                     None,
@@ -43,13 +44,13 @@ def installed_models():
             # Unverified catalogue hints are useful in All models, but never acquire rank.
             candidates = [
                 m
-                for m in CATALOG
+                for m in catalogue
                 if model["path"].endswith("/" + m["file"])
                 and bool(m.get("mtp")) == bool(meta.get("mtp"))
             ]
             if len(candidates) == 1:
                 model["catalog_id"] = candidates[0]["id"]
-    ranks = {m["id"]: m.get("recommendation", {}).get("rank", 999) for m in CATALOG}
+    ranks = {m["id"]: m.get("recommendation", {}).get("rank", 999) for m in catalogue}
     return sorted(
         found,
         key=lambda m: (
@@ -60,10 +61,13 @@ def installed_models():
     )
 
 
-def choose_launch(model_path="", engine_path="", backend="", device=""):
+def choose_launch(model_path="", engine_path="", backend="", device="", catalogue=None):
     """Choose a compatible tuple, or return a visible reason without changing preferences."""
-    installed = installed_models()
-    curated = {m["id"]: m["recommendation"] for m in CATALOG if m.get("recommendation")}
+    catalogue = CATALOG if catalogue is None else catalogue
+    installed = installed_models(catalogue)
+    curated = {
+        m["id"]: m["recommendation"] for m in catalogue if m.get("recommendation")
+    }
     if model_path:
         candidates = [m for m in installed if m["path"] == model_path]
         if not candidates:

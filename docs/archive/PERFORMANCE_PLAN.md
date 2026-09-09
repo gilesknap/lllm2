@@ -1,10 +1,15 @@
 # Qwen performance and understandable defaults: implementation slices
 
+> **Historical record — not current instructions.** Archived 9 September 2026.
+> Scope, permissions, paths and next steps below describe the original session.
+> Use the [maintained documentation](../index.md) for current behaviour and
+> development guidance. See the [archive index](index.md) for context.
+
 Status: all eight slices complete.
 Created 6 September 2026 from the user's request to save the review, plan small
 slices, keep the UI understandable to novices, and ship useful tested RTX 3090
 defaults. Research is in [RTX_PERFORMANCE_REVIEW.md](RTX_PERFORMANCE_REVIEW.md).
-Read [HANDOFF.md](HANDOFF.md) for existing behavior and unresolved issues.
+Read [HANDOFF.md](https://github.com/gilesknap/lllm2/blob/d42f1b6ad45a1decbaa5794d68322c12512d0658/HANDOFF.md) for existing behavior and unresolved issues.
 
 These root Markdown files are explicitly requested planning/research artifacts.
 They do not start a documentation site, CI, release machinery or a test framework.
