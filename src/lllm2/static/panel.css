@@ -1189,6 +1189,9 @@ code {
   gap: 6px;
   margin-top: 6px;
 }
+.result-actions .context-load-actions {
+  flex-basis: 100%;
+}
 .result-status {
   display: inline-block;
   padding: 2px 7px;
