@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import math
+import re
 import threading
 import time
 import uuid
@@ -35,7 +36,7 @@ def prompt_sizes(s, opts):
         s.context // s.slots
         - max(
             output_budget(w, opts["output_tokens"])
-            for w in opts.get("workloads", ["long-code"])
+            for w in opts.get("workloads") or ["long-code"]
         )
         - 32
     )
@@ -50,6 +51,19 @@ def prompt_sizes(s, opts):
 
 def stamp():
     return datetime.now(UTC).isoformat()
+
+
+MEMORY_EXHAUSTED = re.compile(
+    r"out of memory|failed to allocate|allocation of size .* failed|bad_alloc"
+    r"|cannot allocate|OutOfMemory|OutOfDeviceMemory|cudaMalloc|failed to initialize the context"
+    r"|failed to create context|\bKilled\b|not enough (?:memory|space)",
+    re.IGNORECASE,
+)
+
+
+def memory_exhausted(logs, error=""):
+    """Whether an engine failure looks like memory exhaustion rather than a fault."""
+    return bool(MEMORY_EXHAUSTED.search("\n".join([*logs, error])))
 
 
 def source_text(index):
@@ -147,18 +161,18 @@ class Bench:
             "context_timeout": data.get("context_timeout", 900),
             "repeats": data.get("repeats", 1),
         }
-        if (
-            not opts["workloads"]
-            or not isinstance(opts["workloads"], list)
-            or any(w not in WORKLOADS for w in opts["workloads"])
+        if not isinstance(opts["workloads"], list) or any(
+            w not in WORKLOADS for w in opts["workloads"]
         ):
             raise ValueError("Select coding workloads.")
+        if not opts["workloads"] and not data.get("search_context", False):
+            raise ValueError("Select coding workloads or discover usable context.")
         for k, lo, hi in [
             ("prompt_tokens", 128, 131072),
             ("output_tokens", 16, 4096),
             ("max_context", 512, 1048576),
-            ("timeout", 10, 1800),
-            ("context_timeout", 10, 3600),
+            ("timeout", 10, 86400),
+            ("context_timeout", 10, 86400),
             ("repeats", 1, 5),
         ]:
             if type(opts[k]) is not int or not lo <= opts[k] <= hi:
@@ -190,11 +204,16 @@ class Bench:
                 "Context ceiling must fit the output budget plus a real prompt."
             )
         effective_output = max(
-            output_budget(w, opts["output_tokens"]) for w in opts["workloads"]
+            (output_budget(w, opts["output_tokens"]) for w in opts["workloads"]),
+            default=opts["output_tokens"],
         )
         if (
-            128 if opts["sweep_prompts"] else opts["prompt_tokens"]
-        ) + effective_output + 32 > s.context // s.slots:
+            opts["workloads"]
+            and (128 if opts["sweep_prompts"] else opts["prompt_tokens"])
+            + effective_output
+            + 32
+            > s.context // s.slots
+        ):
             raise ValueError(
                 "Shared prompt and output budgets must fit context per slot, with 32 tokens of margin."
             )
@@ -313,7 +332,11 @@ class Bench:
                         run_conversation(self, s, opts, r)
                         r["status"] = "complete"
                         continue
-                    sizes = prompt_sizes(s, opts)
+                    # Context discovery first: its load checks are quick and the
+                    # usable window is usually what people came for.
+                    if opts["search_context"]:
+                        self.context_search(s, opts, r)
+                    sizes = prompt_sizes(s, opts) if opts["workloads"] else []
                     r["prompt_sizes"] = sizes
                     # Restart every sample to keep cold prefill unambiguous.
                     for workload in opts["workloads"]:
@@ -340,8 +363,6 @@ class Bench:
                                 r["execution_settings"] = sample["execution_settings"]
                                 self.store.put("result", r["id"], r)
                                 self.engine.stop()
-                    if opts["search_context"]:
-                        self.context_search(s, opts, r)
                     r["status"] = "complete"
                 except Cancelled:
                     r["status"] = "cancelled"
@@ -555,39 +576,72 @@ class Bench:
         floor = max(512, opts["output_tokens"] + 160)
         floor = math.ceil(floor / 256) * 256
         ceiling = ceiling // 256 * 256
-        good, bad = 0, ceiling + 256
-        # Reuse a completed full-window speed sample, without another restart.
+        # `started` is the largest context the engine loaded, `good` the largest
+        # verified with a full workload, `bad` the smallest failed probe and
+        # `slow` the smallest timed-out one. A timeout bounds the search but is
+        # not evidence of a memory limit. Workload confirmation is opt-in; without
+        # it the loaded size is reported as usable but unconfirmed.
+        good, started, bad, slow = 0, 0, ceiling + 256, ceiling + 256
+        confirming = bool(opts.get("full_window"))
+        # The search runs before any speed sample, so it begins by checking the
+        # experiment's own window loads and doubles from there.
         selected = s.context // s.slots
-        if floor <= selected <= ceiling and any(
-            sample["input_tokens"] + opts["output_tokens"] + 32 >= selected
-            and sample["context_per_slot"] == selected
-            for sample in r["samples"]
-        ):
-            good = selected
-            r["context_seed_from_speed_sample"] = selected
-        # Test the ceiling directly after a success, then bisect only as needed.
-        attempt = ceiling if good else min(max(floor, selected), ceiling)
 
-        def resolution():
-            return max(1024, math.ceil(good * 0.1 / 256) * 256)
+        def best():
+            # A successful workload probe is the confirmed size. Without
+            # confirmation the loaded size is reported; with confirmation
+            # requested but no workload success, nothing is reported as usable.
+            if good or confirming:
+                return good
+            return started
 
-        r["largest_observed_context"] = good or None
-        recommended = math.floor(good * 0.9 / 256) * 256
-        r["recommended_context"] = recommended if recommended >= floor else None
-        r["recommended_context_is_estimate"] = True
-        r["context_ceiling"] = ceiling
-        attempts = 0
+        def resolution(base=None):
+            base = best() if base is None else base
+            return max(1024, math.ceil(base * 0.1 / 256) * 256)
+
+        def bounds(base):
+            lower = max(base // 256 * 256, floor - 256)
+            upper = math.ceil(min(bad, slow) / 256) * 256
+            return lower, upper
+
+        def next_attempt(base):
+            # Double from the last success while nothing above it has failed or
+            # timed out, so the slowest probes come last; then bisect the range.
+            if min(bad, slow) > ceiling:
+                if not base:
+                    return min(max(floor, selected), ceiling)
+                return min(base * 2 // 256 * 256, ceiling)
+            lower, upper = bounds(base)
+            return ((lower + upper) // 2) // 256 * 256
+
+        def resolved(base):
+            lower, upper = bounds(base)
+            if base >= ceiling:
+                return True
+            return upper - lower <= resolution(base)
+
+        def publish():
+            r["largest_observed_context"] = best() or None
+            r["largest_started_context"] = started or None
+            r["context_confirmed"] = bool(good)
+            # Suggested headroom is an estimate, not another measured limit.
+            recommended = math.floor(best() * 0.9 / 256) * 256
+            r["recommended_context"] = recommended if recommended >= floor else None
+            r["recommended_context_is_estimate"] = True
+            r["context_ceiling"] = ceiling
+            self.store.put("result", r["id"], r)
+
+        publish()
         context_timeout = opts.get("context_timeout", 900)
         r["context_search_status"] = "running"
-        while good < ceiling and floor <= attempt <= ceiling and attempts < 8:
+
+        def probe(kind, attempt, phase):
+            nonlocal good, started, bad, slow
             if self.cancel.is_set():
                 raise Cancelled()
-            attempts += 1
-            self.update(
-                phase=f"Context probe {attempts} (up to 8): {attempt:,} tokens per slot; {context_timeout}s timeout per operation",
-                context_probe_started=time.time(),
-            )
+            self.update(phase=phase, context_probe_started=time.time())
             entry = {
+                "kind": kind,
                 "context_per_slot": attempt,
                 "status": "running",
                 "started": stamp(),
@@ -598,15 +652,17 @@ class Bench:
             candidate = replace(s, context=attempt * s.slots)
             try:
                 self.engine.start(candidate, self.cancel, context_timeout)
-                entry["sample"] = self.measure(
-                    candidate,
-                    "long-code",
-                    attempt - opts["output_tokens"] - 32,
-                    opts["output_tokens"],
-                    context_timeout,
-                )
+                started = max(started, attempt)
+                if kind == "workload":
+                    entry["sample"] = self.measure(
+                        candidate,
+                        "long-code",
+                        attempt - opts["output_tokens"] - 32,
+                        opts["output_tokens"],
+                        context_timeout,
+                    )
+                    good = attempt
                 entry["status"] = "success"
-                good = attempt
             except Cancelled:
                 entry["status"] = "cancelled"
                 raise
@@ -614,59 +670,81 @@ class Bench:
                 entry.update(
                     status="timed_out", error=str(e), logs=self.engine.state()["logs"]
                 )
-                r["context_search_status"] = "inconclusive_timeout"
-                r["context_search_stop_reason"] = (
-                    "Context probe timed out; usable-context limit is unknown. Increase the context-probe timeout to continue testing. Earlier successful probes remain valid."
-                )
-                self.update(phase=r["context_search_stop_reason"])
-                break
+                slow = min(slow, attempt)
             except Exception as e:
-                entry.update(
-                    status="failed", error=str(e), logs=self.engine.state()["logs"]
-                )
-                bad = attempt
+                logs = self.engine.state()["logs"]
+                entry.update(status="failed", error=str(e), logs=logs)
                 if isinstance(e, GPUUnavailable) or not hardware()["gpus"]:
                     raise GPUUnavailable(
                         "GPU unavailable after context probe; no further restarts."
                     ) from e
+                # A load that fails for a reason other than memory would fail
+                # at every size; stop rather than report a false memory limit.
+                if kind == "startup" and not memory_exhausted(logs, str(e)):
+                    entry["memory_limit"] = False
+                    raise RuntimeError(
+                        f"Engine failed to load {attempt:,} tokens per slot for a reason other than memory: {e}"
+                    ) from e
+                entry["memory_limit"] = True
+                bad = min(bad, attempt)
             finally:
                 self.engine.stop()
                 entry["finished"] = stamp()
-                r["largest_observed_context"] = good or None
-                # Suggested headroom is an estimate, not another measured limit.
-                recommended = math.floor(good * 0.9 / 256) * 256
-                r["recommended_context"] = recommended if recommended >= floor else None
-                r["recommended_context_is_estimate"] = True
-                r["context_ceiling"] = ceiling
-                self.store.put("result", r["id"], r)
-            lower = max(good // 256 * 256, floor - 256)
-            upper = math.ceil(bad / 256) * 256
-            if (
-                good >= ceiling
-                or (good and upper - lower <= resolution())
-                or upper - lower <= 256
-            ):
-                break
-            attempt = ceiling if bad > ceiling else ((lower + upper) // 2) // 256 * 256
-            if attempt < floor:
-                break
-        if r["context_search_status"] == "running":
-            gap = math.ceil(bad / 256) * 256 - max(good // 256 * 256, floor - 256)
-            resolved = gap <= (resolution() if good else 256)
-            r["context_search_status"] = (
-                "complete"
-                if good >= ceiling or resolved
-                else "inconclusive_probe_limit"
+                publish()
+
+        # Phase 1: load-only checks. Engine start allocates the cache and compute
+        # buffers, so a refused load is a memory limit found in seconds. Loads
+        # are cheap, so this ladder runs to resolution before any long prefill.
+        checks = 0
+        attempt = next_attempt(started)
+        while not resolved(started) and floor <= attempt <= ceiling and checks < 12:
+            checks += 1
+            probe(
+                "startup",
+                attempt,
+                f"Context load check {checks} (up to 12): {attempt:,} tokens per slot; {context_timeout}s timeout",
             )
+            attempt = next_attempt(started)
+        # Phase 2 (opt-in): confirm the largest loaded size with a full workload,
+        # then narrow with workload probes only if that confirmation fails.
+        attempts = 0
+        attempt = started if started > good else next_attempt(good)
+        while (
+            confirming
+            and not resolved(good)
+            and floor <= attempt <= ceiling
+            and attempts < 8
+        ):
+            attempts += 1
+            probe(
+                "workload",
+                attempt,
+                f"Context probe {attempts} (up to 8): {attempt:,} tokens per slot; {context_timeout}s timeout per operation",
+            )
+            attempt = next_attempt(good)
         if floor > ceiling:
             r["context_search_status"] = "skipped"
             r["context_search_stop_reason"] = (
                 "Context ceiling cannot fit the minimum prompt and output budget."
             )
-        elif r["context_search_status"] == "inconclusive_probe_limit":
+        elif best() >= ceiling or (resolved(best()) and bad <= slow):
+            r["context_search_status"] = "complete"
+        elif resolved(best()):
+            r["context_search_status"] = "inconclusive_timeout"
             r["context_search_stop_reason"] = (
-                "Stopped after 8 probes; earlier successes remain valid, but the usable-context limit is unresolved."
+                f"Context probe timed out at {slow:,} tokens per slot; the usable-context limit above the largest success is unknown. Increase the context-probe timeout to continue testing. Successful probes remain valid."
+            )
+        else:
+            r["context_search_status"] = "inconclusive_probe_limit"
+            r["context_search_stop_reason"] = (
+                "Stopped at the probe limit; earlier successes remain valid, but the usable-context limit is unresolved."
+                + (
+                    f" A probe at {slow:,} tokens per slot timed out; raising the context-probe timeout may help."
+                    if slow <= ceiling
+                    else ""
+                )
             )
         r["context_search_resolution"] = resolution()
         r["context_failed_upper_bound"] = bad if bad <= ceiling else None
-        r["context_ceiling_reached"] = good == ceiling
+        r["context_timeout_upper_bound"] = slow if slow <= ceiling else None
+        r["context_ceiling_reached"] = best() == ceiling
