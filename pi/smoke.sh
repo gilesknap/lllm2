@@ -9,6 +9,7 @@ command -v node npm rg fdfind
 # This alias exists only in this disposable test container, never the image.
 ln -s /usr/local/bin/pi /usr/local/bin/claude
 trap 'rm -f /usr/local/bin/claude' EXIT
+PI_OFFLINE=1 pi --no-extensions --extension /opt/pi/test-network.ts --mode rpc --no-session
 # Exercise upstream's mock streaming model, real tools, model switching and
 # filesystem/network battery against the installed Pi-only image.
 CLAUDE_SANDBOX_WORKSPACE_ROOT=/work bash /opt/claude-sandbox/tests/pi_e2e.sh

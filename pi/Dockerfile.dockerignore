@@ -10,3 +10,4 @@
 !pi/defaults.json
 !pi/smoke.sh
 !pi/test-bundle.mjs
+!pi/test-network.ts

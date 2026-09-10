@@ -40,7 +40,7 @@ WORKDIR /opt/pi
 COPY pi/package.json pi/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --legacy-peer-deps \
     && npm cache clean --force
-COPY pi/smoke.sh pi/test-bundle.mjs /opt/pi/
+COPY pi/smoke.sh pi/test-bundle.mjs pi/test-network.ts /opt/pi/
 COPY pi/sandbox.conf /etc/claude-sandbox.conf
 COPY pi/entrypoint.sh pi/run.sh pi/seed.mjs pi/defaults.json /opt/pi/
 RUN chmod 755 /opt/pi/entrypoint.sh /opt/pi/run.sh \
