@@ -4,6 +4,10 @@ A Pi-only coding-agent image with a small extension bundle and the existing
 [claude-sandbox](https://github.com/diamondlightsource/claude-sandbox) isolation.
 No Claude Code or Codex binaries are installed. The sandbox implementation is
 fetched at a pinned commit during the build, not copied into this repository.
+One temporary patch, `patches/gateway-route.patch`, preserves a mirrored gateway
+`/32` when the network jail blocks connected routes (seen on Azure runners).
+The patch includes an upstream regression test and is checked before application.
+Remove it when the pinned upstream revision includes the fix.
 
 ## Run
 

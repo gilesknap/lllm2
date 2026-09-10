@@ -27,6 +27,11 @@ RUN git init /opt/claude-sandbox \
     && git -C /opt/claude-sandbox fetch --depth 1 origin "$SANDBOX_REV" \
     && git -C /opt/claude-sandbox checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/claude-sandbox rev-parse HEAD)" = "$SANDBOX_REV"
+# Temporary upstream fix: preserve an existing gateway /32 after LAN blocks.
+# Remove this patch once SANDBOX_REV includes the correction.
+COPY pi/patches/gateway-route.patch /opt/pi-patches/gateway-route.patch
+RUN git -C /opt/claude-sandbox apply --check /opt/pi-patches/gateway-route.patch \
+    && git -C /opt/claude-sandbox apply /opt/pi-patches/gateway-route.patch
 RUN bash -c 'set -euo pipefail; \
     source /opt/claude-sandbox/.devcontainer/claude-sandbox/install.sh; \
     install_pi_binary; \

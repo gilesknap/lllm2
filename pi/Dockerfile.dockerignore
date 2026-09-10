@@ -11,3 +11,5 @@
 !pi/smoke.sh
 !pi/test-bundle.mjs
 !pi/test-network.ts
+!pi/patches/
+!pi/patches/gateway-route.patch
