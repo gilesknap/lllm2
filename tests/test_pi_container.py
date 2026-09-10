@@ -1,4 +1,4 @@
-"""Run with python3 -m unittest discover -s pi -p 'test_*.py'."""
+"""Container launcher isolation, argument forwarding and credential handling."""
 
 import argparse
 import contextlib
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import launch
+from lllm2 import pi_container as launch
 
 
 class LauncherTests(unittest.TestCase):

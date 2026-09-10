@@ -16,21 +16,29 @@ After the image workflow publishes `ghcr.io/gilesknap/lllm2-pi:latest`:
 
 ```bash
 cd /path/to/project
-python3 /path/to/lllm2/pi/launch.py
+lllm2 pi
 # Start a model in lllm2 first to use the local provider:
-python3 /path/to/lllm2/pi/launch.py -- --provider lllm2
+lllm2 pi --provider lllm2
 # Prompt for a GitHub PAT without echoing it:
-python3 /path/to/lllm2/pi/launch.py --pat
+lllm2 pi --pat
 # Cloud-only session: no local model relay
 python3 /path/to/lllm2/pi/launch.py --model-port 0
 # Inspect the invocation without launching or prompting:
 python3 /path/to/lllm2/pi/launch.py --dry-run --pat
 ```
 
-Use `--help` for launcher options and `-- --help` for Pi's help. Arguments after
-`--` go to Pi literally, including spaces and shell punctuation. `lllm2 pi`
-remains unchanged: CLI integration is deferred so this feature only changes
-`pi/`, workflows, and docs.
+`lllm2 pi` handles only `--pat` and forwards everything else to Pi literally,
+including `--help`, `-e`, spaces and shell punctuation. For example:
+
+```bash
+lllm2 pi --pat -e git:github.com/badlogic/pi-skills
+```
+
+The standalone `pi/launch.py` uses the same implementation and can run from a
+source checkout without installing lllm2. It retains container-development
+options (`--image`, `--pi-dir`, `--model-port`, `--dry-run`); put Pi arguments
+after `--` when using that source launcher. Use its `--help` for launcher options
+and `-- --help` for Pi's own help.
 
 Each invocation creates a fresh container and removes it on exit. The current
 directory is mounted **read-write at `/workspaces`**, which is also the working
@@ -71,7 +79,7 @@ shared configuration already installs these packages, remove the duplicate
 user-installed copies or opt out of the image bundle. To add another package:
 
 ```bash
-python3 /path/to/lllm2/pi/launch.py -- install npm:PACKAGE
+lllm2 pi install npm:PACKAGE
 ```
 
 The initial footer uses the dark theme, a breadcrumb inside the editor, and a
@@ -134,7 +142,7 @@ network access. Normal sessions do not set it.
 ```bash
 podman build -f pi/Dockerfile -t lllm2-pi .
 python3 pi/launch.py --image lllm2-pi -- --version
-python3 -m unittest discover -s pi -p 'test_*.py'
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_pi_container.py'
 node --test pi/test_seed.mjs
 ```
 

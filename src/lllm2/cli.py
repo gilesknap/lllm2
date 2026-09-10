@@ -27,6 +27,7 @@ from .engine import Cancelled, Engine
 from .engine_install import install, provenance
 from .harness import run_harness
 from .launch import choose_launch, installed_models
+from .pi_container import launch as launch_pi
 from .service import install_service
 from .settings import Settings
 
@@ -343,15 +344,25 @@ def codex(ctx: typer.Context) -> None:
     raise typer.Exit(run_harness("codex", ctx.args))
 
 
-@app.command(context_settings=HARNESS_CONTEXT)
-def pi(ctx: typer.Context) -> None:
-    """Launch Pi (pi.dev) against the running local model.
+@app.command(
+    add_help_option=False,
+    context_settings={**HARNESS_CONTEXT, "allow_interspersed_args": True},
+)
+def pi(
+    ctx: typer.Context,
+    pat: Annotated[
+        bool, typer.Option(help="Prompt without echo for a temporary GitHub PAT login.")
+    ] = False,
+) -> None:
+    """Launch Pi in a container; only --pat is handled by lllm2.
 
-    Start a model first. A temporary extension configures the local provider
-    for this session. Additional arguments go to Pi unchanged.
-    Use -- --help for Pi's help. Example: lllm2 pi -p "Explain this repo"
+    Mount the current directory at /workspaces and share ~/.pi at /root/.pi.
+    All other arguments, including --help, go to Pi. Use --provider lllm2 to
+    select a running local model, or use Pi's cloud login.
+
+    Example: lllm2 pi --pat -e git:github.com/badlogic/pi-skills
     """
-    raise typer.Exit(run_harness("pi", ctx.args))
+    raise typer.Exit(launch_pi(ctx.args, pat=pat))
 
 
 def main(argv: list[str] | None = None) -> int:

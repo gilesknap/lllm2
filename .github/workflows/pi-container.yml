@@ -2,11 +2,11 @@ name: Pi container
 
 on:
   pull_request:
-    paths: ['pi/**', '.github/workflows/pi-container.yml']
+    paths: ['pi/**', 'src/lllm2/pi_container.py', 'src/lllm2/cli.py', 'tests/test_pi_container.py', '.github/workflows/pi-container.yml']
   push:
     branches: [main]
     tags: ['*']
-    paths: ['pi/**', '.github/workflows/pi-container.yml']
+    paths: ['pi/**', 'src/lllm2/pi_container.py', 'src/lllm2/cli.py', 'tests/test_pi_container.py', '.github/workflows/pi-container.yml']
   workflow_dispatch:
 
 permissions:
@@ -34,7 +34,7 @@ jobs:
           node-version: '22'
       - name: Unit tests
         run: |
-          python3 -m unittest discover -s pi -p 'test_*.py'
+          PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_pi_container.py'
           node --test pi/test_seed.mjs
           bash -n pi/entrypoint.sh pi/run.sh pi/smoke.sh
       - name: Image name
