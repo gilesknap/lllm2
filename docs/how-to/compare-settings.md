@@ -38,3 +38,6 @@ Both actions show a confirmation with the number of runs and samples. Deletion
 is permanent; export full JSON first if you want to keep the records. Saved
 settings, their saved provenance, model files and the running model are kept.
 Deletion is unavailable while an operation is active.
+
+To have a coding agent run the comparison for you through the panel's API,
+see [Let a coding agent find your best settings](tune-with-an-agent.md).
