@@ -1,0 +1,12 @@
+**
+!pi/
+!pi/Dockerfile
+!pi/package.json
+!pi/package-lock.json
+!pi/sandbox.conf
+!pi/entrypoint.sh
+!pi/run.sh
+!pi/seed.mjs
+!pi/defaults.json
+!pi/smoke.sh
+!pi/test-bundle.mjs

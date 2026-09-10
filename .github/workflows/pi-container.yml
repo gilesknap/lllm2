@@ -1,0 +1,136 @@
+name: Pi container
+
+on:
+  pull_request:
+    paths: ['pi/**', '.github/workflows/pi-container.yml']
+  push:
+    branches: [main]
+    tags: ['*']
+    paths: ['pi/**', '.github/workflows/pi-container.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unit tests
+        run: |
+          python3 -m unittest discover -s pi -p 'test_*.py'
+          node --test pi/test_seed.mjs
+          bash -n pi/entrypoint.sh pi/run.sh pi/smoke.sh
+      - name: Image name
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "IMAGE=ghcr.io/${REPOSITORY,,}-pi" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: pi/Dockerfile
+          load: true
+          tags: lllm2-pi:test
+      - name: Test with rootless Podman
+        run: |
+          command -v podman >/dev/null || sudo apt-get install -y podman
+          docker save lllm2-pi:test | podman load
+          mkdir -p "$RUNNER_TEMP/pi-home" "$RUNNER_TEMP/project"
+          podman run --rm -t --userns=host --user=0:0 \
+            --security-opt=seccomp=unconfined \
+            --security-opt=apparmor=unconfined \
+            --security-opt=label=disable --device=/dev/net/tun \
+            --network=host \
+            --mount "type=bind,src=$RUNNER_TEMP/pi-home,dst=/root/.pi" \
+            --mount "type=bind,src=$RUNNER_TEMP/project,dst=/workspaces" \
+            --entrypoint /bin/bash lllm2-pi:test /opt/pi/smoke.sh
+          cd "$RUNNER_TEMP/project"
+          python3 "$GITHUB_WORKSPACE/pi/launch.py" --image lllm2-pi:test \
+            --pi-dir "$RUNNER_TEMP/pi-home" -- --version
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push tested image by digest
+        if: github.event_name != 'pull_request'
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: pi/Dockerfile
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Save digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: pi-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Image name
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "IMAGE=ghcr.io/${REPOSITORY,,}-pi" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pi-digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish multi-architecture tags
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do args+=(-t "$tag"); done <<< "$TAGS"
+          for digest in digests/*; do args+=("$IMAGE@sha256:${digest##*/}"); done
+          docker buildx imagetools create "${args[@]}"

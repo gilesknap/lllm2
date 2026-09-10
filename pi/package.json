@@ -1,0 +1,10 @@
+{
+  "name": "lllm2-pi-bundle",
+  "private": true,
+  "description": "Pinned optional extensions for the lllm2 Pi container",
+  "dependencies": {
+    "pi-mcp-adapter": "2.32.1",
+    "pi-powerline": "0.9.1",
+    "pi-web-access": "0.28.0"
+  }
+}
