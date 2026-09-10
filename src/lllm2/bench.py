@@ -562,18 +562,22 @@ class Bench:
         floor = max(512, opts["output_tokens"] + 160)
         floor = math.ceil(floor / 256) * 256
         ceiling = ceiling // 256 * 256
-        # `good` is the largest context verified with a full workload, `started`
-        # the largest that merely loaded, `bad` the smallest failed probe and
+        # `started` is the largest context the engine loaded, `good` the largest
+        # verified with a full workload, `bad` the smallest failed probe and
         # `slow` the smallest timed-out one. A timeout bounds the search but is
-        # not evidence of a memory limit.
-        good, bad, slow = 0, ceiling + 256, ceiling + 256
-        started = good
+        # not evidence of a memory limit. Workload confirmation is opt-in; without
+        # it the loaded size is reported as usable but unconfirmed.
+        good, started, bad, slow = 0, 0, ceiling + 256, ceiling + 256
+        confirming = bool(opts.get("full_window"))
         # The search runs before any speed sample, so it begins by checking the
         # experiment's own window loads and doubles from there.
         selected = s.context // s.slots
 
+        def best():
+            return good if confirming else started
+
         def resolution(base=None):
-            base = good if base is None else base
+            base = best() if base is None else base
             return max(1024, math.ceil(base * 0.1 / 256) * 256)
 
         def bounds(base):
@@ -598,10 +602,11 @@ class Bench:
             return upper - lower <= (resolution(base) if base else 256)
 
         def publish():
-            r["largest_observed_context"] = good or None
+            r["largest_observed_context"] = best() or None
             r["largest_started_context"] = started or None
+            r["context_confirmed"] = confirming
             # Suggested headroom is an estimate, not another measured limit.
-            recommended = math.floor(good * 0.9 / 256) * 256
+            recommended = math.floor(best() * 0.9 / 256) * 256
             r["recommended_context"] = recommended if recommended >= floor else None
             r["recommended_context_is_estimate"] = True
             r["context_ceiling"] = ceiling
@@ -674,11 +679,16 @@ class Bench:
                 f"Context load check {checks} (up to 12): {attempt:,} tokens per slot; {context_timeout}s timeout",
             )
             attempt = next_attempt(started)
-        # Phase 2: confirm the largest loaded size with a full workload, then
-        # narrow with workload probes only if that confirmation fails or stalls.
+        # Phase 2 (opt-in): confirm the largest loaded size with a full workload,
+        # then narrow with workload probes only if that confirmation fails.
         attempts = 0
         attempt = started if started > good else next_attempt(good)
-        while not resolved(good) and floor <= attempt <= ceiling and attempts < 8:
+        while (
+            confirming
+            and not resolved(good)
+            and floor <= attempt <= ceiling
+            and attempts < 8
+        ):
             attempts += 1
             probe(
                 "workload",
@@ -691,9 +701,9 @@ class Bench:
             r["context_search_stop_reason"] = (
                 "Context ceiling cannot fit the minimum prompt and output budget."
             )
-        elif good >= ceiling or (resolved(good) and bad <= slow):
+        elif best() >= ceiling or (resolved(best()) and bad <= slow):
             r["context_search_status"] = "complete"
-        elif resolved(good):
+        elif resolved(best()):
             r["context_search_status"] = "inconclusive_timeout"
             r["context_search_stop_reason"] = (
                 f"Context probe timed out at {slow:,} tokens per slot; the usable-context limit above the largest success is unknown. Increase the context-probe timeout to continue testing. Successful probes remain valid."
@@ -701,7 +711,7 @@ class Bench:
         else:
             r["context_search_status"] = "inconclusive_probe_limit"
             r["context_search_stop_reason"] = (
-                "Stopped after 8 probes; earlier successes remain valid, but the usable-context limit is unresolved."
+                "Stopped at the probe limit; earlier successes remain valid, but the usable-context limit is unresolved."
                 + (
                     f" A probe at {slow:,} tokens per slot timed out; raising the context-probe timeout may help."
                     if slow <= ceiling
@@ -711,4 +721,4 @@ class Bench:
         r["context_search_resolution"] = resolution()
         r["context_failed_upper_bound"] = bad if bad <= ceiling else None
         r["context_timeout_upper_bound"] = slow if slow <= ceiling else None
-        r["context_ceiling_reached"] = good == ceiling
+        r["context_ceiling_reached"] = best() == ceiling

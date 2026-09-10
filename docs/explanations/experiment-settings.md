@@ -61,8 +61,8 @@ adherence details and any truncation before accepting a result.
 | Speed-test timeout per operation | Maximum wait for an individual speed-test operation, including engine requests, rather than a deadline for the whole experiment. Default: 900 seconds; range: 10–86,400. Increasing it only changes how long slow operations are allowed to take. |
 | Context-probe timeout per operation | Separate timeout for context search. Default: 900 seconds; range: 10–86,400. A timeout makes the search inconclusive; it does not prove that memory ran out. |
 | Quick sweep: 1K / 16K / 64K | Tests 1024, 16,384 and 65,536 input tokens. Sizes are capped to the available space per slot and duplicates are removed. Off means one explicit prompt size. |
-| Also test full launch window | Adds a prompt filling the experiment's configured window per slot, after reserving output space and a margin. Despite the label, it uses the experiment draft's context. It does not find the maximum supported window. |
-| Discover usable context | Runs before any speed sample. Quick load-only checks find the largest window the engine accepts, then one long prompt confirms it. On by default; with no workloads selected it is the whole experiment. |
+| Also test full launch window | With Discover usable context, confirms the largest loaded window with one full long-code prompt; this is the slow step. For speed samples, adds a prompt filling the experiment's configured window per slot, after reserving output space and a margin. |
+| Discover usable context | Runs before any speed sample. Quick load-only checks find the largest window the engine accepts. On by default; with no workloads selected it is the whole experiment. The result is reported as loaded but unconfirmed unless Also test full launch window is on. |
 | Context search ceiling (per slot) | The largest window the search may try, including input and output. Initially based on model metadata when available; range: 512–1,048,576. This is a search limit, not a promise that the model or GPU can use it. |
 | Reset experiment settings | Resets workload selections, budgets and experiment checkboxes, including the ceiling for the selected model. It does not reset the model customization draft or delete results. |
 
@@ -81,10 +81,12 @@ Context search runs first. It starts the engine at the experiment's own window,
 doubles the window after each successful load up to the ceiling, then narrows
 between the largest load and the smallest refusal, at most twelve loads. Loads
 are quick because no prompt is sent; a refused load counts as a memory limit.
-It then confirms the largest loaded window with one full long-code prompt and
-only bisects with further prompt probes, at most eight, if that confirmation
-fails or times out. It stops when the uncertainty is roughly 10% of the largest
-success, with a minimum resolution of 1024 tokens. A timed-out probe bounds the
+With **Also test full launch window** on, it then confirms the largest loaded
+window with one full long-code prompt and only bisects with further prompt
+probes, at most eight, if that confirmation fails or times out. Without it, the
+largest loaded window is reported as usable but unconfirmed by a prompt. The
+search stops when the uncertainty is roughly 10% of the largest success, with a
+minimum resolution of 1024 tokens. A timed-out probe bounds the
 search without ending it and is reported separately. Failures are retained. Recommended context applies
 10% headroom and rounds down to a multiple of 256; it is an estimate for future
 workloads, not another measured or guaranteed limit.

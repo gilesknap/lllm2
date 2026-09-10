@@ -8,7 +8,7 @@ from lllm2.bench import Bench
 from lllm2.settings import Settings
 
 
-def run_search(behaviour, selected=32768, max_context=131072):
+def run_search(behaviour, selected=32768, max_context=131072, confirm=False):
     """Run a search where `behaviour(tokens_per_slot, stage)` decides each probe.
 
     `stage` is "start" for the engine load and "measure" for the full workload;
@@ -42,7 +42,12 @@ def run_search(behaviour, selected=32768, max_context=131072):
 
     bench.measure = measure
     s = Settings(model="m.gguf", context=selected, slots=1)
-    opts = {"max_context": max_context, "output_tokens": 1024, "context_timeout": 900}
+    opts = {
+        "max_context": max_context,
+        "output_tokens": 1024,
+        "context_timeout": 900,
+        "full_window": confirm,
+    }
     r = {"id": "r", "probes": [], "samples": []}
     with (
         patch("lllm2.bench.metadata", return_value={"context": 262144}),
@@ -57,12 +62,24 @@ def loads_up_to(limit):
 
 
 class ContextSearchTests(unittest.TestCase):
-    def test_loads_double_to_ceiling_then_one_workload_confirms(self):
+    def test_loads_double_to_ceiling_without_a_prompt(self):
         loads, workloads, r = run_search(lambda n, stage: "ok")
+        self.assertEqual(loads, [32768, 65536, 131072])
+        self.assertEqual(workloads, [])
+        self.assertEqual(r["context_search_status"], "complete")
+        self.assertEqual(r["largest_observed_context"], 131072)
+        self.assertEqual(r["largest_started_context"], 131072)
+        self.assertFalse(r["context_confirmed"])
+        self.assertTrue(r["context_ceiling_reached"])
+        self.assertEqual([p["kind"] for p in r["probes"]], ["startup"] * 3)
+
+    def test_full_window_option_confirms_with_one_workload(self):
+        loads, workloads, r = run_search(lambda n, stage: "ok", confirm=True)
         self.assertEqual(loads, [32768, 65536, 131072, 131072])
         self.assertEqual(workloads, [131072])
         self.assertEqual(r["context_search_status"], "complete")
         self.assertEqual(r["largest_observed_context"], 131072)
+        self.assertTrue(r["context_confirmed"])
         self.assertTrue(r["context_ceiling_reached"])
         self.assertEqual(
             [p["kind"] for p in r["probes"]], ["startup"] * 3 + ["workload"]
@@ -71,10 +88,14 @@ class ContextSearchTests(unittest.TestCase):
     def test_refused_load_is_a_memory_limit_found_without_prefill(self):
         loads, workloads, r = run_search(loads_up_to(100000))
         self.assertEqual(loads[:3], [32768, 65536, 131072])
-        self.assertEqual(len(workloads), 1)
+        self.assertEqual(workloads, [])
         self.assertEqual(r["context_search_status"], "complete")
-        self.assertEqual(r["largest_observed_context"], workloads[0])
-        self.assertEqual(r["largest_started_context"], workloads[0])
+        self.assertEqual(
+            r["largest_observed_context"],
+            max(loads_ok := [n for n in loads if n <= 100000]),
+        )
+        self.assertEqual(r["largest_started_context"], max(loads_ok))
+        self.assertFalse(r["context_confirmed"])
         self.assertLessEqual(r["largest_observed_context"], 100000)
         self.assertLessEqual(
             r["context_failed_upper_bound"] - r["largest_observed_context"],
@@ -84,7 +105,8 @@ class ContextSearchTests(unittest.TestCase):
 
     def test_workload_timeout_bounds_search_without_ending_it(self):
         loads, workloads, r = run_search(
-            lambda n, stage: "timeout" if stage == "measure" and n >= 131072 else "ok"
+            lambda n, stage: "timeout" if stage == "measure" and n >= 131072 else "ok",
+            confirm=True,
         )
         self.assertEqual(workloads[0], 131072)
         self.assertGreater(len(workloads), 1)
@@ -99,7 +121,8 @@ class ContextSearchTests(unittest.TestCase):
     def test_workload_failure_below_loaded_size_is_bisected(self):
         limit = 70000
         loads, workloads, r = run_search(
-            lambda n, stage: "fail" if stage == "measure" and n > limit else "ok"
+            lambda n, stage: "fail" if stage == "measure" and n > limit else "ok",
+            confirm=True,
         )
         self.assertEqual(workloads[0], 131072)
         self.assertEqual(r["context_search_status"], "complete")
@@ -117,7 +140,7 @@ class ContextSearchTests(unittest.TestCase):
 
     def test_only_the_experiment_window_loads(self):
         loads, workloads, r = run_search(loads_up_to(32768))
-        self.assertEqual(workloads, [32768])
+        self.assertEqual(workloads, [])
         self.assertEqual(r["largest_observed_context"], 32768)
         self.assertEqual(r["context_search_status"], "complete")
         self.assertLessEqual(
