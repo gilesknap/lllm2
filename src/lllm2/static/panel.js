@@ -718,7 +718,7 @@ $('results').onclick=e=>{
  const copy=e.target.closest('[data-copy-row]');if(copy){const row=resultRows().find(r=>r.key===copy.dataset.copyRow);if(row)attempt(()=>copyText(tableText([row],'\t'),'Result row',false));return;}
  const b=e.target.closest('[data-promote]');if(b)attempt(()=>previewResult(b.dataset.promote,b.dataset.hasContext==='true'&&contextChoice!=='original'));
 };
-function resultBlock(r){return r.measurement_mode==='warm-conversation'?'Warm-only evidence':r.quality_status==='failed'?'Source adherence failed':r.status!=='complete'||!r.samples?.length?'No completed samples':'';}
+function resultBlock(r){return r.measurement_mode==='warm-conversation'?'Warm-only evidence':r.quality_status==='failed'?'Source adherence failed':r.status!=='complete'?'Run not complete':!r.samples?.length&&!r.largest_observed_context?'No completed samples or context measurement':'';}
 $('load-experiment').onclick=()=>attempt(async()=>{
  $('load-menu').open=false;$('experiment-picker').showModal();$('experiment-picker-error').textContent='';$('experiment-options').textContent='Loading experiments…';
  const n=++pickerSequence;

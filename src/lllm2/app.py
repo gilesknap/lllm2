@@ -22,6 +22,14 @@ from .settings import Settings, capabilities, launch_args
 from .store import Store
 
 
+def measured(result):
+    """A completed result with a speed sample or a usable context measurement."""
+    if not result or result.get("status") != "complete":
+        return False
+    context = result.get("largest_observed_context")
+    return bool(result.get("samples")) or (type(context) is int and context > 0)
+
+
 class App:
     def __init__(self):
         self.store = Store()
@@ -139,8 +147,10 @@ class App:
             return {"deleted": deleted}
         if path == "/api/result/preview":
             r = self.store.get("result", data["result_id"])
-            if not r or r["status"] != "complete" or not r["samples"]:
-                raise ValueError("Choose a completed result with samples.")
+            if not measured(r):
+                raise ValueError(
+                    "Choose a completed result with samples or a context measurement."
+                )
             if (
                 r.get("measurement_mode") == "warm-conversation"
                 or r.get("quality_status") == "failed"
@@ -222,7 +232,7 @@ class App:
             provenance = None
             if data.get("result_id"):
                 r = self.store.get("result", data["result_id"])
-                if not r or r["status"] != "complete" or not r["samples"]:
+                if not measured(r):
                     raise ValueError(
                         "Only a completed measured configuration can be promoted."
                     )

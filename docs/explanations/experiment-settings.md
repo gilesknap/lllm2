@@ -245,11 +245,13 @@ A brief peak can fall between samples. **Export CSV** and **Copy table** use the
 current displayed sample order and retain partial or failed entries. **Export
 full JSON** keeps the complete records and diagnostics.
 
-**Try in Launch** loads an eligible result’s settings for review. Expand the
-row to reach it. The **Context** choice defaults to **Tested**, the largest
-context that passed the search; **90%** selects the rounded-down headroom
-estimate instead, and **Original** keeps the experiment's own context.
-The choice appears only when a successful context measurement exists.
+**Try in Launch** loads an eligible result’s settings for review: a completed
+run with a speed sample or a context measurement. Expand the row to reach it.
+The **Context** choice defaults to **Tested**, the largest context that passed
+a prompt probe, or **Loaded**, the largest window that loaded when no prompt
+confirmed it; **90%** selects the rounded-down headroom estimate instead, and
+**Original** keeps the experiment's own context. The choice appears only when
+a context measurement exists.
 Warm-only evidence, failed source adherence and incomplete runs cannot be
 promoted this way. Loading does not save settings or restart the model:
 review the draft, save it if desired, then start or restart to apply it. See also

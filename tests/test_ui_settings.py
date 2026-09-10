@@ -150,6 +150,29 @@ class SettingsRecoveryTests(unittest.TestCase):
             ):
                 self.app.action(route, {"result_id": "measured", "use_context": True})
 
+    def test_discovery_only_result_promotes_its_loaded_context(self):
+        result = {
+            **self.result,
+            "samples": [],
+            "largest_observed_context": 65536,
+            "recommended_context": 58880,
+            "context_confirmed": False,
+        }
+        self.app.store.put("result", "measured", result)
+        data = {"result_id": "measured", "use_context": True}
+        preview = self.app.action("/api/result/preview", data)
+        self.assertEqual(preview["settings"]["context"], 65536)
+        with patch("lllm2.app.launch_args"):
+            saved = self.app.action("/api/default/save", data)
+        self.assertEqual(saved["context"], 65536)
+        # Neither a sample nor a context measurement: nothing to promote.
+        self.app.store.put(
+            "result", "measured", {**result, "largest_observed_context": None}
+        )
+        for route in ("/api/result/preview", "/api/default/save"):
+            with self.subTest(route=route), self.assertRaises(ValueError):
+                self.app.action(route, {"result_id": "measured"})
+
     def test_ineligible_experiments_cannot_be_loaded_or_saved(self):
         for change in (
             {"measurement_mode": "warm-conversation"},
