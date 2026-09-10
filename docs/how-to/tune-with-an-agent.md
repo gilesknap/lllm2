@@ -18,35 +18,38 @@ running; it does not matter whether the model is running.
 
 ## 2. Get a sandboxed agent that can reach the panel
 
-Install rootless Podman, then fetch the claude-sandbox launcher as described in
-[Use the prebuilt container image](https://diamondlightsource.github.io/claude-sandbox/how-to/use-the-container-image.html):
+Install rootless Podman and VS Code with the Dev Containers extension, then
+clone claude-sandbox next to an empty directory for the agent's notes and open
+the clone in VS Code:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/DiamondLightSource/claude-sandbox/main/container/claude-container
-chmod +x claude-container
+mkdir -p ~/src/lllm2-tuning
+git clone https://github.com/DiamondLightSource/claude-sandbox ~/src/claude-sandbox
+code ~/src/claude-sandbox
 ```
 
-Read the launcher before running it; it runs unsandboxed on your machine.
-If you keep a clone of claude-sandbox next to your project, use
-`../claude-sandbox/container/claude-container` instead of fetching it.
+Choose **Reopen in Container** when prompted. The container build installs
+the sandboxed `claude` and `codex` commands and mounts the parent directory
+at `/workspaces`, so the notes directory is reachable inside. The
+[getting-started tutorial](https://diamondlightsource.github.io/claude-sandbox/tutorials/getting-started.html)
+covers the Podman setup for VS Code and the first login.
 
 The sandbox's network egress jail gives the agent a private network namespace
 with its own loopback, so `127.0.0.1:8082` inside the jail is **not** your
 panel, even though the panel listens on localhost. Its single-port relay only
-serves Pi and only forwards the model port. For this task, launch with the jail
-off and the container on the host network, from an empty directory where the
-agent can keep its notes:
+serves Pi and only forwards the model port. The devcontainer itself runs on
+the host network, so turning the jail off for this one session is enough.
+In the VS Code terminal:
 
 ```bash
-mkdir -p ~/lllm2-tuning && cd ~/lllm2-tuning
-CLAUDE_SANDBOX_EGRESS_JAIL=0 claude-container --host-net
+cd /workspaces/lllm2-tuning
+CLAUDE_SANDBOX_EGRESS_JAIL=0 claude
 ```
 
-For Codex, add `--agent codex`. If a container for this directory already
-exists, add `--recreate` so the new settings apply. With the jail off the
-agent shares the machine's network but still has no access to your host
-credentials, home directory or shell environment. Do not disable the jail for
-ordinary coding sessions.
+Use `codex` in place of `claude` for Codex. With the jail off the agent
+shares the machine's network but still has no access to your host
+credentials, home directory or shell environment. Do not set the variable
+for ordinary coding sessions; a plain `claude` launch is jailed again.
 
 Log in to the agent when prompted, then confirm it can see the panel by asking
 it to run:
@@ -56,8 +59,8 @@ curl -fsS http://127.0.0.1:8082/api/status | head -c 300
 ```
 
 A JSON document with `"version"` and `"engine"` keys means the API is
-reachable. `Connection refused` means the panel is not running or the container
-was created without `--host-net`.
+reachable. `Connection refused` means the panel is not running, or the agent
+was started without the variable.
 
 ## 3. Give the agent the tuning prompt
 
@@ -171,10 +174,3 @@ in **Experiment history**, click **Try in Launch**, review the draft and click
 for the context choices on that row and
 [Experiment and model settings](../explanations/experiment-settings.md) for
 what each measured number means.
-
-Once you are done, stop the sandbox container and recreate it without the
-escape hatch before using it for anything else:
-
-```bash
-claude-container --recreate
-```
