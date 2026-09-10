@@ -1,0 +1,8 @@
+{
+  "theme": "dark",
+  "powerline": true,
+  "breadcrumb": "inner",
+  "footer": true,
+  "header": true,
+  "header-info": false
+}

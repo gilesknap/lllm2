@@ -28,7 +28,6 @@ class CliTests(unittest.TestCase):
                 ["launch"],
                 ["claude"],
                 ["codex"],
-                ["pi"],
             ):
                 for flag in ("--help", "-h"):
                     with self.subTest(command=command, flag=flag):
@@ -246,7 +245,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(cli.main(["launch"]), 130)
 
     def test_harness_argument_forwarding(self):
-        for name in ("claude", "codex", "pi"):
+        for name in ("claude", "codex"):
             for args in (
                 ["-p", "a prompt with spaces", "--model", "override"],
                 ["exec", "--help"],
@@ -262,6 +261,45 @@ class CliTests(unittest.TestCase):
                     run.assert_called_once_with(
                         name, args[1:] if args[0] == "--" else args
                     )
+
+    def test_pi_container_arguments_and_exit_code(self):
+        for args in (
+            ["-e", "git:github.com/badlogic/pi-skills"],
+            ["-p", "a prompt with spaces; $(literal)", "--model", "override"],
+            ["--help"],
+            ["-h"],
+            ["--", "--help"],
+            ["--image", "input.png", "--model-port", "1234"],
+            ["install", "npm:example"],
+        ):
+            with (
+                self.subTest(args=args),
+                patch.object(cli, "launch_pi", return_value=7) as run,
+            ):
+                result = self.runner.invoke(cli.app, ["pi", "--pat", *args])
+                self.assertEqual(result.exit_code, 7, result.output)
+                run.assert_called_once_with(
+                    args[1:] if args[0] == "--" else args,
+                    pat=True,
+                )
+
+    def test_pi_pat_can_follow_agent_arguments(self):
+        with patch.object(cli, "launch_pi", return_value=0) as run:
+            result = self.runner.invoke(
+                cli.app, ["pi", "-e", "some-extension", "--pat"]
+            )
+            self.assertEqual(result.exit_code, 0, result.output)
+            run.assert_called_once_with(["-e", "some-extension"], pat=True)
+
+    def test_pi_launches_container_without_host_pi_or_model(self):
+        with (
+            patch.object(cli, "run_harness") as harness,
+            patch.object(cli, "launch_pi", return_value=0) as run,
+        ):
+            result = self.runner.invoke(cli.app, ["pi"])
+            self.assertEqual(result.exit_code, 0, result.output)
+            run.assert_called_once_with([], pat=False)
+            harness.assert_not_called()
 
 
 if __name__ == "__main__":

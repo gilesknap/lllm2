@@ -11,7 +11,8 @@ Run `lllm2 COMMAND --help` for all options.
 | `lllm2 engines list [--json]` | List discovered llama-server builds. |
 | `lllm2 engines install cuda` | Download this release’s pinned CUDA engine; accepts `--name` and `--force` (try CUDA 12 when driver checks fail). |
 | `lllm2 launch` | Serve in the foreground; accepts `--model`, `--engine`, `--backend CUDA\|Vulkan`, `--device` and `--timeout`. |
-| `lllm2 claude`, `lllm2 codex`, `lllm2 pi` | Connect an installed coding-agent CLI to the running model. |
+| `lllm2 claude`, `lllm2 codex` | Connect an installed coding-agent CLI to the running model. |
+| `lllm2 pi` | Launch the Pi container with local rootless Podman. Only `--pat` is consumed by lllm2; all other arguments go to Pi. |
 
 Engine installation shows download progress, transfer speed, and estimated time
 remaining, followed by checksum, extraction, and startup status. Progress goes to

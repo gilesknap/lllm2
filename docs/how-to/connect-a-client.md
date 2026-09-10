@@ -14,9 +14,19 @@ forward additional arguments:
 ```bash
 lllm2 claude
 lllm2 codex
-lllm2 pi
 ```
 
-The wrappers read the running model's context and slots. Relaunch the client
+The Claude and Codex wrappers read the running model's context and slots. Relaunch the client
 after changing server context. Use `lllm2 claude -- --help` (or the equivalent
 wrapper) to read the client's own help.
+
+`lllm2 pi` launches the [Pi container](pi-container.md), with the current project
+writable at `/workspaces` and `~/.pi` shared at `/root/.pi`. It requires local
+rootless Podman, not a host Pi installation. It consumes only `--pat`; all
+other arguments go to Pi unchanged:
+
+```bash
+lllm2 pi --provider lllm2
+lllm2 pi --pat -e git:github.com/badlogic/pi-skills
+lllm2 pi --help
+```
