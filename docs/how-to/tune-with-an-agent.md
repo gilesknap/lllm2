@@ -36,20 +36,21 @@ covers the Podman setup for VS Code and the first login.
 
 The sandbox's network egress jail gives the agent a private network namespace
 with its own loopback, so `127.0.0.1:8082` inside the jail is **not** your
-panel, even though the panel listens on localhost. Its single-port relay only
-serves Pi and only forwards the model port. The devcontainer itself runs on
-the host network, so turning the jail off for this one session is enough.
-In the VS Code terminal:
+panel, even though the panel listens on localhost. The jail can relay one
+loopback port into the agent, and by default that is the model API on 1920.
+Point it at the panel for this session instead. In the VS Code terminal:
 
 ```bash
 cd /workspaces/lllm2-tuning
-CLAUDE_SANDBOX_EGRESS_JAIL=0 claude
+CLAUDE_SANDBOX_LOCAL_MODEL_PORT=8082 claude
 ```
 
-Use `codex` in place of `claude` for Codex. With the jail off the agent
-shares the machine's network but still has no access to your host
-credentials, home directory or shell environment. Do not set the variable
-for ordinary coding sessions; a plain `claude` launch is jailed again.
+Use `codex` in place of `claude` for Codex. The jail stays on: the agent sees
+the panel and nothing else on your machine's network, and it still has no
+access to your host credentials, home directory or shell environment. A plain
+`claude` launch relays the model port again. This needs claude-sandbox with
+its relay available to every agent (see its
+[egress jail how-to](https://diamondlightsource.github.io/claude-sandbox/how-to/network-egress-jail.html#reach-a-service-on-the-hosts-loopback)).
 
 Log in to the agent when prompted, then confirm it can see the panel by asking
 it to run:
@@ -59,8 +60,9 @@ curl -fsS http://127.0.0.1:8082/api/status | head -c 300
 ```
 
 A JSON document with `"version"` and `"engine"` keys means the API is
-reachable. `Connection refused` means the panel is not running, or the agent
-was started without the variable.
+reachable. `Connection refused` means the panel is not running, the agent was
+started without the variable, or the installed claude-sandbox predates the
+relay for Claude and Codex.
 
 ## 3. Give the agent the tuning prompt
 
