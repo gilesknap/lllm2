@@ -29,12 +29,16 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Unit tests
         run: |
-          PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_pi_container.py'
+          uv run --locked python -m unittest discover -s tests -p 'test_pi_container.py'
           node --test pi/test_seed.mjs
           bash -n pi/entrypoint.sh pi/run.sh pi/smoke.sh
       - name: Image name
