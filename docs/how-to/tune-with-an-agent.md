@@ -67,106 +67,95 @@ relay for Claude and Codex.
 ## 3. Give the agent the tuning prompt
 
 Paste the prompt below into the agent. Replace the first line with the model
-you want to tune. The agent works entirely through the API, waits for each run
-and reports back before anything is saved.
+you want to tune. The agent works through the API, adapts later rounds to the
+measurements, and leaves saved settings unchanged.
 
 ````text
 Tune the lllm2 settings for the model whose filename contains "Qwen3.8-27B".
 
-lllm2 is a local llama.cpp workbench. Its panel runs at http://127.0.0.1:8082
-and exposes a JSON API under /api/. Always use exactly that base URL, because
-the server checks the Host header. Use curl or python3 urllib; there is no
-browser here.
+Drive the local panel API at exactly http://127.0.0.1:8082; there is no browser.
+Read GET /api/status first and send its "token" as X-LLLM2-Token on every POST.
+Use GET /api/status, /api/results and /api/results/export, and POST
+/api/discover, /api/default/resolve, /api/capabilities, /api/benchmark and
+/api/cancel only. Do not download or delete anything, and do not save settings.
 
-Rules
-- Read GET /api/status first. Send the value of its "token" field as the
-  X-LLLM2-Token header on every POST, with Content-Type: application/json.
-- Only use these endpoints: GET /api/status, GET /api/results,
-  GET /api/results/export, POST /api/discover, POST /api/default/resolve,
-  POST /api/capabilities, POST /api/benchmark, POST /api/cancel. Do not delete
-  results, download models, or save settings unless I say so in this session.
-- An experiment stops any running model; that is expected. Before submitting,
-  read the "engine" object from /api/status. If "running" is true, include
-  "replace_running": true and "expected_pid": <engine.pid> in the benchmark
-  request.
-- Only one operation runs at a time. After submitting, poll GET /api/status
-  every 30 seconds and wait until "job"."active" is false. Never submit while
-  a job is active, and never cancel a run unless I ask you to.
-- Do not change model, engine, backend, device, context or slots between
-  configurations in one comparison; the server rejects mixed combinations
-  and the comparison would be meaningless anyway.
+Find the matching installed checkpoint and CUDA engine, resolve its saved or
+recommended settings, and use that complete settings object as the baseline.
+Check capabilities and test only supported settings. Experiments may stop the
+served model. If one is running, include "replace_running": true and
+"expected_pid": <engine.pid>. Run one operation at a time, poll status about
+every 30 seconds, and do not cancel a healthy run.
 
-Step 1: find the model and starting settings
-- POST /api/discover with {} lists installed models and engines. Pick the
-  model whose path contains the name above and the newest CUDA engine.
-- POST /api/default/resolve with {"settings": {"model": "<path>", "engine":
-  "<path>"}} returns the recommended or saved settings for it. Use the
-  returned "settings" object as the baseline. It has these keys: model,
-  engine, backend, device, context, slots, gpu_layers, flash, cache, cache_k,
-  cache_v, speculation, drafter, pair_confirmed, draft_length, effort,
-  draft_cache, chat_template, batch_size, ubatch_size, backend_sampling,
-  cuda_graph_opt, cache_ram_mib, context_checkpoints, lookup_ngram_n,
-  lookup_ngram_m. Send the whole object back each time; unknown keys are
-  rejected.
-- POST /api/capabilities with {"settings": <baseline>} reports which
-  features the engine and checkpoint support (speculation modes, cache
-  precisions, flash attention, reasoning effort). Only test what it reports
-  as available.
-- Report the baseline and the available features to me before running
-  anything.
+Find useful settings with small adaptive rounds rather than one Cartesian
+search:
 
-Step 2: run the built-in single-option sweep
-POST /api/benchmark with:
-{"mode": "suite", "settings": <baseline>, "workloads": ["long-code"],
- "sweep_prompts": true, "output_tokens": 256, "repeats": 2,
- "search_context": false, "full_window": false, "timeout": 900,
- "context_timeout": 900}
-plus replace_running/expected_pid if needed. This runs the baseline and one
-variant per option group (speculation mode, KV cache precision, flash
-attention, reasoning effort). The response lists skipped variants with
-reasons. Wait for it to finish.
+1. Establish a repeated 1K baseline, then screen speculation, common K/V cache
+   precision, reasoning effort, Flash Attention and other available single
+   options. Combine only promising changes.
+2. If MTP helps, tune draft length. Test CUDA execution controls separately.
+   Compare batch and microbatch settings at 16K and 64K before accepting a
+   prefill improvement.
+3. Compare matching prompts and output budgets. Use medians from at least three
+   repeats for short screens. Judge wall time alongside prefill/decode rates,
+   actual output count, draft acceptance and peak GPU memory.
+4. Quality-check finalists with source-small-edit or context-retrieval-edit.
+   Exact adherence must pass; a shorter or truncated answer is not a speed win.
+5. Find the largest one-slot context up to the checkpoint metadata limit. A
+   load-only search is preliminary: confirm the candidate with a nearly full
+   context-retrieval-edit prompt. Use q4 cache or headroom if needed. Raise the
+   speed-test timeout to 1800 seconds for prompts near 256K; keep load-probe
+   timeout at 900 seconds.
+6. Test whether two and four slots load and serve. Report total context and
+   context per slot. The current harness sends requests sequentially, so do not
+   claim concurrent throughput unless you measure simultaneous requests by
+   another method.
+7. Re-run the original baseline and finalists at 1K, 16K and 64K. Give separate
+   recommendations when short decode speed, long-context work, capacity and
+   multiple clients have different winners.
 
-Step 3: read the results
-GET /api/results returns one row per run, newest first. Rows from the same
-submission share a "group" value; each row has "label" ("baseline",
-"speculation-none", "cache-q4_0" and so on), "status" and "settings". Each
-row's "samples" list has one entry per workload, prompt size and repeat with
-"input_tokens", "output_tokens", "prefill_tok_s", "decode_tok_s",
-"wall_seconds", "peak_total_gpu_used_mib", "peak_engine_rss_mib" and
-"adherence". Compare rows only at the same input size. Average the repeats.
-Print a table: label, and for each prompt size the mean decode tok/s,
-prefill tok/s and peak GPU MiB. Note any failed or skipped variants and
-their reasons.
-
-Step 4: combine the winners
-Build up to 6 configurations from the baseline that combine the options that
-helped, plus one or two follow-ups worth checking (for example a different
-draft_length if speculation helped, or batch_size 4096 with ubatch_size 1024
-if prefill matters). Show me the list and wait for my go-ahead. Then POST
-/api/benchmark with {"mode": "combinations", "settings": <baseline>,
-"combinations": [<settings>, ...]} and the same workload and budget fields as
-step 2. Rows come back labelled "combination-1", "combination-2" and so on in
-the order sent. Wait, then extend the table.
-
-Step 5: confirm the finalist on more workloads
-Take the best configuration by decode tok/s at 16K input that is within 3%
-of the best prefill, and rerun it alone with {"mode": "custom", "settings":
-<finalist>, "workloads": ["long-code", "source-small-edit",
-"context-retrieval-edit"], "sweep_prompts": true, "repeats": 2}. The two
-source workloads report "adherence"; treat a failed adherence as
-disqualifying and fall back to the next candidate. Optionally, with my
-go-ahead, run the finalist once more with "search_context": true,
-"workloads": [] and "max_context": 131072 to measure the largest context that
-loads.
-
-Step 6: report
-Give me a final table with baseline, finalist and the difference in decode
-and prefill tok/s at each prompt size, peak GPU memory, and the list of
-settings that changed. State what you could not measure. Do not save
-anything. I will open Experiment history in the panel, expand the finalist
-row and click "Try in Launch" then "Save my settings" myself, or I will ask
-you to POST /api/default/save with {"result_id": "<row id>"}.
+Keep the exact checkpoint, engine, backend and device fixed within a comparison.
+The combinations endpoint also requires context and slots to match. Preserve
+all results and failures. Report result IDs, settings changed, medians and
+percentage differences, quality outcomes, memory headroom, timeouts and anything
+the harness could not establish. Leave the queue idle and tell me which result
+could be saved with POST /api/default/save if I later authorize it.
 ````
+
+## Example: maximize Qwen3.8-27B context on an RTX 3090
+
+On 10 September 2026 this process tested
+`Qwen3.8-27B-UD-Q4_K_S.gguf` with llama.cpp commit `662a0b0` on an NVIDIA
+GeForce RTX 3090 (24,576 MiB VRAM, compute capability 8.6, driver 595.91.07)
+with a Ryzen 7 5800X and 30.3 GiB system RAM. The chosen one-slot coding
+profile was:
+
+| Setting | Value |
+|---|---|
+| Total context / slots | 262,144 / 1 |
+| GPU layers / Flash Attention | 999 / on |
+| Common K/V cache | q4_0 |
+| Reasoning effort | default |
+| Speculation / draft length / draft cache | MTP / 3 / q8_0 |
+| Logical batch / physical microbatch | 2048 / 512 |
+| Target GPU sampling / concurrent CUDA streams | off / off |
+
+A 260,064-token retrieval/edit prompt reserved 2,048 reply tokens plus a
+32-token margin. It passed exact adherence, processed the prompt at 443.5 tok/s,
+decoded at 29.8 tok/s and finished in 601 seconds. Sampled total GPU use peaked
+at 24,093 MiB, so startup was sensitive to other GPU applications; 235,776 is
+the 10%-headroom alternative.
+
+For repeated 1K/256-token long-code requests, q4/default improved median decode
+from 71.34 to 72.99 tok/s (2.3%), reduced wall time from 4.54 to 4.48 seconds
+(1.4%), and saved about 1 GiB of sampled GPU memory. A separate q8/low-effort
+profile reached 78.76 tok/s (10.4% faster decode and 7.8% lower wall time) and
+passed the exact small-edit check, but regressed at 16K and 64K. It was therefore
+a short-request option, not the saved long-context default.
+
+Two slots at 131,072 total context also loaded and served, providing 65,536
+tokens per slot at a sampled 22,876 MiB. Four slots at 65,536 total provided
+16,384 per slot and also served, but simultaneous-request throughput was not
+measured.
 
 ## 4. Keep the result
 
