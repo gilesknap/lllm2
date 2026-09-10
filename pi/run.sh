@@ -14,9 +14,11 @@ bundle=(
     --extension /opt/pi/node_modules/pi-mcp-adapter
     --extension /opt/pi/node_modules/pi-web-access
     --extension /opt/pi/node_modules/pi-powerline
+    --append-system-prompt /opt/pi/context.md
 )
 # Pi loads explicit --extension paths even with --no-extensions. Honour that
-# flag as an opt-out from this image's defaults as well.
+# flag as an opt-out from this image's defaults, including the shared context
+# appended to the system prompt.
 for arg in "$@"; do
     if [ "$arg" = --no-extensions ]; then bundle=(); break; fi
 done

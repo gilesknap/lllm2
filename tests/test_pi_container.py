@@ -124,3 +124,19 @@ class LauncherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImageContextTests(unittest.TestCase):
+    """The shared context file reaches Pi's system prompt on every launch."""
+
+    root = Path(__file__).resolve().parent.parent / "pi"
+
+    def test_context_is_copied_and_appended(self):
+        context = (self.root / "context.md").read_text()
+        self.assertIn("lllm2 Pi container", context)
+        self.assertIn("PI_SESSION_FILE", context)
+        self.assertIn("pi/context.md /opt/pi/", (self.root / "Dockerfile").read_text())
+        run = (self.root / "run.sh").read_text()
+        self.assertIn("--append-system-prompt /opt/pi/context.md", run)
+        # The opt-out for image defaults covers the context as well.
+        self.assertLess(run.index("--append-system-prompt"), run.index("bundle=()"))

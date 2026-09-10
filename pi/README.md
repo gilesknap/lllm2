@@ -77,8 +77,8 @@ agent image, not a full language toolchain or browser development environment.
 
 Bundled extensions are supplied as explicit local `--extension` arguments so
 mounting an existing `.pi` does not hide them or require first-run downloads.
-Use `-- --no-extensions` to disable the bundle and auto-discovered extensions
-for a session. Additional explicit `--extension` arguments still work. If your
+Use `-- --no-extensions` to disable the bundle, auto-discovered extensions and
+the shared context below for a session. Additional explicit `--extension` arguments still work. If your
 shared configuration already installs these packages, remove the duplicate
 user-installed copies or opt out of the image bundle. To add another package:
 
@@ -91,6 +91,16 @@ styled header without diagnostic startup information. Powerline uses text
 fallbacks when the terminal does not advertise Nerd Font support. Change
 `~/.pi/agent/settings.json` to adjust its `powerline`, `breadcrumb`, `footer`,
 `header`, and `header-info` settings. User settings take precedence over seeding.
+
+## Shared context
+
+`context.md` in this directory is appended to Pi's system prompt for every
+user through `--append-system-prompt`. It tells the agent it is running in this
+container, which environment variables describe its session, and the runtime
+facts above, so questions about Pi or the sandbox are answered first-hand
+instead of from the web. It is image-owned and read-only inside the jail; edit
+it here and rebuild the image to change it. Users' own `AGENTS.md`,
+`APPEND_SYSTEM.md` and `--append-system-prompt` arguments still apply on top.
 
 ## GitHub PAT
 
