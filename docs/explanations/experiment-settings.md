@@ -226,7 +226,10 @@ experiment's special blank-field defaults are described above.
 **Feature availability** reports what engine and checkpoint checks found.
 “Available to try” is distinct from a successful launch, and both are distinct
 from a measured benefit. Read incompatibility reasons and the exact engine log
-when a configuration fails.
+when a configuration fails. Entries that are available or experimental carry a
+link that opens **Customize settings** at the matching control; for a
+speculation mode the link also selects that mode, and disappears once it is
+selected.
 
 Cold speed samples start a fresh engine and disable prompt caching. Benchmark
 requests use temperature zero and seed 42; these are fixed measurement settings,

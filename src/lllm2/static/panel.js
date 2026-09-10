@@ -50,16 +50,36 @@ function launchTips(){
  }
 }
 let featureState=null;
+// Speculation modes share one control; other features map to a control of the same name.
+const speculationModes=['draft-mtp','draft-dflash','ngram-simple','draft-mtp,ngram-simple'], featureControls={cache_pair:'cache_k'};
+function featureControl(key){return speculationModes.includes(key)?'speculation':settingKeys.includes(key)?key:featureControls[key]||null;}
+function featureAction(key,v,s){
+ const control=featureControl(key);
+ if(!control||!['available','experimental'].includes(v.status))return '';
+ if(control==='speculation'){
+  if(s.speculation===key)return '';
+  return `<button type="button" class="feature-link" data-feature-control="speculation" data-feature-value="${esc(key)}">Select ${esc((launchHelp[key]||[key])[0])} in Customize settings</button>`;
+ }
+ return `<button type="button" class="feature-link" data-feature-control="${esc(control)}">Open in Customize settings</button>`;
+}
 function renderFeatures(){
  if(!featureState)return;
  const s=settings(), statuses={experimental:'Experimental · runtime unverified',available:'Available to try',unsupported:'Not supported',unknown:'Support unconfirmed','missing prerequisites':'Needs setup'};
  $('features').innerHTML=Object.entries(featureState).map(([key,v])=>{
   const choice=key in s?`Form value: ${s[key]??'engine default'}`:s.speculation===key?'Selected in form':'Not selected in form';
   const reason=key==='flash'||key==='cache'||key==='effort'?(v.status==='unsupported'?'This engine does not advertise the required control.':v.status==='unknown'?'Support could not be confirmed for this engine and template.':'Engine control detected; this model/backend still needs a successful launch.'):v.reason;
-  return `<div class="feature"><div class="field-title"><b>${esc((launchHelp[key]||[key])[0])}</b>${helpTip(key,'feature')}</div><div>${esc(statuses[v.status]||'Support unconfirmed')} · ${esc(choice)}</div><small>${esc(reason)}</small><details><summary>Technical diagnostics</summary><small>${esc(key)} · ${esc(v.status)}</small><small>${esc(v.reason)}</small></details></div>`;
+  return `<div class="feature"><div class="field-title"><b>${esc((launchHelp[key]||[key])[0])}</b>${helpTip(key,'feature')}</div><div>${esc(statuses[v.status]||'Support unconfirmed')} · ${esc(choice)}</div><small>${esc(reason)}</small>${featureAction(key,v,s)}<details><summary>Technical diagnostics</summary><small>${esc(key)} · ${esc(v.status)}</small><small>${esc(v.reason)}</small></details></div>`;
  }).join('');
  initTips($('features'));
 }
+// Each link opens Customize settings at its control; speculation links also select that mode.
+$('features').addEventListener('click',e=>{
+ const b=e.target.closest('[data-feature-control]');if(!b)return;
+ const control=$(b.dataset.featureControl);
+ customize(true);
+ if(b.dataset.featureValue!==undefined){control.value=b.dataset.featureValue;edited('speculation');}
+ control.scrollIntoView({block:'center'});control.focus();
+});
 let token='', discovered={}, combinations=[], results=[], lastResults='', statusState={}, loadedDefaults=null;
 let view='launch', drafts={launch:null,experiments:null}, connected=false, resolving=true, selectionSequence=0, validationSequence=0;
 let validationSnapshot='', validationError='', actionError='', selectionNote='', pendingAction=false, pollPending=false, scanPending=false;
