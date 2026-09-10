@@ -1,8 +1,8 @@
 # From a model to Pi
 
-You need a Linux NVIDIA machine and [uv](../how-to/prepare-your-machine.md).
-Run the shell commands below in a terminal on that machine, outside the Pi
-devcontainer. Use the browser for the panel steps.
+You need a Linux NVIDIA machine, [uv](../how-to/prepare-your-machine.md) and,
+for the Pi step, rootless Podman. Run the shell commands below in a terminal on
+that machine, outside any container. Use the browser for the panel steps.
 
 ````{admonition} For DLS users
 Load uv through the DLS module system in your shell:
@@ -66,9 +66,11 @@ Keep the defaults for your first baseline.
 ```
 
 Scroll further down to **Experiment history**. Click the **▸** at the start of
-the completed run's row to expand it. Leave **Tested** selected under **Context**
-and click **Try in Launch** to use the full successful context. **90%** leaves
-some headroom; **Original** keeps the experiment's original context.
+the completed run's row to expand it. Leave **Loaded** selected under
+**Context** and click **Try in Launch** to use the largest window that loaded.
+**90%** leaves some headroom; **Original** keeps the experiment's original
+context. A run that also confirmed the window with a full prompt shows
+**Tested** in place of **Loaded**.
 
 ```{figure} ../images/tutorial-history.png
 :alt: Completed baseline row expanded, showing Try in Launch and the three context choices.
@@ -83,7 +85,37 @@ Wait until the panel reports the model is ready.
 
 ## 3. Run Pi
 
-In another terminal on the same machine, clone the sandbox and open it in VS Code:
+Both ways of running Pi below use a sandboxed container and need rootless
+Podman on the machine. Check it works before continuing:
+
+```bash
+podman info --format '{{.Host.Security.Rootless}}'
+```
+
+This prints `true` when Podman is set up for your user. Pi finds the lllm2
+model automatically in either case, so there is nothing to configure.
+
+### Quick: `lllm2 pi`
+
+For sandboxed interaction with your model without a devcontainer, open another
+terminal on the same machine, change to the project directory you want Pi to
+work in, and run:
+
+```bash
+lllm2 pi
+```
+
+The first run pulls the Pi image. Your project is available to Pi at
+`/workspaces`, and your Pi settings live in `~/.pi` as usual. See
+[Run Pi in a container](../how-to/pi-container.md) for the options.
+
+### Full: the claude-sandbox devcontainer
+
+For a complete development environment with Claude, Codex and Pi, use the
+devcontainer instead. Configure VS Code's Dev Containers extension to use
+Podman by setting **Dev › Containers: Docker Path** to `podman` in its
+settings. Then, in another terminal on the same machine, clone the sandbox and
+open it in VS Code:
 
 ```bash
 git clone git@github.com:DiamondLightSource/claude-sandbox.git
@@ -99,7 +131,7 @@ runs inside the devcontainer; run Pi here:
 pi
 ```
 
-Pi connects to the lllm2 model port by default. Start coding!
+Start coding!
 
 For later: [run the panel as a service](service.md), [upgrade lllm2](upgrade.md),
 [compare settings](../how-to/compare-settings.md),
