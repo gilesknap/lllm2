@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import math
+import re
 import threading
 import time
 import uuid
@@ -50,6 +51,19 @@ def prompt_sizes(s, opts):
 
 def stamp():
     return datetime.now(UTC).isoformat()
+
+
+MEMORY_EXHAUSTED = re.compile(
+    r"out of memory|failed to allocate|allocation of size .* failed|bad_alloc"
+    r"|cannot allocate|OutOfMemory|OutOfDeviceMemory|cudaMalloc|failed to initialize the context"
+    r"|failed to create context|\bKilled\b|not enough (?:memory|space)",
+    re.IGNORECASE,
+)
+
+
+def memory_exhausted(logs, error=""):
+    """Whether an engine failure looks like memory exhaustion rather than a fault."""
+    return bool(MEMORY_EXHAUSTED.search("\n".join([*logs, error])))
 
 
 def source_text(index):
@@ -574,7 +588,12 @@ class Bench:
         selected = s.context // s.slots
 
         def best():
-            return good if confirming else started
+            # A successful workload probe is the confirmed size. Without
+            # confirmation the loaded size is reported; with confirmation
+            # requested but no workload success, nothing is reported as usable.
+            if good or confirming:
+                return good
+            return started
 
         def resolution(base=None):
             base = best() if base is None else base
@@ -599,12 +618,12 @@ class Bench:
             lower, upper = bounds(base)
             if base >= ceiling:
                 return True
-            return upper - lower <= (resolution(base) if base else 256)
+            return upper - lower <= resolution(base)
 
         def publish():
             r["largest_observed_context"] = best() or None
             r["largest_started_context"] = started or None
-            r["context_confirmed"] = confirming
+            r["context_confirmed"] = bool(good)
             # Suggested headroom is an estimate, not another measured limit.
             recommended = math.floor(best() * 0.9 / 256) * 256
             r["recommended_context"] = recommended if recommended >= floor else None
@@ -653,14 +672,21 @@ class Bench:
                 )
                 slow = min(slow, attempt)
             except Exception as e:
-                entry.update(
-                    status="failed", error=str(e), logs=self.engine.state()["logs"]
-                )
-                bad = min(bad, attempt)
+                logs = self.engine.state()["logs"]
+                entry.update(status="failed", error=str(e), logs=logs)
                 if isinstance(e, GPUUnavailable) or not hardware()["gpus"]:
                     raise GPUUnavailable(
                         "GPU unavailable after context probe; no further restarts."
                     ) from e
+                # A load that fails for a reason other than memory would fail
+                # at every size; stop rather than report a false memory limit.
+                if kind == "startup" and not memory_exhausted(logs, str(e)):
+                    entry["memory_limit"] = False
+                    raise RuntimeError(
+                        f"Engine failed to load {attempt:,} tokens per slot for a reason other than memory: {e}"
+                    ) from e
+                entry["memory_limit"] = True
+                bad = min(bad, attempt)
             finally:
                 self.engine.stop()
                 entry["finished"] = stamp()

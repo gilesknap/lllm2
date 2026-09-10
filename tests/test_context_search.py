@@ -8,7 +8,7 @@ from lllm2.bench import Bench
 from lllm2.settings import Settings
 
 
-def run_search(behaviour, selected=32768, max_context=131072, confirm=False):
+def run_search(behaviour, selected=32768, max_context=131072, confirm=False, logs=None):
     """Run a search where `behaviour(tokens_per_slot, stage)` decides each probe.
 
     `stage` is "start" for the engine load and "measure" for the full workload;
@@ -16,7 +16,13 @@ def run_search(behaviour, selected=32768, max_context=131072, confirm=False):
     """
     bench = Bench.__new__(Bench)
     bench.engine = Mock()
-    bench.engine.state.return_value = {"logs": []}
+    bench.engine.state.return_value = {
+        "logs": logs
+        if logs is not None
+        else [
+            "ggml_backend_cuda_buffer_type_alloc_buffer: cudaMalloc failed: out of memory"
+        ]
+    }
     bench.store = Mock()
     bench.lock = threading.RLock()
     bench.cancel = threading.Event()
@@ -147,17 +153,34 @@ class ContextSearchTests(unittest.TestCase):
             r["context_failed_upper_bound"] - 32768, r["context_search_resolution"]
         )
 
+    def test_non_memory_load_failure_stops_the_search(self):
+        bench_logs = ["llama_model_load: error loading model: unknown tensor"]
+        with self.assertRaises(RuntimeError) as raised:
+            run_search(lambda n, stage: "fail", logs=bench_logs)
+        self.assertIn("reason other than memory", str(raised.exception))
+
+    def test_confirmation_failure_leaves_loaded_size_unconfirmed(self):
+        loads, workloads, r = run_search(
+            lambda n, stage: "timeout" if stage == "measure" else "ok", confirm=True
+        )
+        self.assertEqual(r["largest_started_context"], 131072)
+        self.assertIsNone(r["largest_observed_context"])
+        self.assertFalse(r["context_confirmed"])
+        self.assertEqual(r["context_search_status"], "inconclusive_timeout")
+
     def test_nothing_loads(self):
         loads, workloads, r = run_search(lambda n, stage: "fail")
-        # Bisects down from the experiment window to the floor (1,280 tokens for
-        # a 1,024-token output budget), then stops.
+        # Bisects down from the experiment window towards the floor (1,280 tokens
+        # for a 1,024-token output budget) and stops within the 1,024 minimum
+        # resolution of it.
         self.assertEqual(loads[0], 32768)
         self.assertEqual(loads, sorted(loads, reverse=True))
-        self.assertEqual(loads[-1], 1280)
+        self.assertLessEqual(loads[-1] - 1280, 1024)
         self.assertEqual(workloads, [])
         self.assertIsNone(r["largest_observed_context"])
         self.assertEqual(r["context_search_status"], "complete")
-        self.assertEqual(r["context_failed_upper_bound"], 1280)
+        self.assertEqual(r["context_failed_upper_bound"], loads[-1])
+        self.assertTrue(all(p["memory_limit"] for p in r["probes"]))
 
 
 if __name__ == "__main__":

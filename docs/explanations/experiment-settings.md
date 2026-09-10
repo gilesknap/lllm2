@@ -80,11 +80,15 @@ models, GPUs and settings can change it substantially.
 Context search runs first. It starts the engine at the experiment's own window,
 doubles the window after each successful load up to the ceiling, then narrows
 between the largest load and the smallest refusal, at most twelve loads. Loads
-are quick because no prompt is sent; a refused load counts as a memory limit.
+are quick because no prompt is sent. A load refused for lack of memory counts
+as a memory limit; a load that fails for any other reason stops the search and
+fails the run with the engine log, since it would fail at every size.
 With **Also test full launch window** on, it then confirms the largest loaded
 window with one full long-code prompt and only bisects with further prompt
 probes, at most eight, if that confirmation fails or times out. Without it, the
-largest loaded window is reported as usable but unconfirmed by a prompt. The
+largest loaded window is reported as usable but unconfirmed by a prompt. With
+it, only a window that completed a prompt is reported as confirmed; if no prompt
+probe succeeds, the loaded window is shown separately as unconfirmed. The
 search stops when the uncertainty is roughly 10% of the largest success, with a
 minimum resolution of 1024 tokens. A timed-out probe bounds the
 search without ending it and is reported separately. Failures are retained. Recommended context applies
