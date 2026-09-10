@@ -255,7 +255,7 @@ this single-GPU machine.
 llama.cpp v0.4.0 was released September 4, after installed b10715, with relevant
 CUDA, assistant and cache changes. Compare a separate build before adopting it;
 upstream changes can regress particular shapes and models. Keep the existing
-lllm3090 installation intact.
+control engine intact.
 [Release](https://github.com/ggml-org/llama.cpp/releases/tag/v0.4.0),
 [example mixed performance results](https://github.com/ggml-org/llama.cpp/pull/25635)
 

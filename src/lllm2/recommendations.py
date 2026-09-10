@@ -175,7 +175,9 @@ def measured_defaults(selection):
         )
         return {
             "settings": settings.dict(),
-            "source": source + (" · qualified" if changed else ""),
+            "source": source
+            + f" · {record['backend']} · tested with {record['engine']['build']}"
+            + (" · qualified" if changed else ""),
             "notes": notes,
             "evidence": record,
             "qualification": {"changed": changed, "capability_check": "passed"},

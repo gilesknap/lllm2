@@ -45,11 +45,16 @@ Your system may require administrator permission for lingering.
 
 ## 3. Manage the service
 
-To view its logs:
+The panel forwards llama-server output to the service journal as well as the
+UI log. `systemctl --user status lllm2-panel` shows only recent lines. To follow
+the logs:
 
 ```bash
 journalctl --user -u lllm2-panel -f
 ```
+
+For retained history, use `journalctl --user -u lllm2-panel --since yesterday`.
+Retention across reboots depends on the workstation's journald configuration.
 
 Press Ctrl-C to leave the log viewer; the service keeps running. To stop or
 start the panel:

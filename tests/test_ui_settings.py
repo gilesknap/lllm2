@@ -86,7 +86,7 @@ class SettingsRecoveryTests(unittest.TestCase):
             "settings": Settings(gpu_layers=None).dict(),
             "source": "Estimated starting settings",
         }
-        with patch("lllm2.app.starting_defaults", return_value=recommended):
+        with patch("lllm2.app.choose_launch", return_value=recommended):
             self.assertEqual(
                 self.app.action(
                     "/api/default/resolve",
@@ -102,6 +102,40 @@ class SettingsRecoveryTests(unittest.TestCase):
         self.assertEqual(restored["settings"]["gpu_layers"], 0)
         self.assertEqual(
             self.app.store.get("default", self.app.default_key(self.settings)), saved
+        )
+
+    def test_recommendation_switches_backend_but_saved_defaults_keep_selection(self):
+        for backend, context in [("CUDA", 8192), ("Vulkan", 4096)]:
+            selected = Settings(
+                model=self.settings.model,
+                engine="/chosen",
+                device=backend + "1",
+                backend=backend,
+            )
+            saved = Settings(
+                model=self.settings.model,
+                engine="/old",
+                device=backend + "0",
+                backend=backend,
+                context=context,
+            )
+            self.app.store.put("default", self.app.default_key(selected), saved.dict())
+            restored = self.app.action(
+                "/api/default/resolve", {"settings": selected.dict(), "source": "saved"}
+            )
+            self.assertEqual(restored["settings"]["context"], context)
+            self.assertEqual(restored["settings"]["engine"], "/chosen")
+            self.assertEqual(restored["settings"]["device"], backend + "1")
+        recommended = {"settings": self.settings.dict(), "source": "Measured CUDA"}
+        with patch("lllm2.app.choose_launch", return_value=recommended) as resolve:
+            result = self.app.action(
+                "/api/default/resolve",
+                {"settings": selected.dict(), "source": "built-in"},
+            )
+        resolve.assert_called_once_with(model_path=self.settings.model)
+        self.assertEqual(result["settings"]["backend"], "CUDA")
+        self.assertEqual(
+            self.app.store.get("default", self.app.default_key(selected)), saved.dict()
         )
 
     def test_load_and_save_tested_context_with_optional_headroom(self):

@@ -14,7 +14,7 @@ ENGINE_ROOTS = [
     Path(p).expanduser()
     for p in os.environ.get(
         "LLLM2_ENGINE_ROOTS",
-        os.pathsep.join([str(ENGINE_HOME), str(Path.home() / ".local/share/lllm3090")]),
+        str(ENGINE_HOME),
     ).split(os.pathsep)
     if p
 ]

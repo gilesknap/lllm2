@@ -224,6 +224,15 @@ class App:
                 raise ValueError(
                     "No saved settings for this model and backend yet. Load a completed experiment into Launch or edit the draft, then choose “Save my settings”."
                 )
+            if source == "built-in":
+                resolved = choose_launch(model_path=s.model)
+                if resolved.get("reason"):
+                    resolved.setdefault("notes", []).append(resolved["reason"])
+                if not resolved.get("settings"):
+                    raise ValueError(
+                        resolved.get("reason") or "No recommendation available."
+                    )
+                return resolved
             return starting_defaults(s)
         if path == "/api/default/load":
             s = Settings.parse(data["settings"])

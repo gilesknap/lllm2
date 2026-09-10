@@ -6,6 +6,7 @@ import shlex
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -103,6 +104,11 @@ class Engine:
     def log(self, message):
         with self.log_lock:
             self.lines.append(message)
+        try:
+            print(f"[llama-server] {message}", file=sys.stderr, flush=True)
+        except OSError:
+            # Keep draining the child pipe if the terminal/journal sink closes.
+            pass
 
     def state(self):
         with self.log_lock:
