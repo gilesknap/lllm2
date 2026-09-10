@@ -157,8 +157,8 @@ class Bench:
             ("prompt_tokens", 128, 131072),
             ("output_tokens", 16, 4096),
             ("max_context", 512, 1048576),
-            ("timeout", 10, 1800),
-            ("context_timeout", 10, 3600),
+            ("timeout", 10, 86400),
+            ("context_timeout", 10, 86400),
             ("repeats", 1, 5),
         ]:
             if type(opts[k]) is not int or not lo <= opts[k] <= hi:
@@ -555,7 +555,9 @@ class Bench:
         floor = max(512, opts["output_tokens"] + 160)
         floor = math.ceil(floor / 256) * 256
         ceiling = ceiling // 256 * 256
-        good, bad = 0, ceiling + 256
+        # `bad` is the smallest failed probe; `slow` the smallest timed-out one.
+        # A timeout bounds the search but is not evidence of a memory limit.
+        good, bad, slow = 0, ceiling + 256, ceiling + 256
         # Reuse a completed full-window speed sample, without another restart.
         selected = s.context // s.slots
         if floor <= selected <= ceiling and any(
@@ -565,11 +567,30 @@ class Bench:
         ):
             good = selected
             r["context_seed_from_speed_sample"] = selected
-        # Test the ceiling directly after a success, then bisect only as needed.
-        attempt = ceiling if good else min(max(floor, selected), ceiling)
 
         def resolution():
             return max(1024, math.ceil(good * 0.1 / 256) * 256)
+
+        def bounds():
+            lower = max(good // 256 * 256, floor - 256)
+            upper = math.ceil(min(bad, slow) / 256) * 256
+            return lower, upper
+
+        def next_attempt():
+            # Double from the last success while nothing above it has failed or
+            # timed out, so the slowest probes come last; then bisect the range.
+            if min(bad, slow) > ceiling:
+                if not good:
+                    return min(max(floor, selected), ceiling)
+                return min(good * 2 // 256 * 256, ceiling)
+            lower, upper = bounds()
+            return ((lower + upper) // 2) // 256 * 256
+
+        def resolved():
+            lower, upper = bounds()
+            if good >= ceiling:
+                return True
+            return upper - lower <= (resolution() if good else 256)
 
         r["largest_observed_context"] = good or None
         recommended = math.floor(good * 0.9 / 256) * 256
@@ -579,7 +600,8 @@ class Bench:
         attempts = 0
         context_timeout = opts.get("context_timeout", 900)
         r["context_search_status"] = "running"
-        while good < ceiling and floor <= attempt <= ceiling and attempts < 8:
+        attempt = next_attempt()
+        while not resolved() and floor <= attempt <= ceiling and attempts < 8:
             if self.cancel.is_set():
                 raise Cancelled()
             attempts += 1
@@ -614,12 +636,10 @@ class Bench:
                 entry.update(
                     status="timed_out", error=str(e), logs=self.engine.state()["logs"]
                 )
-                r["context_search_status"] = "inconclusive_timeout"
-                r["context_search_stop_reason"] = (
-                    "Context probe timed out; usable-context limit is unknown. Increase the context-probe timeout to continue testing. Earlier successful probes remain valid."
+                slow = attempt
+                self.update(
+                    phase=f"Context probe {attempts} timed out at {attempt:,} tokens per slot; continuing below it."
                 )
-                self.update(phase=r["context_search_stop_reason"])
-                break
             except Exception as e:
                 entry.update(
                     status="failed", error=str(e), logs=self.engine.state()["logs"]
@@ -639,34 +659,30 @@ class Bench:
                 r["recommended_context_is_estimate"] = True
                 r["context_ceiling"] = ceiling
                 self.store.put("result", r["id"], r)
-            lower = max(good // 256 * 256, floor - 256)
-            upper = math.ceil(bad / 256) * 256
-            if (
-                good >= ceiling
-                or (good and upper - lower <= resolution())
-                or upper - lower <= 256
-            ):
-                break
-            attempt = ceiling if bad > ceiling else ((lower + upper) // 2) // 256 * 256
-            if attempt < floor:
-                break
-        if r["context_search_status"] == "running":
-            gap = math.ceil(bad / 256) * 256 - max(good // 256 * 256, floor - 256)
-            resolved = gap <= (resolution() if good else 256)
-            r["context_search_status"] = (
-                "complete"
-                if good >= ceiling or resolved
-                else "inconclusive_probe_limit"
-            )
+            attempt = next_attempt()
         if floor > ceiling:
             r["context_search_status"] = "skipped"
             r["context_search_stop_reason"] = (
                 "Context ceiling cannot fit the minimum prompt and output budget."
             )
-        elif r["context_search_status"] == "inconclusive_probe_limit":
+        elif good >= ceiling or (resolved() and bad <= slow):
+            r["context_search_status"] = "complete"
+        elif resolved():
+            r["context_search_status"] = "inconclusive_timeout"
+            r["context_search_stop_reason"] = (
+                f"Context probe timed out at {slow:,} tokens per slot; the usable-context limit above the largest success is unknown. Increase the context-probe timeout to continue testing. Successful probes remain valid."
+            )
+        else:
+            r["context_search_status"] = "inconclusive_probe_limit"
             r["context_search_stop_reason"] = (
                 "Stopped after 8 probes; earlier successes remain valid, but the usable-context limit is unresolved."
+                + (
+                    f" A probe at {slow:,} tokens per slot timed out; raising the context-probe timeout may help."
+                    if slow <= ceiling
+                    else ""
+                )
             )
         r["context_search_resolution"] = resolution()
         r["context_failed_upper_bound"] = bad if bad <= ceiling else None
+        r["context_timeout_upper_bound"] = slow if slow <= ceiling else None
         r["context_ceiling_reached"] = good == ceiling
