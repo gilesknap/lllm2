@@ -289,6 +289,16 @@ const assert=require('node:assert/strict');
  assert.equal(await run("document.querySelector('[data-mode=combinations]').disabled"),true);
  assert.equal(await run('JSON.stringify(fixture.saved)'),savedBefore);
  // History deletion confirms whole runs, uses a fixed bulk selection, and keeps drafts/defaults.
+ // A discovery-only run has no speed sample but its measured context is still usable in Launch.
+ await run("fixture.results=[{settings:{...fixture.settings},probes:[],quality_status:'passed',status:'complete',id:'discovery',label:'Discovery only',started:'2026-09-07T09:05:00Z',samples:[],largest_observed_context:65536,largest_started_context:65536,recommended_context:58880,context_confirmed:false,context_search_status:'complete'}];await refreshResults()");
+ assert.notEqual(await run("document.querySelector('#results [data-promote=discovery]')"),null);
+ await run("$('expand-discovery-0').click()");
+ assert.equal(await run("$('promote-discovery-0').checkVisibility()"),true);
+ assert.match(await run("$('detail-discovery-0').textContent"),/Loaded \(65,536\)/);
+ assert.match(await run("$('detail-discovery-0').textContent"),/loaded only; not confirmed with a full prompt/);
+ await run("$('promote-discovery-0').click();await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/result/preview').at(-1).data.use_context"),true);
+ assert.equal(await run('settings().context'),65536);
  await run('fixture.results='+JSON.stringify(resultFixture));
  await run("fixture.results.push({...fixture.results[3],id:'cancelled',status:'cancelled'},{...fixture.results[3],id:'running',status:'running'});await refreshResults()");
  assert.equal(await run("$('comparisons').querySelector('h2').textContent"),'Experiment history');
