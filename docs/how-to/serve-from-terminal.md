@@ -14,6 +14,9 @@ An empty or separate `LLLM2_STATE_DIR` has no saved settings, so launch falls
 back to the built-in measured or inherited starting settings. It runs in the
 foreground; Ctrl-C stops the engine.
 
+See [Run a model without GNOME](../tutorials/headless.md) to reclaim desktop
+VRAM before launching from a text console or SSH session.
+
 ## Run the panel as a user service
 
 On Linux with systemd, stop any foreground panel and run:
