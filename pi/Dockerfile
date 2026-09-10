@@ -47,7 +47,7 @@ RUN npm ci --omit=dev --ignore-scripts --legacy-peer-deps \
     && npm cache clean --force
 COPY pi/smoke.sh pi/test-bundle.mjs pi/test-network.ts /opt/pi/
 COPY pi/sandbox.conf /etc/claude-sandbox.conf
-COPY pi/entrypoint.sh pi/run.sh pi/seed.mjs pi/defaults.json /opt/pi/
+COPY pi/entrypoint.sh pi/run.sh pi/seed.mjs pi/defaults.json pi/context.md /opt/pi/
 RUN chmod 755 /opt/pi/entrypoint.sh /opt/pi/run.sh \
     && ln -s /opt/pi/run.sh /usr/libexec/claude-sandbox/pi-run \
     && mkdir -p /root/.pi/agent /workspaces
