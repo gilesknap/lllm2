@@ -36,21 +36,21 @@ covers the Podman setup for VS Code and the first login.
 
 The sandbox's network egress jail gives the agent a private network namespace
 with its own loopback, so `127.0.0.1:8082` inside the jail is **not** your
-panel, even though the panel listens on localhost. The jail can relay one
-loopback port into the agent, and by default that is the model API on 1920.
-Point it at the panel for this session instead. In the VS Code terminal:
+panel, even though the panel listens on localhost. The jail relays chosen
+loopback ports into the agent; by default only the model API on 1920. Add the
+panel port for this session. In the VS Code terminal:
 
 ```bash
 cd /workspaces/lllm2-tuning
-CLAUDE_SANDBOX_LOCAL_MODEL_PORT=8082 claude
+CLAUDE_SANDBOX_LOCAL_PORTS=8082 claude
 ```
 
 Use `codex` in place of `claude` for Codex. The jail stays on: the agent sees
-the panel and nothing else on your machine's network, and it still has no
-access to your host credentials, home directory or shell environment. A plain
-`claude` launch relays the model port again. This needs claude-sandbox with
-its relay available to every agent (see its
-[egress jail how-to](https://diamondlightsource.github.io/claude-sandbox/how-to/network-egress-jail.html#reach-a-service-on-the-hosts-loopback)).
+the panel and the model API and nothing else on your machine's network, and it
+still has no access to your host credentials, home directory or shell
+environment. A plain `claude` launch relays only the model port again. This
+needs claude-sandbox with the port relay available to every agent (see its
+[egress jail how-to](https://diamondlightsource.github.io/claude-sandbox/how-to/network-egress-jail.html#reach-services-on-the-hosts-loopback)).
 
 Log in to the agent when prompted, then confirm it can see the panel by asking
 it to run:
