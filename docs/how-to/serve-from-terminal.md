@@ -7,7 +7,12 @@ lllm2 launch --model /data/models/model.gguf --engine /path/to/llama-server
 ```
 
 With no selection options, `lllm2 launch` looks for a compatible installed
-recommendation. It runs in the foreground; Ctrl-C stops the engine.
+recommendation. After selecting the model, backend, engine and device, it loads
+the saved workbench settings for that model and backend when they exist. The
+currently discovered engine and device take precedence over their saved paths.
+An empty or separate `LLLM2_STATE_DIR` has no saved settings, so launch falls
+back to the built-in measured or inherited starting settings. It runs in the
+foreground; Ctrl-C stops the engine.
 
 ## Run the panel as a user service
 

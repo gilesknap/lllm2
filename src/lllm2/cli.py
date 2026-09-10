@@ -30,6 +30,7 @@ from .launch import choose_launch, installed_models
 from .pi_container import launch as launch_pi
 from .service import install_service
 from .settings import Settings
+from .store import Store
 
 
 def _print_rows(rows, json_output: bool) -> None:
@@ -50,6 +51,22 @@ def _serve(host: str, port: int) -> int:
     return 0
 
 
+def _saved_launch_settings(settings: Settings) -> tuple[Settings, bool]:
+    """Load the saved default for the selected model/backend, when present."""
+    store = Store()
+    try:
+        key = str(Path(settings.model).expanduser().resolve()) + "|" + settings.backend
+        saved = store.get("default", key)
+    finally:
+        store.db.close()
+    if not saved:
+        return settings, False
+    resolved = Settings.parse(saved)
+    # Discovery owns these volatile paths; saved tuning owns the remaining fields.
+    resolved.engine, resolved.device = settings.engine, settings.device
+    return resolved, True
+
+
 def _launch(
     model: str, engine_path: str, backend: str, device: str, timeout: int
 ) -> int:
@@ -57,6 +74,7 @@ def _launch(
     if not resolved.get("settings"):
         raise RuntimeError(resolved["reason"])
     settings = Settings.parse(resolved["settings"])
+    settings, saved = _saved_launch_settings(settings)
     engine, cancel = Engine(), threading.Event()
 
     def stop(*_):
@@ -67,6 +85,8 @@ def _launch(
     try:
         engine.start(settings, cancel, timeout=timeout)
         print(f"Ready: {engine.base}/v1 (pid {engine.process.pid})", flush=True)
+        if saved:
+            print("Using saved settings from the workbench database.", flush=True)
         if resolved.get("reason"):
             print(resolved["reason"], flush=True)
         while not cancel.wait(1):
