@@ -155,6 +155,17 @@ const assert=require('node:assert/strict');
  await run("switchView('launch')");
  assert.equal(await run("getComputedStyle($('feature-availability')).borderTopStyle"),'solid');
  assert.equal(await run("getComputedStyle($('manage-models')).borderTopStyle"),'solid');
+ // Availability entries link to their control; speculation links select the mode.
+ await run("featureState={'draft-mtp':{status:'available',reason:'ok'},'draft-dflash':{status:'experimental',reason:'x'},flash:{status:'unsupported',reason:'no'},effort:{status:'available',reason:'ok'},'ngram-simple':{status:'unknown',reason:'?'}};customize(false);renderFeatures()");
+ assert.deepEqual(await run("[...document.querySelectorAll('#features [data-feature-control]')].map(b=>b.dataset.featureControl+':'+(b.dataset.featureValue||''))"),['speculation:draft-mtp','speculation:draft-dflash','effort:']);
+ assert.match(await run("document.querySelector('#features [data-feature-value=draft-mtp]').textContent"),/Select MTP/);
+ // Checks run synchronously after each click, before the edit's deferred inspection re-renders the list.
+ assert.deepEqual(JSON.parse(await run("document.querySelector('#features [data-feature-value=draft-mtp]').click();JSON.stringify([$('customize').hidden,settings().speculation,document.activeElement.id,document.querySelector('#features [data-feature-value=draft-mtp]')===null])")),[false,'draft-mtp','speculation',true]);
+ await new Promise(r=>setTimeout(r,400));
+ await run("featureState={effort:{status:'available',reason:'ok'}};customize(false);renderFeatures()");
+ assert.deepEqual(JSON.parse(await run("document.querySelector('#features [data-feature-control=effort]').click();JSON.stringify([$('customize').hidden,document.activeElement.id])")),[false,'effort']);
+ await run("$('speculation').value='none';edited('speculation');featureState=null");
+ await new Promise(r=>setTimeout(r,400));
  // Actual keyboard activation, focus retention, and touch help.
  await run("fixture.models=[{path:fixture.settings.model,catalog_id:'qwen3-8b',metadata:{context:131072}}];fixture.engines=[{path:fixture.settings.engine,devices:['CUDA0']}];fixture.downloads=[];await scan();await selectModel(fixture.settings.model);customize(false);$('customize-toggle').focus()");
  await p.call('Page.bringToFront');await p.call('Emulation.setFocusEmulationEnabled',{enabled:true});

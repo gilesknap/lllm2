@@ -191,6 +191,13 @@ button:disabled {
   margin-top: 3px;
 }
 
+.feature-link {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 .error {
   color: var(--bad);
   white-space: pre-wrap;
