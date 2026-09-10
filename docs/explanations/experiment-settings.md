@@ -58,11 +58,11 @@ adherence details and any truncation before accepting a result.
 | Single-size prompt tokens | The input size used when Quick sweep is off; also used by the warm conversation experiment. Larger inputs increase prompt-processing work. Allowed range: 128–131,072. |
 | Output tokens | Requested generation budget, normally 256. Range: 16–4096. Source checks have the larger cap described above. Increasing it adds generation work and leaves less room for input. |
 | Repeats per workload | Repeats each cold workload/size sample, or the whole warm conversation sequence, 1–5 times. Repeats help expose variation and multiply run time. Context search runs once per configuration. |
-| Speed-test timeout per operation | Maximum wait for an individual speed-test operation, including engine requests, rather than a deadline for the whole experiment. Default: 900 seconds; range: 10–1800. Increasing it only changes how long slow operations are allowed to take. |
-| Context-probe timeout per operation | Separate timeout for context search. Default: 900 seconds; range: 10–3600. A timeout makes the search inconclusive; it does not prove that memory ran out. |
+| Speed-test timeout per operation | Maximum wait for an individual speed-test operation, including engine requests, rather than a deadline for the whole experiment. Default: 900 seconds; range: 10–86,400. Increasing it only changes how long slow operations are allowed to take. |
+| Context-probe timeout per operation | Separate timeout for context search. Default: 900 seconds; range: 10–86,400. A timeout makes the search inconclusive; it does not prove that memory ran out. |
 | Quick sweep: 1K / 16K / 64K | Tests 1024, 16,384 and 65,536 input tokens. Sizes are capped to the available space per slot and duplicates are removed. Off means one explicit prompt size. |
 | Also test full launch window | Adds a prompt filling the experiment's configured window per slot, after reserving output space and a margin. Despite the label, it uses the experiment draft's context. It does not find the maximum supported window. |
-| Discover usable context | Adds larger prompt probes and searches between successes and failures. This can take much longer than the speed samples. |
+| Discover usable context | Runs before any speed sample. Quick load-only checks find the largest window the engine accepts, then one long prompt confirms it. On by default; with no workloads selected it is the whole experiment. |
 | Context search ceiling (per slot) | The largest window the search may try, including input and output. Initially based on model metadata when available; range: 512–1,048,576. This is a search limit, not a promise that the model or GPU can use it. |
 | Reset experiment settings | Resets workload selections, budgets and experiment checkboxes, including the ceiling for the selected model. It does not reset the model customization draft or delete results. |
 
@@ -77,10 +77,15 @@ The displayed sample count is more useful than a universal time estimate:
 are additional. The panel's rough time estimate comes from an observed run;
 models, GPUs and settings can change it substantially.
 
-Context search can reuse a successful full-window speed sample, tries the ceiling,
-then narrows the interval as needed. It makes at most eight new probes and stops
-when the uncertainty is roughly 10% of the largest success, with a minimum
-resolution of 1024 tokens. Failures are retained. Recommended context applies
+Context search runs first. It starts the engine at the experiment's own window,
+doubles the window after each successful load up to the ceiling, then narrows
+between the largest load and the smallest refusal, at most twelve loads. Loads
+are quick because no prompt is sent; a refused load counts as a memory limit.
+It then confirms the largest loaded window with one full long-code prompt and
+only bisects with further prompt probes, at most eight, if that confirmation
+fails or times out. It stops when the uncertainty is roughly 10% of the largest
+success, with a minimum resolution of 1024 tokens. A timed-out probe bounds the
+search without ending it and is reported separately. Failures are retained. Recommended context applies
 10% headroom and rounds down to a multiple of 256; it is an estimate for future
 workloads, not another measured or guaranteed limit.
 

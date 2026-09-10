@@ -2,10 +2,10 @@
 
 In **Experiments**, choose workloads and run a baseline. Change settings and
 add combinations, or run **Baseline + single options**. **Discover usable
-context** adds context probes; long prompts can take several minutes. Context
-discovery is enabled by default, while Quick sweep and Full launch window are
-off. The Long code workload remains selected for one short speed sample before
-the context probes.
+context** runs first: quick load-only checks find the largest window the engine
+accepts, then one long prompt confirms it. Context discovery is the only option
+enabled by default; select workloads to add cold speed samples after it, and
+turn on Quick sweep or Full launch window to vary their prompt sizes.
 
 Inspect completed results and their evidence before loading a configuration
 into **Launch**. Click **Save my settings** to keep it. Launch and experiment

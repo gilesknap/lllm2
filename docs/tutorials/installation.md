@@ -56,7 +56,8 @@ Check the model name in **Experiment configuration**; **Use launch settings**
 copies your current Launch settings if needed. Scroll down to the **Experiments**
 card. Leave **Discover usable context** checked and click **Run baseline**
 below the workload options. Progress appears in **Queue & engine** below it.
-Wait for the run to finish; context probes can take several minutes.
+Wait for the run to finish; the load checks are quick, and the confirming
+long prompt can take several minutes.
 
 ```{figure} ../images/tutorial-experiments.png
 :alt: Experiments card with Discover usable context checked and the Run baseline button below the workload choices.
