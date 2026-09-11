@@ -152,6 +152,15 @@ const assert=require('node:assert/strict');
  assert.equal(await run("$('feature-availability').parentElement.id"),'feature-host-launch');
  await run("switchView('experiments')");
  assert.equal(await run("$('feature-availability').parentElement.id"),'feature-host-experiments');
+ for(const width of [1440,390]){
+  await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
+  assert.equal(await run("$('combination-heading').textContent"),'Configurations to compare');
+  assert.equal(await run("$('experiments').getBoundingClientRect().bottom <= $('combination-builder').getBoundingClientRect().top"),true);
+  assert.equal(await run("$('combination-builder').getBoundingClientRect().bottom <= $('feature-availability').getBoundingClientRect().top"),true);
+  assert.equal(await run("$('feature-availability').getBoundingClientRect().bottom <= $('job').getBoundingClientRect().top"),true);
+ }
+ await p.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+
  await run("switchView('launch')");
  assert.equal(await run("getComputedStyle($('feature-availability')).borderTopStyle"),'solid');
  assert.equal(await run("getComputedStyle($('manage-models')).borderTopStyle"),'solid');
@@ -282,6 +291,7 @@ const assert=require('node:assert/strict');
  await run("$('add-combo').focus()");await key('Enter');
  await run("$('cache').value='q4_0';edited('cache');await inspect();$('add-combo').click()");
  assert.equal(await run("$('combo-count').textContent"),'2 selected');
+ assert.equal(await run("$('combo-editor-count').textContent"),'2 configurations to compare');
  assert.deepEqual(await run('combinations.map(s=>s.cache)'),['q8_0','q4_0']);
  assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/benchmark').length"),benchBefore);
  assert.equal(await run("document.querySelector('[data-mode=combinations]').disabled"),false);

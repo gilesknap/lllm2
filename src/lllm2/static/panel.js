@@ -392,6 +392,7 @@ function defaultState(){
  $('default-evidence').querySelector('summary').textContent=changed.length?'Last loaded evidence':'Recommendation evidence';
  $('default-evidence').querySelector('pre').textContent=loadedDefaults?.evidence?JSON.stringify(loadedDefaults.evidence,null,2):'';
  const loadingBlocked=resolving||scanPending||!connected;
+ $('load-default').textContent=`Load defaults for ${s.backend}`;
  $('load-default').disabled=loadingBlocked||!savedExists;
  $('built-in-default').disabled=loadingBlocked||!s.model||!s.engine;
  $('load-experiment').disabled=loadingBlocked;
@@ -448,6 +449,7 @@ function launchState(){
  $('save-default').disabled=!ready||view!=='launch';
  modelControlsState();
  const loadingBlocked=resolving||scanPending||!connected;
+ $('load-default').textContent=`Load defaults for ${s.backend}`;
  $('load-default').disabled=loadingBlocked||!savedExists;
  $('built-in-default').disabled=loadingBlocked||!s.model||!s.engine;
  $('load-experiment').disabled=loadingBlocked;
@@ -701,6 +703,7 @@ document.querySelectorAll('.run').forEach(b=>{
 });
 function renderCombinations(){
  $('combo-count').textContent=`${combinations.length} selected`;
+ $('combo-editor-count').textContent=`${combinations.length} configuration${combinations.length===1?'':'s'} to compare`;
  $('combos').textContent=combinations.length?combinations.map((s,i)=>`${i+1}. ${modelName(s.model)} · ${s.speculation} / ${cacheLabel(s)} / flash ${s.flash} / effort ${s.effort} / draft ${s.draft_length}`).join('\n'):'No combinations selected. Add the current settings to begin.';
  launchState();
 }
