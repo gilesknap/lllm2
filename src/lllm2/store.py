@@ -6,7 +6,13 @@ from . import config
 
 
 class Store:
-    def __init__(self):
+    def __init__(self, recover_running: bool = True):
+        """Open the workbench database.
+
+        The panel passes the default so experiments left ``running`` by an
+        earlier process are marked ``interrupted``. Readers such as the CLI
+        pass ``recover_running=False`` to leave live experiments untouched.
+        """
         config.STATE_DIR.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         self.db = sqlite3.connect(
@@ -17,6 +23,8 @@ class Store:
             "CREATE TABLE IF NOT EXISTS objects (kind TEXT, key TEXT, value TEXT, PRIMARY KEY(kind,key))"
         )
         self.db.commit()
+        if not recover_running:
+            return
         for r in self.list("result"):
             if r["status"] == "running":
                 r.update(

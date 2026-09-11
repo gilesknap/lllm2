@@ -2,11 +2,15 @@ import contextlib
 import io
 import json
 import unittest
-from unittest.mock import ANY, patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import ANY, MagicMock, patch
 
 from typer.testing import CliRunner
 
-from lllm2 import cli
+from lllm2 import cli, config
+from lllm2.settings import Settings
+from lllm2.store import Store
 
 
 class CliTests(unittest.TestCase):
@@ -219,6 +223,73 @@ class CliTests(unittest.TestCase):
         with patch.object(cli, "_launch", return_value=0) as launch:
             self.assertEqual(self.runner.invoke(cli.app, ["launch"]).exit_code, 0)
             launch.assert_called_once_with("", "", "", "", 180)
+
+    def test_saved_launch_settings_override_tuning_but_not_discovery(self):
+        selected = Settings(
+            model="/models/example.gguf",
+            engine="/current/llama-server",
+            backend="CUDA",
+            device="CUDA0",
+            context=4096,
+        )
+        saved = selected.dict()
+        saved.update(
+            engine="/old/llama-server",
+            device="CUDA9",
+            context=32768,
+        )
+        store = MagicMock()
+        store.get.return_value = saved
+
+        with patch.object(cli, "Store", return_value=store):
+            resolved, found = cli._saved_launch_settings(selected)
+
+        self.assertTrue(found)
+        self.assertEqual(resolved.context, 32768)
+        self.assertEqual(resolved.engine, "/current/llama-server")
+        self.assertEqual(resolved.device, "CUDA0")
+        store.get.assert_called_once_with("default", "/models/example.gguf|CUDA")
+        store.db.close.assert_called_once_with()
+
+    def test_saved_launch_settings_leave_running_experiments_alone(self):
+        selected = Settings(
+            model="/models/example.gguf",
+            engine="/current/llama-server",
+            backend="CUDA",
+            device="CUDA0",
+        )
+        running = {"id": "live", "status": "running", "samples": [], "probes": []}
+        with (
+            TemporaryDirectory() as root,
+            patch.object(config, "STATE_DIR", Path(root)),
+        ):
+            panel_store = Store()
+            panel_store.put("result", "live", running)
+
+            resolved, found = cli._saved_launch_settings(selected)
+
+            self.assertEqual(panel_store.get("result", "live")["status"], "running")
+            self.assertEqual(Store().get("result", "live")["status"], "interrupted")
+
+        self.assertFalse(found)
+        self.assertIs(resolved, selected)
+
+    def test_saved_launch_settings_allow_an_empty_state_directory(self):
+        selected = Settings(
+            model="/models/example.gguf",
+            engine="/current/llama-server",
+            backend="CUDA",
+            device="CUDA0",
+        )
+        with (
+            TemporaryDirectory() as root,
+            patch.object(config, "STATE_DIR", Path(root) / "empty-state"),
+        ):
+            resolved, found = cli._saved_launch_settings(selected)
+            self.assertTrue((config.STATE_DIR / "workbench.sqlite3").is_file())
+
+        self.assertFalse(found)
+        self.assertIs(resolved, selected)
 
     def test_invalid_arguments(self):
         for args in (
