@@ -673,7 +673,7 @@ $('copy-close').onclick=()=>$('copy-dialog').close();
 document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>attempt(()=>copyText(b.dataset.copy,'Command')));
 document.querySelectorAll('[data-agent]').forEach(b=>b.onclick=()=>{
  document.querySelectorAll('[data-agent]').forEach(other=>other.setAttribute('aria-pressed',String(other===b)));
- $('agent-command').textContent='lllm2 '+b.dataset.agent;
+ $('agent-command').textContent=b.dataset.command;
 });
 async function downloadClick(e){
  if(e.target.closest('[data-verify]')){await scan();return;}

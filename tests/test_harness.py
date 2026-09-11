@@ -1,8 +1,6 @@
-import json
 import os
 import tomllib
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from lllm2 import harness
@@ -30,14 +28,13 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "did not report"):
                 harness.served_model()
 
-    def test_session_configuration_and_cleanup(self):
+    def test_session_configuration(self):
         model = 'model "quoted" \\ path'
-        extension_paths = []
 
         def call(argv, env):
             self.assertEqual(argv[-2:], ["-p", "prompt with spaces"])
             self.assertEqual(env["PRESERVED"], "yes")
-            name = Path(argv[0]).name
+            name = os.path.basename(argv[0])
             if name == "claude":
                 self.assertNotIn("ANTHROPIC_API_KEY", env)
                 self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:1920")
@@ -57,17 +54,6 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(provider["wire_api"], "responses")
                 self.assertFalse(provider["requires_openai_auth"])
                 self.assertEqual(config["model_context_window"], 16384)
-            else:
-                path = Path(argv[2])
-                extension_paths.append(path)
-                source = path.read_text()
-                provider = json.loads(
-                    source.split('"lllm2", ', 1)[1].removesuffix("); }\n")
-                )
-                self.assertEqual(provider["models"][0]["id"], model)
-                self.assertEqual(provider["models"][0]["contextWindow"], 16384)
-                self.assertEqual(provider["api"], "openai-completions")
-                self.assertEqual(argv[3:7], ["--provider", "lllm2", "--model", model])
             return 17
 
         with (
@@ -84,13 +70,11 @@ class HarnessTests(unittest.TestCase):
             ),
             patch.object(harness.subprocess, "call", side_effect=call),
         ):
-            for name in ("claude", "codex", "pi"):
+            for name in ("claude", "codex"):
                 self.assertEqual(
                     harness.run_harness(name, ["-p", "prompt with spaces"]), 17
                 )
                 self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "existing")
-        self.assertTrue(extension_paths)
-        self.assertTrue(all(not path.exists() for path in extension_paths))
 
     def test_missing_cli_and_signal_exit(self):
         with (
@@ -98,13 +82,13 @@ class HarnessTests(unittest.TestCase):
             patch.object(harness, "served_model") as model,
         ):
             with self.assertRaisesRegex(RuntimeError, "not on PATH"):
-                harness.run_harness("pi", [])
+                harness.run_harness("codex", [])
             model.assert_not_called()
         with (
-            patch.object(harness.shutil, "which", return_value="/bin/pi"),
+            patch.object(harness.shutil, "which", return_value="/bin/codex"),
             patch.object(
                 harness, "served_model", return_value=("http://localhost", "m", 4096, 1)
             ),
             patch.object(harness.subprocess, "call", return_value=-15),
         ):
-            self.assertEqual(harness.run_harness("pi", []), 143)
+            self.assertEqual(harness.run_harness("codex", []), 143)
