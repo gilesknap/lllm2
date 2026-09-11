@@ -4,8 +4,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 
 from .engine import Engine
 
@@ -70,64 +68,22 @@ def codex_args(base, model, window):
     ]
 
 
-def pi_extension(base, model, window):
-    provider = {
-        "baseUrl": base + "/v1",
-        "apiKey": "local",
-        "api": "openai-completions",
-        "models": [
-            {
-                "id": model,
-                "name": model,
-                "reasoning": False,
-                "input": ["text"],
-                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": window,
-                "maxTokens": min(32768, max(1, window // 4)),
-                "compat": {
-                    "supportsStore": False,
-                    "supportsDeveloperRole": False,
-                    "supportsReasoningEffort": False,
-                    "maxTokensField": "max_tokens",
-                },
-            }
-        ],
-    }
-    return (
-        'export default function (pi) { pi.registerProvider("lllm2", '
-        + json.dumps(provider)
-        + "); }\n"
-    )
-
-
 def run_harness(name: str, args: list[str]) -> int:
     executable = shutil.which(name)
     if not executable:
         raise RuntimeError(f"{name} is not on PATH; install its CLI first.")
     base, model, window, slots = served_model()
     env = dict(os.environ)
-    with tempfile.TemporaryDirectory(prefix="lllm2-harness-") as directory:
-        options = []
-        if name == "claude":
-            env.update(claude_env(base, model, window, slots))
-            env.pop("ANTHROPIC_API_KEY", None)
-        elif name == "codex":
-            options = codex_args(base, model, window)
-        elif name == "pi":
-            extension = Path(directory) / "local-provider.ts"
-            extension.write_text(pi_extension(base, model, window))
-            options = [
-                "--extension",
-                str(extension),
-                "--provider",
-                "lllm2",
-                "--model",
-                model,
-            ]
-        else:
-            raise ValueError(f"Unknown harness: {name}")
-        try:
-            result = subprocess.call([executable, *options, *args], env=env)
-        except KeyboardInterrupt:
-            return 130
+    options = []
+    if name == "claude":
+        env.update(claude_env(base, model, window, slots))
+        env.pop("ANTHROPIC_API_KEY", None)
+    elif name == "codex":
+        options = codex_args(base, model, window)
+    else:
+        raise ValueError(f"Unknown harness: {name}")
+    try:
+        result = subprocess.call([executable, *options, *args], env=env)
+    except KeyboardInterrupt:
+        return 130
     return result if result >= 0 else 128 - result

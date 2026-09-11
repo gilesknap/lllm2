@@ -20,13 +20,11 @@ The Claude and Codex wrappers read the running model's context and slots. Relaun
 after changing server context. Use `lllm2 claude -- --help` (or the equivalent
 wrapper) to read the client's own help.
 
-`lllm2 pi` launches the [Pi container](pi-container.md), with the current project
-writable at `/workspaces` and `~/.pi` shared at `/root/.pi`. It requires local
-rootless Podman, not a host Pi installation. It consumes only `--pat`; all
-other arguments go to Pi unchanged:
+For Pi, use claude-sandbox's launcher, which runs it in the same sandbox and
+discovers the running lllm2 model on each launch:
 
 ```bash
-lllm2 pi --provider lllm2
-lllm2 pi --pat -e git:github.com/badlogic/pi-skills
-lllm2 pi --help
+claude-container --host-net --agent pi
 ```
+
+See [Run Pi in a container](pi-container.md).

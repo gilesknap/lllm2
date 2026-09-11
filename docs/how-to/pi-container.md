@@ -1,31 +1,22 @@
 # Run Pi in a container
 
-The standalone Pi feature lives in the repository's
-[`pi/` directory](https://github.com/gilesknap/lllm2/tree/main/pi).
-It includes a Pi-only container with MCP, web access, and a Powerline footer,
-plus a launcher for local rootless Podman on Linux.
-
-From your project directory:
+lllm2 no longer ships its own Pi container. Use claude-sandbox's launcher,
+which runs Pi in the same sandbox it gives Claude Code and Codex, and already
+discovers the lllm2 model:
 
 ```bash
-lllm2 pi
+claude-container --host-net --agent pi
 ```
 
-The current directory is writable at `/workspaces`; host `~/.pi` is shared at
-`/root/.pi`. Start a model in lllm2 and add `--provider lllm2` to select it.
-Use `--pat` to paste a GitHub PAT at a hidden prompt for that container only.
-Existing Pi settings and cloud logins are retained.
+`--host-net` shares the model server's network namespace so Pi can reach
+`http://127.0.0.1:1920` on the host. Inside Pi, choose the lllm2 model with
+`--provider lllm2` or from `/model`; discovery refreshes at each launch, so a
+model change in lllm2 only needs a Pi restart.
 
-The image reuses a pinned claude-sandbox launcher. Pi runs inside its private
-network jail, with public internet access and one loopback model-port relay
-(default 1920); LAN ranges are blocked.
+The launcher persists `~/.pi` between sessions, so extensions installed once
+from inside Pi (for example `pi install npm:pi-mcp-adapter`) stay installed.
 
-Only `--pat` is handled by lllm2. All other arguments, including `--help` and
-`-e git:github.com/badlogic/pi-skills`, are forwarded to Pi unchanged. The separate
-`pi/launch.py` source launcher has container-development options such as
-`--image` and `--model-port 0` (disable the relay).
-
-See the [Pi container guide](https://github.com/gilesknap/lllm2/blob/main/pi/README.md)
-for image build/publication, extension configuration, PAT handling, and the
-precise isolation limits. The default image becomes available after its new
-workflow first passes and publishes it.
+See claude-sandbox's
+[Use Pi](https://diamondlightsource.github.io/claude-sandbox/how-to/use-pi.html)
+guide for installation, cloud logins, forge authentication and the network
+isolation limits.

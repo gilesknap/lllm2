@@ -95,17 +95,19 @@ podman info --format '{{.Host.Security.Rootless}}'
 This prints `true` when Podman is set up for your user. Pi finds the lllm2
 model automatically in either case, so there is nothing to configure.
 
-### Quick: `lllm2 pi`
+### Quick: the claude-sandbox launcher
 
-For sandboxed interaction with your model without a devcontainer, open another
-terminal on the same machine, change to the project directory you want Pi to
-work in, and run:
+For sandboxed interaction with your model without a devcontainer, install
+claude-sandbox's `claude-container` launcher following its
+[Use Pi](https://diamondlightsource.github.io/claude-sandbox/how-to/use-pi.html)
+guide. Then open another terminal on the same machine, change to the project
+directory you want Pi to work in, and run:
 
 ```bash
-lllm2 pi
+claude-container --host-net --agent pi
 ```
 
-The first run pulls the Pi image. Your project is available to Pi at
+The first run pulls the sandbox image. Your project is available to Pi at
 `/workspaces`, and your Pi settings live in `~/.pi` as usual. See
 [Run Pi in a container](../how-to/pi-container.md) for the options.
 
