@@ -53,7 +53,8 @@ def _serve(host: str, port: int) -> int:
 
 def _saved_launch_settings(settings: Settings) -> tuple[Settings, bool]:
     """Load the saved default for the selected model/backend, when present."""
-    store = Store()
+    # Read-only: the panel may be mid-experiment, so leave running results alone.
+    store = Store(recover_running=False)
     try:
         key = str(Path(settings.model).expanduser().resolve()) + "|" + settings.backend
         saved = store.get("default", key)

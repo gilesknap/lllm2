@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from lllm2 import cli, config
 from lllm2.settings import Settings
+from lllm2.store import Store
 
 
 class CliTests(unittest.TestCase):
@@ -249,6 +250,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(resolved.device, "CUDA0")
         store.get.assert_called_once_with("default", "/models/example.gguf|CUDA")
         store.db.close.assert_called_once_with()
+
+    def test_saved_launch_settings_leave_running_experiments_alone(self):
+        selected = Settings(
+            model="/models/example.gguf",
+            engine="/current/llama-server",
+            backend="CUDA",
+            device="CUDA0",
+        )
+        running = {"id": "live", "status": "running", "samples": [], "probes": []}
+        with (
+            TemporaryDirectory() as root,
+            patch.object(config, "STATE_DIR", Path(root)),
+        ):
+            panel_store = Store()
+            panel_store.put("result", "live", running)
+
+            resolved, found = cli._saved_launch_settings(selected)
+
+            self.assertEqual(panel_store.get("result", "live")["status"], "running")
+            self.assertEqual(Store().get("result", "live")["status"], "interrupted")
+
+        self.assertFalse(found)
+        self.assertIs(resolved, selected)
 
     def test_saved_launch_settings_allow_an_empty_state_directory(self):
         selected = Settings(
