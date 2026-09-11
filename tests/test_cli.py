@@ -264,12 +264,15 @@ class CliTests(unittest.TestCase):
             patch.object(config, "STATE_DIR", Path(root)),
         ):
             panel_store = Store()
+            self.addCleanup(panel_store.db.close)
             panel_store.put("result", "live", running)
 
             resolved, found = cli._saved_launch_settings(selected)
 
             self.assertEqual(panel_store.get("result", "live")["status"], "running")
-            self.assertEqual(Store().get("result", "live")["status"], "interrupted")
+            restarted = Store()
+            self.addCleanup(restarted.db.close)
+            self.assertEqual(restarted.get("result", "live")["status"], "interrupted")
 
         self.assertFalse(found)
         self.assertIs(resolved, selected)
