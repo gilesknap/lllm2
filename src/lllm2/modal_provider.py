@@ -32,8 +32,8 @@ from .remote import (
 )
 
 CREDENTIALS_MESSAGE = (
-    "Modal credentials are missing or invalid. Run `lllm2 modal setup` to sign in "
-    "and deploy the lllm2 app."
+    "Modal credentials are missing or invalid. Sign in with `modal token new` "
+    "(or set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET), then run `lllm2 modal setup`."
 )
 
 
@@ -191,6 +191,13 @@ class ModalProvider(RemoteProvider):
         size = self._sizes().get(source.name)
         self._state.put(modal_app.meta_key(source.name), {"size": size, "meta": meta})
         return meta
+
+    @_translated
+    def stored_metadata(self, name):
+        cached = self._state.get(modal_app.meta_key(name))
+        if cached is None or cached.get("size") != self._sizes().get(name):
+            return None
+        return cached["meta"]
 
     @_translated
     def models(self):

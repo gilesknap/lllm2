@@ -78,29 +78,29 @@ def context_plan(
     return share * slots, slots
 
 
-def starting_defaults(selection, host=None, engine=None, meta=None):
+def starting_defaults(selection, host=None, engine=None, meta=None, model=None):
     """Resolve starting settings for a checkpoint, engine and GPU.
 
+    A remote engine supplies every evidence argument from its provider probe
+    and the catalogue (see ``Engine.defaults_inputs``), so no local probe runs.
+
     Args:
-        selection: Settings naming the model, engine, backend and device.
+        selection: Settings naming the model, engine, backend and device, and
+            for a remote backend the GPU type.
         host: Hardware description in the ``hardware()`` shape. None detects
             local hardware. A description whose ``source`` is not ``"local"``
-            skips measured profiles and local desktop and driver probes.
+            skips local desktop and driver probes.
         engine: Engine capability record in the ``probe()`` shape. None probes
             the selected binary locally.
         meta: GGUF metadata record in the ``metadata()`` shape. None reads the
             selected checkpoint locally.
+        model: Model identity with ``size`` and ``sha256``, as
+            ``Engine.identity`` returns it. None fingerprints the local file.
 
     Returns:
         A dict with ``settings``, ``source`` and ``notes``.
     """
-    if host is not None and host.get("source", "local") != "local":
-        fallback = inherited_defaults(selection, host, engine, meta)
-        fallback["notes"] = [
-            "Measured built-in profiles cover local GPUs only; using fallback guidance."
-        ] + fallback["notes"]
-        return fallback
-    measured, qualifications = measured_defaults(selection)
+    measured, qualifications = measured_defaults(selection, host, engine, meta, model)
     if measured:
         return measured
     fallback = inherited_defaults(selection, host, engine, meta)
@@ -116,9 +116,11 @@ def inherited_defaults(selection, host=None, engine=None, meta=None):
         engine=selection.engine,
         backend=selection.backend,
         device=selection.device,
+        gpu_type=selection.gpu_type,
+        idle_timeout_minutes=selection.idle_timeout_minutes,
     )
     notes = []
-    if not s.model or not s.engine:
+    if not s.model or not (s.engine or s.remote):
         return {
             "settings": s.dict(),
             "source": "generic fallback",
@@ -132,7 +134,7 @@ def inherited_defaults(selection, host=None, engine=None, meta=None):
         )
     else:
         s.gpu_layers = 999
-    devices = [d for d in p["devices"] if d.startswith(s.backend)]
+    devices = [d for d in p["devices"] if d.startswith(s.gpu_backend)]
     if s.device not in devices:
         s.device = devices[0] if devices else ""
     m = metadata(s.model) if meta is None else meta
@@ -236,7 +238,7 @@ def inherited_defaults(selection, host=None, engine=None, meta=None):
             s.context, s.slots = context_plan(
                 entry,
                 cards[0]["total_mib"],
-                s.backend,
+                s.gpu_backend,
                 ceiling,
                 mtp=s.speculation in MTP_MODES,
                 draft_cache=s.draft_cache,

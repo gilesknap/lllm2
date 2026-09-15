@@ -13,6 +13,7 @@ import atexit
 import json
 import os
 import secrets
+import socket
 import threading
 import time
 import weakref
@@ -20,16 +21,26 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import __version__, config
 from .catalogue import files as catalogue_files
 from .catalogue import local_paths
-from .discovery import EXECUTION_ENV_KEYS
+from .discovery import CATALOG, EXECUTION_ENV_KEYS
+from .discovery import identity as local_identity
+from .discovery import metadata as local_metadata
 from .engine import Cancelled, Engine, ResourceConflict
+from .engine_release import LLAMA_CPP_REF
 from .gpu_tables import gpu_type, table_hardware
 from .proxy import EngineProxy, Upstream
-from .settings import Settings, build_launch_args
+from .recommendations import PROFILES
+from .settings import DEFAULT_IDLE_TIMEOUT_MINUTES, Settings, build_launch_args
 
-DEFAULT_IDLE_TIMEOUT = 30 * 60
+DEFAULT_IDLE_TIMEOUT = DEFAULT_IDLE_TIMEOUT_MINUTES * 60
+# An owning engine refreshes its call record this often while the call runs.
+OWNER_HEARTBEAT_SECONDS = 30
+# A call whose owner has not refreshed its record for this long has no owner.
+OWNER_STALE_SECONDS = 120
+# A record this recent survives a provider list that does not show its call yet.
+RECORD_GRACE_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -141,11 +152,37 @@ class RemoteProvider(abc.ABC):
             hardware ``source``.
         server_host: The address llama-server binds inside the container.
         server_port: The port llama-server listens on inside the container.
+        engine_path: The llama-server path that an unprobed GPU's static
+            engine record reports. A probe replaces it with the real path.
     """
 
     name: str = ""
     server_host: str = "0.0.0.0"
     server_port: int = 8080
+    engine_path: str = "llama-server"
+
+    def setup(self) -> str:
+        """Check the credentials and prepare the provider account for lllm2.
+
+        Providers that deploy code, such as Modal, deploy it here. The default
+        does nothing.
+
+        Returns:
+            A version string for the prepared deployment, or an empty string.
+        """
+        return ""
+
+    def stored_metadata(self, name: str) -> dict | None:
+        """Return cached GGUF metadata for a stored model without downloading.
+
+        Args:
+            name: The store-relative path.
+
+        Returns:
+            The metadata record in the ``discovery.metadata()`` shape, or None
+            when the store has no complete copy or the provider keeps no cache.
+        """
+        return None
 
     @abc.abstractmethod
     def probe(self, gpu: str) -> GpuProbe:
@@ -368,6 +405,246 @@ def model_source(path: str) -> ModelSource:
     return ModelSource(name=target.relative_to(root).as_posix())
 
 
+def _entries(catalogue):
+    if catalogue is None:
+        return CATALOG
+    return catalogue() if callable(catalogue) else catalogue
+
+
+def catalogue_entry(path, catalogue=None):
+    """Find the catalogue entry whose main model file is at a path.
+
+    Args:
+        path: A model path, as in ``Settings.model``.
+        catalogue: Catalogue entries, a callable that returns them, or None
+            for the bundled catalogue.
+
+    Returns:
+        The entry, or None when no entry's managed path matches.
+    """
+    target = Path(path).expanduser().resolve()
+    for entry in _entries(catalogue):
+        try:
+            paths = local_paths(entry)
+        except (KeyError, ValueError):
+            continue
+        if paths and paths[0].resolve() == target:
+            return entry
+    return None
+
+
+def catalogue_sources(catalogue=None):
+    """Build a ``RemoteEngine`` source mapper that knows the catalogue.
+
+    Args:
+        catalogue: Catalogue entries, a callable that returns them, or None
+            for the bundled catalogue.
+
+    Returns:
+        A callable that maps a model path to ``catalogue_source`` for a
+        catalogue model, so a provider can download it, and to
+        ``model_source`` for any other model.
+    """
+
+    def sources(path):
+        entry = catalogue_entry(path, catalogue)
+        return catalogue_source(entry) if entry is not None else model_source(path)
+
+    return sources
+
+
+# The llama-server options that lllm2 reads. The pinned llama.cpp release
+# (engine_release.LLAMA_CPP_REF) accepts every one of them.
+RELEASE_FLAGS = (
+    "--backend-sampling",
+    "--batch-size",
+    "--cache-ram",
+    "--cache-type-k",
+    "--cache-type-v",
+    "--chat-template-file",
+    "--ctx-checkpoints",
+    "--ctx-size",
+    "--device",
+    "--fit",
+    "--fit-target",
+    "--flash-attn",
+    "--gpu-layers",
+    "--host",
+    "--jinja",
+    "--list-devices",
+    "--model",
+    "--model-draft",
+    "--no-context-shift",
+    "--parallel",
+    "--perf",
+    "--port",
+    "--reasoning-effort",
+    "--spec-draft-device",
+    "--spec-draft-n-max",
+    "--spec-draft-type-k",
+    "--spec-draft-type-v",
+    "--spec-ngram-simple-size-m",
+    "--spec-ngram-simple-size-n",
+    "--spec-type",
+    "--ubatch-size",
+)
+RELEASE_SPEC_TYPES = (
+    "none, draft-simple, draft-eagle3, draft-mtp, draft-dflash, draft-dspark, "
+    "ngram-simple, ngram-map-k, ngram-map-k4v, ngram-mod, ngram-cache"
+)
+
+
+def release_key():
+    """Return the key of the lllm2 build and engine release that a probe describes.
+
+    Returns:
+        The lllm2 version and the pinned llama.cpp release.
+    """
+    return f"{__version__}|{LLAMA_CPP_REF}"
+
+
+def static_probe(provider, gpu):
+    """Describe an unprobed GPU from the GPU table and the pinned engine release.
+
+    No container starts. The GPU figures are the table's nominal ones, the flag
+    list is the release's, and evidence that only the binary can give, such as
+    its sha256 and the compiled CUDA streams switch, is unknown.
+
+    Args:
+        provider: The ``RemoteProvider``.
+        gpu: The provider's GPU type string.
+
+    Returns:
+        A ``GpuProbe`` whose engine record has ``estimated`` set to True.
+
+    Raises:
+        ValueError: If the provider has no table entry for the GPU type.
+    """
+    (card,) = table_hardware(provider.name, gpu)["gpus"]
+    unprobed = f"Not probed yet; the first {provider.name} launch on {gpu} checks it."
+    return GpuProbe(
+        name=card["name"],
+        total_mib=card["total_mib"],
+        engine={
+            "path": provider.engine_path,
+            "version": f"lllm2 CUDA engine release {LLAMA_CPP_REF} (not probed)",
+            "flags": list(RELEASE_FLAGS),
+            "help": f"--spec-type {RELEASE_SPEC_TYPES}",
+            "devices": ["CUDA0"],
+            "device_output": "",
+            "error": None,
+            "sha256": None,
+            "cuda_graph": {"supported": False, "library": None, "reason": unprobed},
+            "cache_kernel": {
+                "mixed_gpu_kernel": "unknown",
+                "runtime_dispatch": "unknown; not observed",
+                "library": None,
+                "reason": "Independent cache types need a runtime check. " + unprobed,
+            },
+            "environment": {},
+            "estimated": True,
+        },
+    )
+
+
+class ProbeCache:
+    """Provider GPU probes saved on disk, so validation never starts a container.
+
+    Entries key on the provider, the GPU type and ``release_key()``, so a new
+    lllm2 version or engine release probes again.
+    """
+
+    def __init__(self, path):
+        """Use a cache file.
+
+        Args:
+            path: The JSON file path. It need not exist.
+        """
+        self.path = Path(path)
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(provider, gpu):
+        return f"{provider}|{gpu}|{release_key()}"
+
+    def _read(self):
+        try:
+            data = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def get(self, provider, gpu):
+        """Return the saved probe for a GPU type, if any.
+
+        Args:
+            provider: The provider name.
+            gpu: The GPU type string.
+
+        Returns:
+            The ``GpuProbe``, or None when this release has no saved probe.
+        """
+        with self._lock:
+            entry = self._read().get(self._key(provider, gpu))
+        try:
+            return GpuProbe(entry["name"], int(entry["total_mib"]), entry["engine"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def put(self, provider, gpu, probe):
+        """Save a probe for a GPU type.
+
+        Args:
+            provider: The provider name.
+            gpu: The GPU type string.
+            probe: The ``GpuProbe``.
+        """
+        with self._lock:
+            data = self._read()
+            data[self._key(provider, gpu)] = {
+                "name": probe.name,
+                "total_mib": probe.total_mib,
+                "engine": probe.engine,
+                "probed": time.time(),
+            }
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_name(self.path.name + ".tmp")
+            temporary.write_text(json.dumps(data))
+            os.replace(temporary, self.path)
+
+
+def owner_alive(owner, now=None):
+    """Return whether a call record's owner is a running lllm2 session.
+
+    Args:
+        owner: The record's ``owner`` dict with ``pid``, ``host`` and
+            ``heartbeat`` (Unix seconds), or None.
+        now: The current Unix time, or None to read the clock.
+
+    Returns:
+        True when the heartbeat is recent and, on this host, the owner process
+        still exists. A record owned by this process returns False, because
+        engines in this process are checked directly.
+    """
+    if not isinstance(owner, dict):
+        return False
+    now = time.time() if now is None else now
+    heartbeat = owner.get("heartbeat")
+    if not isinstance(heartbeat, int | float) or now - heartbeat > OWNER_STALE_SECONDS:
+        return False
+    if owner.get("host") == socket.gethostname():
+        pid = owner.get("pid")
+        if type(pid) is not int or pid <= 0 or pid == os.getpid():
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+    return True
+
+
 class CallRecords:
     """Owned serve calls saved on disk, so a later session can adopt them.
 
@@ -426,19 +703,51 @@ class CallRecords:
         with self._lock:
             return self._read().get(provider, {}).get(call_id)
 
-    def keep(self, provider, call_ids):
+    def keep(self, provider, call_ids, grace=RECORD_GRACE_SECONDS):
         """Delete the records of calls that are no longer running.
+
+        A provider list can lag behind a new call, so a record saved or
+        refreshed by its owner within the grace period stays.
 
         Args:
             provider: The provider name.
             call_ids: The identifiers of the running calls.
+            grace: Seconds for which a saved or refreshed record stays.
         """
+        now = time.time()
+        running = set(call_ids)
+
+        def recent(record):
+            if not isinstance(record, dict):
+                return False
+            owner = record.get("owner")
+            times = [
+                record.get("saved"),
+                owner.get("heartbeat") if isinstance(owner, dict) else None,
+            ]
+            return any(isinstance(t, int | float) and now - t < grace for t in times)
+
         with self._lock:
             data = self._read()
             calls = data.get(provider, {})
-            stale = set(calls) - set(call_ids)
+            stale = {k for k, v in calls.items() if k not in running and not recent(v)}
             if stale:
                 data[provider] = {k: v for k, v in calls.items() if k not in stale}
+                self._write(data)
+
+    def touch(self, provider, call_id, heartbeat):
+        """Refresh the owner heartbeat of a call's record, if it exists.
+
+        Args:
+            provider: The provider name.
+            call_id: The call identifier.
+            heartbeat: The heartbeat time in Unix seconds.
+        """
+        with self._lock:
+            data = self._read()
+            record = data.get(provider, {}).get(call_id)
+            if isinstance(record, dict) and isinstance(record.get("owner"), dict):
+                record["owner"]["heartbeat"] = heartbeat
                 self._write(data)
 
     def remove(self, provider, call_id):
@@ -455,6 +764,68 @@ class CallRecords:
                 self._write(data)
 
 
+def describe_calls(provider, records=None, owned=()):
+    """List the provider's running lllm2 serve calls with their ownership.
+
+    Also deletes saved records of calls that have ended, after a grace period.
+
+    Args:
+        provider: The ``RemoteProvider``.
+        records: The ``CallRecords``, or None for the state directory file.
+        owned: The identifiers of calls that engines in this process own.
+
+    Returns:
+        A list of dicts, oldest first, with ``id``, ``gpu``, ``started`` (Unix
+        seconds or None), ``elapsed_seconds``, ``usd_per_hour``,
+        ``estimated_cost_usd``, ``model`` (the settings model path or None),
+        ``adoptable`` (True when a saved key allows adoption), ``owner`` (the
+        owner's ``pid``, ``host`` and ``heartbeat``, or None) and ``status``:
+        ``"owned"`` for this process, ``"active"`` for another running lllm2
+        session, or ``"orphan"``.
+    """
+    if records is None:
+        records = CallRecords(config.STATE_DIR / "remote-calls.json")
+    running = provider.calls()
+    records.keep(provider.name, [c.id for c in running])
+    now = time.time()
+    rows = []
+    for call in running:
+        record = records.get(provider.name, call.id) or {}
+        owner = record.get("owner") if isinstance(record.get("owner"), dict) else None
+        if call.id in owned:
+            status = "owned"
+        elif owner_alive(owner, now):
+            status = "active"
+        else:
+            status = "orphan"
+        gpu = call.gpu or record.get("gpu")
+        started = call.started if call.started is not None else record.get("started")
+        elapsed = max(0.0, now - started) if started is not None else None
+        try:
+            price = gpu_type(provider.name, gpu).usd_per_hour if gpu else None
+        except ValueError:
+            price = None
+        rows.append(
+            {
+                "id": call.id,
+                "gpu": gpu,
+                "started": call.started,
+                "elapsed_seconds": elapsed,
+                "usd_per_hour": price,
+                "estimated_cost_usd": elapsed * price / 3600
+                if elapsed is not None and price is not None
+                else None,
+                "model": (record.get("settings") or {}).get("model"),
+                "adoptable": "api_key" in record,
+                "owner": {k: owner.get(k) for k in ("pid", "host", "heartbeat")}
+                if owner
+                else None,
+                "status": status,
+            }
+        )
+    return rows
+
+
 class _Call:
     """One serve call that an engine owns, with its proxy and monitor state."""
 
@@ -466,6 +837,7 @@ class _Call:
         self.started_unix = started
         self.upstream = None
         self.done = threading.Event()
+        self.heartbeat = time.monotonic()
 
 
 _ENGINES: "weakref.WeakSet[RemoteEngine]" = weakref.WeakSet()
@@ -510,7 +882,9 @@ class RemoteEngine(Engine):
         port=None,
         poll_interval=2.0,
         records=None,
-        sources=model_source,
+        sources=None,
+        catalogue=None,
+        probes=None,
     ):
         """Create an engine for one provider GPU type.
 
@@ -524,7 +898,12 @@ class RemoteEngine(Engine):
             records: The path of the owned call record file. None uses the
                 state directory.
             sources: A callable that maps a model or drafter path to a
-                ``ModelSource``.
+                ``ModelSource``. None uses ``catalogue_sources(catalogue)``.
+            catalogue: Catalogue entries, a callable that returns them, or None
+                for the bundled catalogue. The engine uses it to find download
+                sources and estimated metadata for models not yet stored.
+            probes: The path of the GPU probe cache file. None uses the state
+                directory.
         """
         super().__init__()
         self.provider = provider
@@ -536,8 +915,13 @@ class RemoteEngine(Engine):
         self._records = CallRecords(
             config.STATE_DIR / "remote-calls.json" if records is None else records
         )
-        self._sources = sources
+        self._catalogue = catalogue
+        self._sources = sources or catalogue_sources(catalogue)
+        self._probe_cache = ProbeCache(
+            config.STATE_DIR / "remote-probes.json" if probes is None else probes
+        )
         self._probes = {}
+        self._meta = {}
         self._generation = 0
         self._call = None
         self._phase = None
@@ -554,22 +938,197 @@ class RemoteEngine(Engine):
     def alive(self):
         return self._call is not None
 
-    def hardware(self):
+    def hardware(self, s=None):
         """Describe the remote GPU for starting defaults and results.
+
+        Args:
+            s: Settings whose GPU type to describe, or None for the engine's
+                current GPU type.
 
         Returns:
             A description in the ``discovery.hardware()`` shape with ``source``
-            set to the provider name. Probed GPU name and memory replace the
-            table figures once a probe has run.
+            set to the provider name and ``gpu_type`` set to the GPU type.
+            Probed GPU name and memory from a launch, in this or an earlier
+            session of the same release, replace the table figures. No
+            container starts.
 
         Raises:
             ValueError: If the provider has no table entry for the GPU type.
         """
-        description = table_hardware(self.provider.name, self.gpu)
-        probed = self._probes.get(self.gpu)
-        if probed is not None:
-            description["gpus"][0].update(name=probed.name, total_mib=probed.total_mib)
+        gpu = self._gpu_for(s)
+        description = table_hardware(self.provider.name, gpu)
+        probed = self._known(gpu)
+        description["gpus"][0].update(name=probed.name, total_mib=probed.total_mib)
         return description
+
+    def probe(self, s):
+        """Return the engine capability record for the settings' GPU type.
+
+        No container starts. The record comes from the last launch probe of
+        this release, or from ``static_probe`` for a GPU type that has not
+        launched yet; that record has ``estimated`` set to True.
+
+        Args:
+            s: Settings whose GPU type to describe.
+
+        Returns:
+            The record in the ``discovery.probe()`` shape.
+
+        Raises:
+            ValueError: The settings name a different remote provider, or the
+                GPU type is not in the provider's table.
+        """
+        self._check(s)
+        return self._known(self._gpu_for(s)).engine
+
+    def prepare(self, s):
+        """Probe the settings' GPU type unless this release already has a probe.
+
+        A run calls this before it records engine and hardware identity. For
+        a GPU type that has never launched, the provider's probe starts a
+        container.
+
+        Args:
+            s: Settings whose GPU type to probe.
+
+        Raises:
+            ValueError: The settings name a different remote provider.
+            RuntimeError: The provider failed.
+        """
+        self._check(s)
+        self._probe(self._gpu_for(s))
+
+    def metadata(self, path):
+        """Return GGUF metadata for a model without downloading it.
+
+        The engine prefers, in order: metadata from this engine's last
+        download, the provider's cached metadata, a local copy of the file, and
+        an estimate from the catalogue entry marked ``estimated``.
+
+        Args:
+            path: A model path under the managed model directory.
+
+        Returns:
+            A record in the ``discovery.metadata()`` shape. ``error`` explains
+            why a model with no stored copy and no catalogue entry cannot run.
+
+        Raises:
+            ValueError: The path is outside the managed model directory.
+        """
+        source = self._sources(path)
+        if source.name in self._meta:
+            return self._meta[source.name]
+        stored = self.provider.stored_metadata(source.name)
+        if stored is not None:
+            self._meta[source.name] = stored
+            return stored
+        if Path(path).expanduser().is_file():
+            return local_metadata(path)
+        entry = catalogue_entry(path, self._catalogue)
+        if entry is not None:
+            return {
+                "architecture": None,
+                "name": entry.get("name"),
+                "context": entry.get("max_ctx"),
+                "mtp": bool(entry.get("mtp")),
+                "template": "",
+                "error": None,
+                "estimated": True,
+            }
+        return {
+            "architecture": None,
+            "context": None,
+            "mtp": None,
+            "template": "",
+            "error": f"The model is not in the {self.provider.name} store and has no catalogue entry to download it from.",
+        }
+
+    def identity(self, path):
+        """Identify a model by its store name and catalogue identity.
+
+        Args:
+            path: A model path under the managed model directory.
+
+        Returns:
+            A dict with ``path``, ``size`` and ``mtime_ns`` (from a local copy,
+            or None), ``store`` (the provider name), ``store_name``, ``repo``
+            and ``revision``. A catalogue model adds ``catalogue_id``, and one
+            with a measured profile adds the profile's ``sha256`` with
+            ``sha256_source`` set to ``"catalogue"``.
+
+        Raises:
+            ValueError: The path is outside the managed model directory.
+        """
+        source = self._sources(path)
+        target = Path(path).expanduser().resolve()
+        out = {
+            "path": str(target),
+            "size": None,
+            "mtime_ns": None,
+            "store": self.provider.name,
+            "store_name": source.name,
+            "repo": source.repo,
+            "revision": source.revision,
+        }
+        if target.is_file():
+            out.update({k: v for k, v in local_identity(target).items() if k != "path"})
+        entry = catalogue_entry(path, self._catalogue)
+        if entry is None:
+            return out
+        out["catalogue_id"] = entry.get("id")
+        profile_id = (entry.get("recommendation") or {}).get("profile")
+        profile = next(
+            (
+                r
+                for r in PROFILES
+                if r["id"] == profile_id and r["model"]["file"] == entry["file"]
+            ),
+            None,
+        )
+        if profile is not None and out["size"] in (None, profile["model"]["size"]):
+            out.update(
+                size=profile["model"]["size"],
+                sha256=profile["model"]["sha256"],
+                sha256_source="catalogue",
+            )
+        return out
+
+    def launch_args(self, s):
+        """Build the remote command line without probing, downloading or spawning.
+
+        Args:
+            s: The launch settings.
+
+        Returns:
+            The argument list, starting with the binary path in the container.
+
+        Raises:
+            ValueError: The remote engine or model cannot run these settings.
+        """
+        self._check(s)
+        probed = self._known(self._gpu_for(s))
+        meta = self.metadata(s.model)
+        if s.speculation == "draft-dflash" and s.drafter:
+            meta = {**meta, "drafter": self.metadata(s.drafter)}
+        return self._command(s, probed, meta)[0]
+
+    def defaults_inputs(self, s):
+        # Cached or static evidence only: resolving defaults never starts a GPU.
+        return {
+            "host": self.hardware(s),
+            "engine": self.probe(s),
+            "meta": self.metadata(s.model),
+            "model": self.identity(s.model),
+        }
+
+    def remote_calls(self):
+        """List every running lllm2 call of the provider with its ownership.
+
+        Returns:
+            The rows of ``describe_calls``.
+        """
+        owned = {engine.call_id for engine in list(_ENGINES)} - {None}
+        return describe_calls(self.provider, self._records, owned)
 
     def status(self):
         call = self._call
@@ -619,11 +1178,17 @@ class RemoteEngine(Engine):
         self.attempt_environment = None
         if cancel.is_set():
             raise Cancelled()
+        self._check(s)
         self.stop()
         with self.guard:
             self._generation += 1
             generation = self._generation
             self._error = self._download = None
+            if s.remote:
+                self.gpu = s.gpu_type or self.gpu
+                self.idle_timeout = (
+                    s.idle_timeout_minutes * 60 if s.idle_timeout_minutes else None
+                )
         proxy = self._bind_proxy()
         call = None
 
@@ -633,32 +1198,14 @@ class RemoteEngine(Engine):
 
         try:
             self._phase = "probing"
-            probed = self._probe()
+            probed = self._probe(self.gpu)
             check()
             self._phase = "downloading model"
-            source, meta = self._ensure(s.model, cancel)
-            paths = {s.model: self.provider.model_path(source.name)}
+            meta = self._ensure(s.model, cancel)
             if s.speculation == "draft-dflash" and s.drafter:
-                drafter, drafter_meta = self._ensure(s.drafter, cancel)
-                meta = {**meta, "drafter": drafter_meta}
-                paths[s.drafter] = self.provider.model_path(drafter.name)
+                meta = {**meta, "drafter": self._ensure(s.drafter, cancel)}
             check()
-            files = {}
-            if s.chat_template:
-                template = Path(s.chat_template).expanduser()
-                try:
-                    files[template.name] = template.read_text()
-                except OSError as e:
-                    raise ValueError("Chat template file does not exist.") from e
-                paths[s.chat_template] = self.provider.file_path(template.name)
-            argv = build_launch_args(
-                s,
-                self.provider.server_port,
-                probed.engine,
-                meta,
-                host=self.provider.server_host,
-                path=paths.__getitem__,
-            )
+            argv, files = self._command(s, probed, meta)
             env = {}
             if s.cuda_graph_opt != "default":
                 env["GGML_CUDA_GRAPH_OPT"] = "1" if s.cuda_graph_opt == "on" else "0"
@@ -712,6 +1259,11 @@ class RemoteEngine(Engine):
             raise ValueError(
                 "No saved key for this remote call, so it cannot be adopted. Stop it instead."
             )
+        owner = record.get("owner")
+        if call_id != self.call_id and owner_alive(owner):
+            raise ValueError(
+                f"Another lllm2 session (pid {owner.get('pid')} on {owner.get('host')}) serves that call. Stop it there."
+            )
         s = Settings.parse(record["settings"])
         self.stop()
         with self.guard:
@@ -734,33 +1286,16 @@ class RemoteEngine(Engine):
             raise
 
     def orphans(self):
-        """List running serve calls that no engine in this process owns.
+        """List running serve calls that no running lllm2 session owns.
 
-        Also deletes saved records of calls that have ended.
+        Calls that an engine in this process owns, and calls that another
+        running session keeps refreshing, are left out. Also deletes saved
+        records of calls that have ended, after a grace period.
 
         Returns:
-            A list of dicts with ``id``, ``gpu``, ``started`` (Unix seconds or
-            None), ``model`` (the settings model path or None) and
-            ``adoptable`` (True when a saved key allows ``adopt``).
+            The ``describe_calls`` rows whose ``status`` is ``"orphan"``.
         """
-        running = self.provider.calls()
-        self._records.keep(self.provider.name, [c.id for c in running])
-        owned = {engine.call_id for engine in list(_ENGINES)}
-        found = []
-        for call in running:
-            if call.id in owned:
-                continue
-            record = self._records.get(self.provider.name, call.id)
-            found.append(
-                {
-                    "id": call.id,
-                    "gpu": call.gpu or (record or {}).get("gpu"),
-                    "started": call.started,
-                    "model": (record or {}).get("settings", {}).get("model"),
-                    "adoptable": record is not None,
-                }
-            )
-        return found
+        return [row for row in self.remote_calls() if row["status"] == "orphan"]
 
     def cancel_orphan(self, call_id):
         """Stop a running serve call that this engine does not own.
@@ -818,10 +1353,58 @@ class RemoteEngine(Engine):
             ) from e
         return proxy
 
-    def _probe(self):
-        if self.gpu not in self._probes:
-            self._probes[self.gpu] = self.provider.probe(self.gpu)
-        return self._probes[self.gpu]
+    def _gpu_for(self, s):
+        if s is not None and s.remote and s.gpu_type:
+            return s.gpu_type
+        return self.gpu
+
+    def _check(self, s):
+        if s.remote and s.backend != self.provider.name:
+            raise ValueError(
+                f"These settings use the {s.backend} backend, but this engine serves {self.provider.name}."
+            )
+
+    def _known(self, gpu):
+        """Return the best probe for a GPU type without starting a container."""
+        probed = self._probes.get(gpu)
+        if probed is None:
+            probed = self._probe_cache.get(self.provider.name, gpu)
+        return probed if probed is not None else static_probe(self.provider, gpu)
+
+    def _probe(self, gpu):
+        """Return a real probe for a GPU type, probing once per release."""
+        if gpu not in self._probes:
+            probed = self._probe_cache.get(self.provider.name, gpu)
+            if probed is None:
+                probed = self.provider.probe(gpu)
+                try:
+                    self._probe_cache.put(self.provider.name, gpu, probed)
+                except OSError as e:
+                    self.log(f"Could not save the GPU probe: {e}")
+            self._probes[gpu] = probed
+        return self._probes[gpu]
+
+    def _command(self, s, probed, meta):
+        paths = {s.model: self.provider.model_path(self._sources(s.model).name)}
+        if s.speculation == "draft-dflash" and s.drafter:
+            paths[s.drafter] = self.provider.model_path(self._sources(s.drafter).name)
+        files = {}
+        if s.chat_template:
+            template = Path(s.chat_template).expanduser()
+            try:
+                files[template.name] = template.read_text()
+            except OSError as e:
+                raise ValueError("Chat template file does not exist.") from e
+            paths[s.chat_template] = self.provider.file_path(template.name)
+        argv = build_launch_args(
+            s,
+            self.provider.server_port,
+            probed.engine,
+            meta,
+            host=self.provider.server_host,
+            path=paths.__getitem__,
+        )
+        return argv, files
 
     def _ensure(self, path, cancel):
         source = self._sources(path)
@@ -835,7 +1418,8 @@ class RemoteEngine(Engine):
 
         meta = self.provider.ensure_model(source, progress, cancel)
         self._download = None
-        return source, meta
+        self._meta[source.name] = meta
+        return meta
 
     def _own(self, call, s):
         self._call = call
@@ -848,6 +1432,12 @@ class RemoteEngine(Engine):
                 "settings": s.dict(),
                 "argv": self.argv,
                 "started": call.started_unix,
+                "saved": time.time(),
+                "owner": {
+                    "pid": os.getpid(),
+                    "host": socket.gethostname(),
+                    "heartbeat": time.time(),
+                },
             },
         )
         threading.Thread(target=self._monitor, args=(call,), daemon=True).start()
@@ -876,6 +1466,7 @@ class RemoteEngine(Engine):
     def _monitor(self, call):
         failures = 0
         while not call.done.is_set():
+            self._heartbeat(call)
             try:
                 state = self.provider.poll(call.id)
             except Exception as e:
@@ -902,6 +1493,16 @@ class RemoteEngine(Engine):
                 self._idle_stop(call)
                 return
             call.done.wait(self.poll_interval)
+
+    def _heartbeat(self, call):
+        now = time.monotonic()
+        if now - call.heartbeat < OWNER_HEARTBEAT_SECONDS:
+            return
+        call.heartbeat = now
+        try:
+            self._records.touch(self.provider.name, call.id, time.time())
+        except OSError as e:
+            self.log(f"Could not refresh the remote call record: {e}")
 
     def _ended(self, call, error):
         with self.guard:

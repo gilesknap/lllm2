@@ -155,13 +155,15 @@ def table_hardware(provider: str, name: str) -> dict:
 
     Returns:
         A description in the ``discovery.hardware()`` shape with one GPU. Host
-        memory is unknown, and ``source`` is the provider name.
+        memory is unknown, ``source`` is the provider name and ``gpu_type`` is
+        the provider's GPU type string.
 
     Raises:
         ValueError: If the provider or GPU type is unknown.
     """
     entry = gpu_type(provider, name)
     return {
+        "gpu_type": entry.name,
         "gpus": [
             {
                 "index": "0",

@@ -1,12 +1,14 @@
 """Settings recovery uses temporary storage; never open the workstation database."""
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from lllm2.app import App
 from lllm2.discovery import host_memory
+from lllm2.engine import LocalEngine
 from lllm2.settings import Settings
 from lllm2.store import Store
 
@@ -44,6 +46,8 @@ class SettingsRecoveryTests(unittest.TestCase):
         with patch("lllm2.config.STATE_DIR", Path(self.temp.name)):
             self.app = App.__new__(App)
             self.app.store = Store()
+            self.app.engines = {"local": LocalEngine()}
+            self.app.engine_lock = threading.Lock()
         self.addCleanup(self.app.store.db.close)
         self.settings = Settings(
             model="/models/example.gguf", engine="/engine", gpu_layers=0
@@ -60,7 +64,7 @@ class SettingsRecoveryTests(unittest.TestCase):
 
     def test_manual_save_preserves_recoverable_experiment_and_recommendation(self):
         original = self.app.store.get("result", "measured")
-        with patch("lllm2.app.launch_args"):
+        with patch("lllm2.engine.launch_args"):
             self.app.action("/api/default/save", {"result_id": "measured"})
             provenance = self.app.store.get(
                 "default-evidence", self.app.default_key(self.settings)
@@ -160,7 +164,7 @@ class SettingsRecoveryTests(unittest.TestCase):
                 preview = self.app.action("/api/result/preview", data)
                 self.assertEqual(preview["settings"]["context"], expected)
                 self.assertEqual(preview["reserve_headroom"], use_context and headroom)
-                with patch("lllm2.app.launch_args"):
+                with patch("lllm2.engine.launch_args"):
                     saved = self.app.action("/api/default/save", data)
                 self.assertEqual(saved["context"], expected)
                 evidence = self.app.store.get(
@@ -196,7 +200,7 @@ class SettingsRecoveryTests(unittest.TestCase):
         data = {"result_id": "measured", "use_context": True}
         preview = self.app.action("/api/result/preview", data)
         self.assertEqual(preview["settings"]["context"], 65536)
-        with patch("lllm2.app.launch_args"):
+        with patch("lllm2.engine.launch_args"):
             saved = self.app.action("/api/default/save", data)
         self.assertEqual(saved["context"], 65536)
         # Neither a sample nor a context measurement: nothing to promote.

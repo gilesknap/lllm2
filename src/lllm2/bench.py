@@ -8,16 +8,12 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from . import config
-from .discovery import hardware, identity, metadata, probe
 from .engine import Cancelled, GPUUnavailable
 from .settings import (
     Settings,
     batch_settings,
     cache_settings,
-    capabilities,
     execution_settings,
-    launch_args,
     speculative_settings,
 )
 from .source_workloads import TASKS, adherence, output_budget, source_prompt
@@ -81,11 +77,39 @@ class Ledger{index}:
 """
 
 
-def suite(s):
+def engine_record(engine, s):
+    """Return the engine identity to save with a result.
+
+    Args:
+        engine: The engine that serves the settings.
+        s: The launch settings.
+
+    Returns:
+        The engine's capability record without help text, the flag list or
+        the process environment.
+    """
+    return {
+        k: v
+        for k, v in engine.probe(s).items()
+        if k not in ["help", "flags", "environment"]
+    }
+
+
+def suite(s, engine):
+    """Build one-setting variants of a baseline that the engine can launch.
+
+    Args:
+        s: The baseline settings.
+        engine: The engine that validates each variant.
+
+    Returns:
+        The labelled variants, baseline first, and the skipped options with
+        their reasons.
+    """
     # The selected (normally inherited or saved) configuration is the baseline.
     # Every candidate changes exactly one setting, and invalid combinations skip.
     base = replace(s)
-    caps = capabilities(base)
+    caps = engine.capabilities(base)
     variants = [("baseline", base)]
     skipped = []
 
@@ -94,7 +118,7 @@ def suite(s):
         if v == base:
             return
         try:
-            launch_args(v, config.ENGINE_PORT)
+            engine.launch_args(v)
         except ValueError as e:
             skipped.append({"option": label, "reason": str(e)})
         else:
@@ -144,7 +168,39 @@ class Bench:
         with self.lock:
             self.progress.update(values)
 
-    def submit(self, data):
+    def use(self, engine):
+        """Make an engine current, stopping the previous one.
+
+        Args:
+            engine: The engine for later operations.
+
+        Raises:
+            ValueError: An operation is running.
+        """
+        with self.lock:
+            if engine is self.engine:
+                return
+            if self.active:
+                raise ValueError("Wait for the current operation or cancel it first.")
+            self.engine.stop()
+            self.engine = engine
+
+    def submit(self, data, engine=None):
+        """Validate an experiment request and start it in the background.
+
+        Args:
+            data: The request with ``settings``, ``mode`` and options.
+            engine: The engine to run on, or None for the current engine. A
+                different engine replaces the current one, which is stopped,
+                once the running-model check passes.
+
+        Returns:
+            The progress snapshot.
+
+        Raises:
+            ValueError: The request is invalid or a model is serving.
+        """
+        engine = self.engine if engine is None else engine
         s = Settings.parse(data["settings"])
         mode = data.get("mode", "baseline")
         opts = {
@@ -155,7 +211,7 @@ class Bench:
             "output_tokens": data.get("output_tokens", 256),
             "search_context": data.get("search_context", False),
             "max_context": data.get(
-                "max_context", metadata(s.model)["context"] or 131072
+                "max_context", engine.metadata(s.model)["context"] or 131072
             ),
             "timeout": data.get("timeout", 900),
             "context_timeout": data.get("context_timeout", 900),
@@ -218,7 +274,7 @@ class Bench:
                 "Shared prompt and output budgets must fit context per slot, with 32 tokens of margin."
             )
         variants, skipped = (
-            suite(s)
+            suite(s, engine)
             if mode == "suite"
             else ([("baseline" if mode == "baseline" else "custom", replace(s))], [])
         )
@@ -250,7 +306,7 @@ class Bench:
                     "Combinations must share model, engine, backend, device, context and slots for comparison."
                 )
         for _, v in variants:
-            launch_args(v, config.ENGINE_PORT)
+            engine.launch_args(v)
         with self.lock:
             if self.active:
                 raise ValueError("An operation is already running.")
@@ -262,6 +318,7 @@ class Bench:
                 raise ValueError(
                     "A model is serving or has changed. Refresh status and choose Stop model and run experiment to replace it."
                 )
+            self.use(engine)
             self.active = True
             self.cancel.clear()
             self.progress = {
@@ -282,6 +339,7 @@ class Bench:
             for i, (label, s) in enumerate(variants):
                 if self.cancel.is_set():
                     raise Cancelled()
+                self.engine.prepare(s)
                 r = {
                     "id": str(uuid.uuid4()),
                     "group": group,
@@ -290,16 +348,15 @@ class Bench:
                     "status": "running",
                     "settings": s.dict(),
                     "options": opts,
-                    "model": identity(s.model),
-                    "engine": {
-                        k: v
-                        for k, v in probe(s.engine).items()
-                        if k not in ["help", "flags"]
-                    },
-                    "batch_settings": batch_settings(s),
-                    "cache_settings": cache_settings(s),
+                    "model": self.engine.identity(s.model),
+                    "engine": engine_record(self.engine, s),
+                    "batch_settings": batch_settings(s, engine=self.engine.probe(s)),
+                    "cache_settings": cache_settings(
+                        s, self.engine.probe(s).get("cache_kernel")
+                    ),
                     "execution_settings": execution_settings(s),
-                    "hardware": hardware(),
+                    # The source and GPU type tell remote runs from local ones.
+                    "hardware": self.engine.hardware(s),
                     "samples": [],
                     "probes": [],
                     "largest_observed_context": None,
@@ -312,7 +369,7 @@ class Bench:
                         note="Controlled token-prefix conversation, six turns plus identical uncached replays. First-token event timing is client-observed. Exact generated IDs are validated; engines that omit byte tokens while buffering UTF-8 fail with partial evidence. Reuse is measured, not assumed; larger-context reuse is unverified. No quality claim or cold-baseline promotion.",
                     )
                 if s.drafter and s.speculation == "draft-dflash":
-                    r["drafter"] = identity(s.drafter)
+                    r["drafter"] = self.engine.identity(s.drafter)
                     r["pair_evidence"] = (
                         "User-declared target-specific ordinary DFlash pair; successful runs verify execution only."
                     )
@@ -377,7 +434,10 @@ class Bench:
                         attempt_env,
                         self.engine.state()["logs"] if attempt_env is not None else (),
                     )
-                    if isinstance(e, GPUUnavailable) or not hardware()["gpus"]:
+                    if (
+                        isinstance(e, GPUUnavailable)
+                        or not self.engine.hardware(s)["gpus"]
+                    ):
                         fatal = str(e)
                 finally:
                     r["finished"] = stamp()
@@ -450,7 +510,8 @@ class Bench:
         }
 
     def measure(self, s, workload, tokens, output, timeout):
-        batches = batch_settings(s, self.engine.logs())
+        engine = self.engine.probe(s)
+        batches = batch_settings(s, self.engine.logs(), engine)
         prompt, provenance = self.prompt(s, workload, tokens, timeout)
         host_memory = self.engine.memory_sampler()
         host_before = host_memory()
@@ -466,7 +527,7 @@ class Bench:
 
         def sample_memory():
             while not finished.is_set():
-                h = hardware()
+                h = self.engine.gpu_memory()
                 memory.append(
                     {
                         "time": stamp(),
@@ -532,7 +593,7 @@ class Bench:
             )
             if source_task
             else None,
-            "speculative_settings": speculative_settings(s, timings),
+            "speculative_settings": speculative_settings(s, timings, engine),
             "host_before": host_before,
             "host_after": host_after,
             "peak_engine_rss_mib": max(
@@ -540,7 +601,7 @@ class Bench:
                 default=None,
             ),
             "batch_settings": batches,
-            "cache_settings": cache_settings(s),
+            "cache_settings": cache_settings(s, engine.get("cache_kernel")),
             "execution_settings": execution,
             "context_per_slot": s.context // s.slots,
             "slots": s.slots,
@@ -549,8 +610,10 @@ class Bench:
             "decode_tok_s": timings.get("predicted_per_second"),
             "timings": timings,
             "memory": memory,
+            # Samples without GPUs are unknown memory, not zero use.
             "peak_total_gpu_used_mib": max(
-                (sum(g["used_mib"] for g in m["gpus"]) for m in memory), default=None
+                (sum(g["used_mib"] for g in m["gpus"]) for m in memory if m["gpus"]),
+                default=None,
             ),
             "prompt": provenance,
             "output": response.get("content", ""),
@@ -565,7 +628,7 @@ class Bench:
     def context_search(self, s, opts, r):
         ceiling = min(
             opts["max_context"],
-            metadata(s.model)["context"] or opts["max_context"],
+            self.engine.metadata(s.model)["context"] or opts["max_context"],
             1048576 // s.slots,
         )
         floor = max(512, opts["output_tokens"] + 160)
@@ -669,7 +732,7 @@ class Bench:
             except Exception as e:
                 logs = self.engine.state()["logs"]
                 entry.update(status="failed", error=str(e), logs=logs)
-                if isinstance(e, GPUUnavailable) or not hardware()["gpus"]:
+                if isinstance(e, GPUUnavailable) or not self.engine.hardware(s)["gpus"]:
                     raise GPUUnavailable(
                         "GPU unavailable after context probe; no further restarts."
                     ) from e

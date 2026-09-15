@@ -217,11 +217,26 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(result.exit_code, 130, result.output)
             launch.assert_called_once_with(
-                "/model.gguf", "/llama-server", "CUDA", "CUDA0", 300
+                "/model.gguf", "/llama-server", "CUDA", "CUDA0", 300, "", None
             )
         with patch.object(cli, "_launch", return_value=0) as launch:
             self.assertEqual(self.runner.invoke(cli.app, ["launch"]).exit_code, 0)
-            launch.assert_called_once_with("", "", "", "", 180)
+            launch.assert_called_once_with("", "", "", "", 180, "", None)
+        with patch.object(cli, "_launch", return_value=0) as launch:
+            result = self.runner.invoke(
+                cli.app,
+                [
+                    "launch",
+                    "--backend",
+                    "modal",
+                    "--gpu",
+                    "L40S",
+                    "--idle-timeout",
+                    "0",
+                ],
+            )
+            self.assertEqual(result.exit_code, 0, result.output)
+            launch.assert_called_once_with("", "", "modal", "", 180, "L40S", 0)
 
     def test_saved_launch_settings_override_tuning_but_not_discovery(self):
         selected = Settings(

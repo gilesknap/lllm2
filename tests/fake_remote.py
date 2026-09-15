@@ -249,6 +249,9 @@ class FakeProvider(RemoteProvider):
             self.downloads.append(source.name)
         return dict(META)
 
+    def stored_metadata(self, name):
+        return dict(META) if (self.root / "volume" / name).is_file() else None
+
     def models(self):
         volume = self.root / "volume"
         return [

@@ -15,8 +15,15 @@ import urllib.request
 from pathlib import Path
 
 from . import config
-from .discovery import EXECUTION_ENV_KEYS, command, hardware
-from .settings import launch_args, launch_environment
+from .discovery import (
+    EXECUTION_ENV_KEYS,
+    command,
+    hardware,
+    identity,
+    metadata,
+    probe,
+)
+from .settings import capabilities, launch_args, launch_environment
 
 
 class Cancelled(Exception):
@@ -210,6 +217,123 @@ class Engine(abc.ABC):
             A dict with ``running``, ``ready``, ``pid`` and ``error``. ``pid``
             is None when the server has no local process.
         """
+
+    @abc.abstractmethod
+    def hardware(self, s=None):
+        """Describe the GPU that serves, or would serve, the settings.
+
+        Args:
+            s: Settings whose backend and GPU type select the hardware, or None
+                for the engine's current choice.
+
+        Returns:
+            A description in the ``discovery.hardware()`` shape. ``source`` is
+            ``"local"`` or the remote provider name.
+        """
+
+    @abc.abstractmethod
+    def probe(self, s):
+        """Return the capability record of the engine binary that serves settings.
+
+        Args:
+            s: Settings naming the engine and backend.
+
+        Returns:
+            A record in the ``discovery.probe()`` shape.
+
+        Raises:
+            ValueError: The engine binary cannot be probed.
+        """
+
+    @abc.abstractmethod
+    def metadata(self, path):
+        """Return GGUF metadata for a model or drafter path.
+
+        Args:
+            path: A path as in ``Settings.model``.
+
+        Returns:
+            A record in the ``discovery.metadata()`` shape.
+        """
+
+    @abc.abstractmethod
+    def identity(self, path):
+        """Identify a model or drafter file for saved results.
+
+        Args:
+            path: A path as in ``Settings.model``.
+
+        Returns:
+            A dict with at least ``path``, ``size`` and ``mtime_ns``. A remote
+            engine adds store and catalogue identity, including ``sha256``
+            when the catalogue pins one.
+
+        Raises:
+            OSError: A local file cannot be read.
+        """
+
+    @abc.abstractmethod
+    def launch_args(self, s):
+        """Build and validate the llama-server command line for settings.
+
+        Args:
+            s: The launch settings.
+
+        Returns:
+            The argument list, binary first.
+
+        Raises:
+            ValueError: This engine cannot run the settings.
+        """
+
+    def capabilities(self, s):
+        """Report which settings this engine and checkpoint support.
+
+        Args:
+            s: Settings to check.
+
+        Returns:
+            The ``settings.capabilities`` result for this engine's evidence.
+        """
+        return capabilities(s, self.probe(s), self.metadata(s.model))
+
+    def prepare(self, s):
+        """Gather launch evidence that validation leaves out, before a run.
+
+        Validation, capabilities and defaults use cheap evidence. A run calls
+        this first so that its saved engine and hardware identity is exact.
+        Engines whose evidence is always exact keep this default, which does
+        nothing.
+
+        Args:
+            s: The settings the run launches.
+        """
+        return None
+
+    def gpu_memory(self):
+        """Sample GPU memory use while a workload runs.
+
+        Engines that cannot observe their GPU keep this default, which returns
+        no GPUs, so measurements report unknown GPU memory rather than zero.
+
+        Returns:
+            A dict with ``gpus`` in the ``discovery.hardware()`` shape and
+            ``error``.
+        """
+        return {"gpus": [], "error": "This engine does not sample GPU memory."}
+
+    def defaults_inputs(self, s):
+        """Return the evidence that starting defaults need for settings.
+
+        Args:
+            s: Settings naming the model, backend and GPU type.
+
+        Returns:
+            Keyword arguments for ``starting_defaults`` and
+            ``saved_qualifications``: ``host``, ``engine``, ``meta`` and
+            ``model``. An empty dict lets those functions probe locally.
+        """
+        return {}
 
     def memory_sampler(self):
         """Return a callable that samples the server's host memory.
@@ -437,6 +561,29 @@ class LocalEngine(Engine):
     def alive(self):
         process = self.process
         return process is not None and process.poll() is None
+
+    def hardware(self, s=None):
+        return hardware()
+
+    def probe(self, s):
+        return probe(s.engine)
+
+    def metadata(self, path):
+        return metadata(path)
+
+    def identity(self, path):
+        return identity(path)
+
+    def launch_args(self, s):
+        if s.remote:
+            raise ValueError(
+                f"The local engine cannot serve the {s.backend} backend. Select a local backend."
+            )
+        return launch_args(s, config.ENGINE_PORT)
+
+    def gpu_memory(self):
+        h = hardware()
+        return {"gpus": h["gpus"], "error": h["error"]}
 
     def status(self):
         process = self.process

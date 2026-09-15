@@ -5,13 +5,13 @@ import os
 import shutil
 import subprocess
 
-from .engine import LocalEngine
+from .backends import create_engine
 
 
 def served_model():
     # The engine endpoint is always a loopback URL, whichever backend serves it.
     # An unstarted engine handle is only used here for its HTTP helpers.
-    engine = LocalEngine()
+    engine = create_engine()
     try:
         models = engine.request("/v1/models", timeout=3)
         props = engine.request("/props", timeout=3)

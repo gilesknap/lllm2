@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from lllm2 import defaults, discovery
+from lllm2 import defaults, discovery, recommendations
 from lllm2.gpu_tables import (
     GPU_TABLES,
     MODAL_GPUS,
@@ -101,7 +101,8 @@ class ModalStartingDefaultsTests(unittest.TestCase):
     def resolve(self, gpu):
         selection = Settings(
             model=f"/models/{self.entry['name']}/{self.entry['file']}",
-            engine=ENGINE["path"],
+            backend="modal",
+            gpu_type=gpu,
         )
         meta = {
             "error": None,
@@ -114,10 +115,17 @@ class ModalStartingDefaultsTests(unittest.TestCase):
             patch.object(defaults, "command", side_effect=no_local_probe),
             patch.object(defaults, "probe", side_effect=no_local_probe),
             patch.object(defaults, "metadata", side_effect=no_local_probe),
-            patch.object(defaults, "measured_defaults", side_effect=no_local_probe),
+            patch.object(recommendations, "hardware", side_effect=no_local_probe),
+            patch.object(recommendations, "probe", side_effect=no_local_probe),
+            patch.object(recommendations, "metadata", side_effect=no_local_probe),
+            patch.object(recommendations, "fingerprint", side_effect=no_local_probe),
         ):
             result = defaults.starting_defaults(
-                selection, table_hardware("modal", gpu), ENGINE, meta
+                selection,
+                table_hardware("modal", gpu),
+                ENGINE,
+                meta,
+                {"size": None, "sha256": None},
             )
         settings = Settings.parse(result["settings"])
         args = build_launch_args(settings, 8080, ENGINE, meta, path=lambda v: v)
@@ -129,7 +137,10 @@ class ModalStartingDefaultsTests(unittest.TestCase):
             with self.subTest(gpu=entry.name):
                 settings, result, args = self.resolve(entry.name)
                 notes = " ".join(result["notes"])
-                self.assertIn("local GPUs only", notes)
+                self.assertIn("No measured built-in profile", notes)
+                self.assertEqual(
+                    (settings.backend, settings.gpu_type), ("modal", entry.name)
+                )
                 self.assertEqual(args[args.index("--device") + 1], "CUDA0")
                 self.assertEqual(
                     args[args.index("--ctx-size") + 1], str(settings.context)

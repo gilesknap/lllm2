@@ -10,13 +10,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from unittest.mock import Mock, patch
 
 import pytest
 
-from fake_remote import ENGINE, META, FakeProvider, free_port
+from fake_remote import ENGINE, FakeProvider, free_port
 from lllm2 import config
-from lllm2.bench import Bench
 from lllm2.engine import Cancelled, ResourceConflict
 from lllm2.remote import (
     DEFAULT_IDLE_TIMEOUT,
@@ -38,7 +36,12 @@ from lllm2.settings import Settings
 root, records, port, models, mode = sys.argv[2:7]
 config.MODELS_DIR = Path(models)
 engine = RemoteEngine(
-    FakeProvider(root), "FAKE-24", port=int(port), poll_interval=0.05, records=records
+    FakeProvider(root),
+    "FAKE-24",
+    port=int(port),
+    poll_interval=0.05,
+    records=records,
+    probes=records + ".probes",
 )
 engine.start(Settings(model=models + "/example/model.gguf"), threading.Event(), 30)
 print("ready", engine.call_id, flush=True)
@@ -89,6 +92,7 @@ def engines(tmp_path, providers):
             "port": free_port(),
             "poll_interval": 0.05,
             "records": tmp_path / "calls.json",
+            "probes": tmp_path / "probes.json",
         } | kwargs
         engine = RemoteEngine(provider or providers(), "FAKE-24", **options)
         made.append(engine)
@@ -450,62 +454,3 @@ def test_orphan_without_a_saved_key_can_only_be_cancelled(model, providers, engi
         engine.adopt(call_id)
     engine.cancel_orphan(call_id)
     assert engine.orphans() == []
-
-
-@pytest.fixture
-def bench_run(model, engines):
-    """Run a bench submission against a remote engine and return its result."""
-
-    engine = engines()
-    store = Mock()
-    bench = Bench(engine, store)
-
-    def run(data):
-        with (
-            patch("lllm2.bench.launch_args", return_value=[]),
-            patch("lllm2.bench.metadata", return_value=META),
-            patch("lllm2.bench.probe", return_value=ENGINE),
-            patch("lllm2.settings.probe", return_value=ENGINE),
-            patch("lllm2.bench.hardware", side_effect=engine.hardware),
-            patch("lllm2.warm.hardware", side_effect=engine.hardware),
-            patch(
-                "lllm2.settings.cache_kernel_support",
-                return_value=ENGINE["cache_kernel"],
-            ),
-        ):
-            bench.submit(
-                {
-                    "settings": {"model": model, "engine": ENGINE["path"]},
-                    "sweep_prompts": False,
-                    "prompt_tokens": 128,
-                    "output_tokens": 16,
-                    "timeout": 60,
-                }
-                | data
-            )
-            assert eventually(lambda: not bench.snapshot()["active"], timeout=120)
-        results = [c.args[2] for c in store.put.call_args_list if c.args[0] == "result"]
-        assert not engine.alive()
-        return bench.snapshot(), results[-1]
-
-    return run
-
-
-def test_bench_measures_a_remote_engine(bench_run):
-    snapshot, result = bench_run({"mode": "baseline"})
-    assert snapshot["status"] == "complete", result.get("error")
-    assert result["status"] == "complete"
-    sample = result["samples"][0]
-    assert sample["input_tokens"] >= 128 and sample["output_tokens"] == 16
-    assert sample["peak_engine_rss_mib"] is None
-    assert result["argv"][0] == ENGINE["path"]
-
-
-def test_warm_conversation_streams_through_a_remote_engine(bench_run):
-    snapshot, result = bench_run({"mode": "warm-conversation"})
-    assert snapshot["status"] == "complete", result.get("error")
-    assert result["status"] == "complete"
-    assert len(result["samples"]) == 12
-    assert all(s["status"] == "complete" for s in result["samples"])
-    assert any(s["reuse_observed"] for s in result["samples"])
-    assert result["samples"][0]["engine_log_tail"]

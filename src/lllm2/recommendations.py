@@ -14,7 +14,7 @@ from .discovery import (
     metadata,
     probe,
 )
-from .settings import Settings, launch_args
+from .settings import Settings, build_launch_args
 
 PROFILES = json.loads(Path(__file__).with_name("recommendations.json").read_text())
 _hash_lock = threading.Lock()
@@ -43,29 +43,51 @@ def fingerprint(path):
         return _digest(_stat_key(path))
 
 
-def measured_defaults(selection):
-    """Return (resolved profile or None, explicit fallback qualifications)."""
-    if not selection.model or not selection.engine:
+def measured_defaults(selection, host=None, engine=None, meta=None, model=None):
+    """Resolve a measured built-in profile for a checkpoint, engine and GPU.
+
+    A profile matches on backend, checkpoint fingerprint and the GPU's name
+    and memory. A different engine sha256 qualifies the result rather than
+    rejecting it. A remote engine supplies every evidence argument, so remote
+    GPU profiles match on probed GPU facts and the catalogue's sha256.
+
+    Args:
+        selection: Settings naming the model, engine, backend and device.
+        host: Hardware description in the ``hardware()`` shape, or None to
+            detect local hardware.
+        engine: Engine capability record in the ``probe()`` shape, or None to
+            probe the selected binary locally.
+        meta: GGUF metadata record in the ``metadata()`` shape, or None to
+            read the checkpoint locally. An ``estimated`` record matches on MTP
+            only.
+        model: Model identity with ``size`` and ``sha256``, or None to
+            fingerprint the local checkpoint.
+
+    Returns:
+        A pair: the resolved profile dict or None, and fallback qualifications.
+    """
+    if not selection.model or not (selection.engine or selection.remote):
         return None, []
     path = Path(selection.model).expanduser()
     notes = []
     try:
+        size = path.stat().st_size if model is None else model.get("size")
         candidates = [
             r
             for r in PROFILES
             if r["backend"] == selection.backend
-            and r["model"]["size"] == path.stat().st_size
+            and (size is None or r["model"]["size"] == size)
         ]
         if not candidates:
             return None, ["No measured built-in profile for this checkpoint/backend."]
-        m = metadata(str(path))
+        m = metadata(str(path)) if meta is None else meta
+        keys = ("mtp",) if m.get("estimated") else ("architecture", "mtp")
         candidates = [
             r
             for r in candidates
-            if not m["error"]
-            and all(m.get(k) == r["model"][k] for k in ("architecture", "mtp"))
+            if not m["error"] and all(m.get(k) == r["model"][k] for k in keys)
         ]
-        cards = hardware()["gpus"]
+        cards = (hardware() if host is None else host)["gpus"]
         candidates = [
             r
             for r in candidates
@@ -75,23 +97,27 @@ def measured_defaults(selection):
         ]
         if not candidates:
             return None, [
-                "Measured built-ins require the exact checkpoint and a single tested RTX 3090; using fallback guidance."
+                "Measured built-ins require the exact checkpoint and a single tested GPU of the same model and memory; using fallback guidance."
             ]
-        digest = fingerprint(path)
-        record = next((r for r in candidates if r["model"]["sha256"] == digest), None)
+        digest = fingerprint(path) if model is None else model.get("sha256")
+        record = next(
+            (r for r in candidates if digest and r["model"]["sha256"] == digest), None
+        )
         if not record:
             return None, [
                 "Checkpoint fingerprint differs from measured built-ins; using fallback guidance."
             ]
-        p = probe(selection.engine)
+        p = probe(selection.engine) if engine is None else engine
         values = dict(
             record["settings"],
             model=selection.model,
             engine=selection.engine,
             backend=selection.backend,
             device=selection.device,
+            gpu_type=selection.gpu_type,
+            idle_timeout_minutes=selection.idle_timeout_minutes,
         )
-        devices = [d for d in p["devices"] if d.startswith(selection.backend)]
+        devices = [d for d in p["devices"] if d.startswith(selection.gpu_backend)]
         if values["device"] not in devices:
             values["device"] = devices[0] if devices else ""
         template = record["template"]
@@ -112,18 +138,24 @@ def measured_defaults(selection):
         if p["sha256"] != record["engine"]["sha256"]:
             changed.append("engine build")
         library = record["engine"].get("adjacent_cuda_library")
-        if library and selection.backend == "CUDA":
-            current_library = (
-                cache_kernel_support(selection.engine, selection.backend).get("library")
-                or {}
+        if library and selection.gpu_backend == "CUDA":
+            kernel = (
+                p["cache_kernel"]
+                if "cache_kernel" in p
+                else cache_kernel_support(selection.engine, selection.gpu_backend)
             )
+            current_library = kernel.get("library") or {}
             if current_library.get("sha256") != library["sha256"]:
                 changed.append("adjacent CUDA library")
         if template_hash != template["sha256"]:
             changed.append("chat template")
         settings = Settings.parse(values)
-        if settings.backend == "CUDA":
-            env = engine_environment(settings.engine)
+        if settings.gpu_backend == "CUDA":
+            env = (
+                p["environment"]
+                if "environment" in p
+                else engine_environment(settings.engine)
+            )
             inherited = [
                 key
                 for key in ("GGML_CUDA_GRAPH_OPT", "GGML_CUDA_DISABLE_GRAPHS")
@@ -142,7 +174,7 @@ def measured_defaults(selection):
         # Includes device, metadata, speculative prerequisites and every launch flag.
         if settings.speculation != "none" and "--spec-draft-n-max" not in p["flags"]:
             raise ValueError("Binary cannot reproduce the measured draft length.")
-        launch_args(settings, 1920)
+        build_launch_args(settings, 1920, p, m)
         if changed:
             notes.append(
                 "Changed "
@@ -263,13 +295,37 @@ def promotion_provenance(result, settings, use_context, reserve_headroom=False):
     }
 
 
-def saved_qualifications(provenance, settings):
-    """Qualify historical evidence without modifying or rejecting preferences."""
+def saved_qualifications(
+    provenance, settings, host=None, engine=None, meta=None, model=None
+):
+    """Qualify historical evidence without modifying or rejecting preferences.
+
+    Args:
+        provenance: The saved benchmark provenance.
+        settings: The saved settings as they would launch now.
+        host: Hardware description, or None to detect local hardware.
+        engine: Engine capability record, or None to probe locally.
+        meta: GGUF metadata record, or None to read the checkpoint locally.
+        model: Model identity, or None to read the local file.
+
+    Returns:
+        A list of notes.
+    """
     notes = []
     try:
         measured = provenance.get("model") or {}
-        current = identity(settings.model)
-        if not all(k in measured for k in ("size", "mtime_ns")):
+        current = identity(settings.model) if model is None else model
+        if measured.get("sha256") and current.get("sha256"):
+            notes.append(
+                "Checkpoint fingerprint matches the saved result."
+                if measured["sha256"] == current["sha256"]
+                else "Checkpoint changed since the saved measurement; that result does not validate the current file."
+            )
+        elif current.get("mtime_ns") is None or measured.get("mtime_ns") is None:
+            notes.append(
+                "Checkpoint identity is unknown for the saved result or the current model; compatibility is unverified."
+            )
+        elif not all(k in measured for k in ("size", "mtime_ns")):
             notes.append(
                 "Saved result has no checkpoint identity; current checkpoint compatibility is unknown."
             )
@@ -281,16 +337,17 @@ def saved_qualifications(provenance, settings):
             notes.append(
                 "Checkpoint size/time match the saved result; legacy results have no full checkpoint fingerprint."
             )
-        engine = provenance.get("engine") or {}
+        engine_identity = provenance.get("engine") or {}
+        current_engine = probe(settings.engine) if engine is None else engine
         if (
-            not engine.get("sha256")
-            or probe(settings.engine).get("sha256") != engine["sha256"]
+            not engine_identity.get("sha256")
+            or current_engine.get("sha256") != engine_identity["sha256"]
         ):
             notes.append(
                 "Selected engine differs from the saved measurement or its identity is unknown; runtime and performance need revalidation."
             )
         old_cards = (provenance.get("hardware") or {}).get("gpus", [])
-        new_cards = hardware()["gpus"]
+        new_cards = (hardware() if host is None else host)["gpus"]
 
         def card_keys(cards):
             return [(c.get("name"), c.get("total_mib"), c.get("driver")) for c in cards]
@@ -309,7 +366,9 @@ def saved_qualifications(provenance, settings):
                 fingerprint(settings.chat_template)
                 if settings.chat_template
                 else hashlib.sha256(
-                    metadata(settings.model)["template"].encode()
+                    (metadata(settings.model) if meta is None else meta)[
+                        "template"
+                    ].encode()
                 ).hexdigest()
             )
             if digest != template["sha256"]:

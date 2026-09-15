@@ -21,14 +21,19 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
-from . import __version__
-from .discovery import engines
-from .engine import Cancelled, LocalEngine
+from . import __version__, config
+from .backends import create_engine
+from .catalogue import local_paths
+from .defaults import starting_defaults
+from .discovery import CATALOG, engines
+from .engine import Cancelled
 from .engine_install import install, provenance
+from .gpu_tables import gpu_types, pricing_caveat
 from .harness import run_harness
 from .launch import choose_launch, installed_models
+from .remote import PROVIDERS, CallRecords, describe_calls, remote_provider
 from .service import install_service
-from .settings import Settings
+from .settings import LOCAL_BACKENDS, Settings, default_key
 from .store import Store
 
 
@@ -55,8 +60,7 @@ def _saved_launch_settings(settings: Settings) -> tuple[Settings, bool]:
     # Read-only: the panel may be mid-experiment, so leave running results alone.
     store = Store(recover_running=False)
     try:
-        key = str(Path(settings.model).expanduser().resolve()) + "|" + settings.backend
-        saved = store.get("default", key)
+        saved = store.get("default", default_key(settings))
     finally:
         store.db.close()
     if not saved:
@@ -67,15 +71,92 @@ def _saved_launch_settings(settings: Settings) -> tuple[Settings, bool]:
     return resolved, True
 
 
+def _catalogue() -> list[dict]:
+    """Return the panel's catalogue, or the bundled one before first panel use."""
+    store = Store(recover_running=False)
+    try:
+        return store.list("catalogue") or CATALOG
+    finally:
+        store.db.close()
+
+
+def _remote_model_path(model: str, catalogue: list[dict]) -> str:
+    """Resolve a remote launch's model option to a managed model path.
+
+    Args:
+        model: A catalogue id or name, a model path, or empty for the
+            top-ranked catalogue recommendation.
+        catalogue: The catalogue entries.
+
+    Returns:
+        The model path under the managed model directory.
+
+    Raises:
+        ValueError: No model is given and the catalogue has no recommendation.
+    """
+    if not model:
+        ranked = sorted(
+            (e for e in catalogue if e.get("recommendation")),
+            key=lambda e: e["recommendation"].get("rank", 999),
+        )
+        if not ranked:
+            raise ValueError("Choose a model with --model.")
+        return str(local_paths(ranked[0])[0])
+    entry = next((e for e in catalogue if model in (e.get("id"), e["name"])), None)
+    if entry is not None:
+        return str(local_paths(entry)[0])
+    return str(Path(model).expanduser().resolve())
+
+
 def _launch(
-    model: str, engine_path: str, backend: str, device: str, timeout: int
+    model: str,
+    engine_path: str,
+    backend: str,
+    device: str,
+    timeout: int,
+    gpu: str = "",
+    idle_timeout: int | None = None,
 ) -> int:
-    resolved = choose_launch(model, engine_path, backend, device)
-    if not resolved.get("settings"):
-        raise RuntimeError(resolved["reason"])
-    settings = Settings.parse(resolved["settings"])
-    settings, saved = _saved_launch_settings(settings)
-    engine, cancel = LocalEngine(), threading.Event()
+    notes = []
+    if backend and backend not in LOCAL_BACKENDS:
+        if engine_path or device:
+            raise ValueError(
+                "--engine and --device apply only to local backends; a remote backend runs the provider's engine release."
+            )
+        if not gpu:
+            names = ", ".join(g.name for g in gpu_types(backend))
+            raise ValueError(f"Choose a {backend} GPU type with --gpu: {names}.")
+        catalogue = _catalogue()
+        values: dict[str, object] = {
+            "model": _remote_model_path(model, catalogue),
+            "backend": backend,
+            "gpu_type": gpu,
+        }
+        if idle_timeout is not None:
+            values["idle_timeout_minutes"] = idle_timeout
+        selection = Settings.parse(values)
+        engine = create_engine(selection, catalogue=catalogue)
+        settings, saved = _saved_launch_settings(selection)
+        if not saved:
+            resolved = starting_defaults(selection, **engine.defaults_inputs(selection))
+            settings = Settings.parse(resolved["settings"])
+            notes.extend(resolved.get("notes", []))
+        if idle_timeout is not None:
+            settings.idle_timeout_minutes = idle_timeout
+    else:
+        if gpu or idle_timeout is not None:
+            raise ValueError(
+                "--gpu and --idle-timeout apply only to a remote backend such as modal."
+            )
+        resolved = choose_launch(model, engine_path, backend, device)
+        if not resolved.get("settings"):
+            raise RuntimeError(resolved["reason"])
+        settings = Settings.parse(resolved["settings"])
+        settings, saved = _saved_launch_settings(settings)
+        if resolved.get("reason"):
+            notes.append(resolved["reason"])
+        engine = create_engine(settings)
+    cancel = threading.Event()
 
     def stop(*_):
         cancel.set()
@@ -84,15 +165,22 @@ def _launch(
     signal.signal(signal.SIGTERM, stop)
     try:
         engine.start(settings, cancel, timeout=timeout)
-        pid = engine.state()["pid"]
+        state = engine.state()
+        pid = state["pid"]
         print(f"Ready: {engine.base}/v1" + (f" (pid {pid})" if pid else ""), flush=True)
+        if settings.remote:
+            _print_remote_launch(settings, state)
         if saved:
             print("Using saved settings from the workbench database.", flush=True)
-        if resolved.get("reason"):
-            print(resolved["reason"], flush=True)
+        for note in notes:
+            print(note, flush=True)
         while not cancel.wait(1):
-            if not engine.state()["running"]:
-                raise RuntimeError(engine.state()["error"] or "Engine stopped.")
+            state = engine.state()
+            if not state["running"]:
+                if state.get("phase") == "idle stopped":
+                    print("Stopped the remote engine after the idle timeout.")
+                    return 0
+                raise RuntimeError(state["error"] or "Engine stopped.")
     except Cancelled:
         return 130
     finally:
@@ -100,13 +188,34 @@ def _launch(
     return 0
 
 
+def _print_remote_launch(settings: Settings, state: dict) -> None:
+    price = state.get("usd_per_hour")
+    print(
+        f"Serving on {settings.backend} {settings.gpu_type}, call {state.get('call_id')}."
+        + (f" Estimated cost: ${price:.2f} per hour." if price is not None else ""),
+        flush=True,
+    )
+    print(pricing_caveat(settings.backend), flush=True)
+    if settings.idle_timeout_minutes:
+        print(
+            f"The remote engine stops after {settings.idle_timeout_minutes} minutes without requests.",
+            flush=True,
+        )
+    else:
+        print(
+            "Idle timeout disabled: the GPU bills until you press Ctrl-C.", flush=True
+        )
+
+
+def _launch_backend(value: str) -> str:
+    choices = [*LOCAL_BACKENDS, *PROVIDERS]
+    if value and value not in choices:
+        raise typer.BadParameter(f"Choose one of: {', '.join(choices)}.")
+    return value
+
+
 class InstallBackend(str, Enum):
     cuda = "cuda"
-
-
-class LaunchBackend(str, Enum):
-    cuda = "CUDA"
-    vulkan = "Vulkan"
 
 
 app = typer.Typer(
@@ -313,9 +422,12 @@ def launch(
         str, typer.Option(help="Exact llama-server path; omit for automatic selection.")
     ] = "",
     backend: Annotated[
-        LaunchBackend | None,
-        typer.Option(help="GPU backend; omit for automatic selection."),
-    ] = None,
+        str,
+        typer.Option(
+            callback=_launch_backend,
+            help="GPU backend (CUDA or Vulkan), or a remote provider such as modal; omit for automatic local selection.",
+        ),
+    ] = "",
     device: Annotated[
         str,
         typer.Option(help="Engine device identifier; omit for automatic selection."),
@@ -323,18 +435,182 @@ def launch(
     timeout: Annotated[
         int, typer.Option(min=1, help="Seconds to wait for the model server to start.")
     ] = 180,
+    gpu: Annotated[
+        str,
+        typer.Option(
+            help="Remote GPU type, such as T4 or L40S; required with a remote backend."
+        ),
+    ] = "",
+    idle_timeout: Annotated[
+        int | None,
+        typer.Option(
+            min=0,
+            max=1440,
+            help="Minutes without requests before a remote engine stops; 0 disables it. Default: saved settings, else 30.",
+        ),
+    ] = None,
 ) -> None:
     """Start a model server in the foreground and print its API URL.
 
     Use saved settings and available model/engine combinations when options
-    are omitted. Press Ctrl-C to stop the server and release the GPU.
+    are omitted. Press Ctrl-C to stop the server and release the GPU. With a
+    remote backend, --model also accepts a catalogue id or name, and the model
+    is served on the same local port.
 
-    Example: lllm2 launch --backend CUDA --timeout 300
+    Example: lllm2 launch --backend CUDA --timeout 300;
+    lllm2 launch --backend modal --gpu L40S --model qwen3.8-27b
     """
     raise typer.Exit(
-        _launch(model, engine, backend.value if backend else "", device, timeout)
+        _launch(model, engine, backend, device, timeout, gpu, idle_timeout)
     )
 
+
+def _elapsed(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown time"
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
+def _ownership(row: dict, command: str) -> str:
+    owner = row["owner"] or {}
+    if row["status"] == "owned":
+        return "owned by this process"
+    if row["status"] == "active":
+        return f"in use by lllm2 pid {owner.get('pid')} on {owner.get('host')}"
+    return f"orphan: no running lllm2 session owns it; stop it with `{command} stop {row['id']}`"
+
+
+def provider_app(name: str, label: str) -> typer.Typer:
+    """Build the command group that manages one remote provider.
+
+    Args:
+        name: The provider registry name, which is also the command name.
+        label: The provider name for messages.
+
+    Returns:
+        A Typer group with setup, list, stop, models and remove commands.
+    """
+    command = f"lllm2 {name}"
+    group = typer.Typer(
+        help=f"Set up {label}, and list or stop lllm2 serve calls and stored models there.",
+        no_args_is_help=True,
+    )
+
+    @group.command("setup")
+    def setup() -> None:
+        """Verify credentials, deploy the lllm2 app and print its version."""
+        version = remote_provider(name).setup()
+        typer.echo(
+            f"{label} credentials work."
+            + (f" Deployed lllm2 app version {version}." if version else "")
+        )
+
+    @group.command("list")
+    def list_calls(json_output: JsonOutput = False) -> None:
+        """List running lllm2 serve calls with owner, elapsed time and cost.
+
+        A call that no running lllm2 session owns is an orphan that bills
+        until you stop it.
+        """
+        provider = remote_provider(name)
+        rows = describe_calls(provider)
+        if json_output:
+            print(json.dumps(rows, indent=2))
+            return
+        if not rows:
+            typer.echo(f"No lllm2 serve calls are running on {label}.")
+            return
+        for row in rows:
+            cost = row["estimated_cost_usd"]
+            typer.echo(
+                f"{row['id']}  {row['gpu'] or 'unknown GPU'}  "
+                f"{_elapsed(row['elapsed_seconds'])}  "
+                + (f"~${cost:.2f}" if cost is not None else "cost unknown")
+                + f"  {_ownership(row, command)}"
+                + (f"  {row['model']}" if row["model"] else "")
+            )
+        typer.echo(pricing_caveat(provider.name))
+
+    @group.command("stop")
+    def stop_calls(
+        call_id: Annotated[
+            str, typer.Argument(help="The call ID that `list` prints.")
+        ] = "",
+        all_calls: Annotated[
+            bool, typer.Option("--all", help="Stop every orphaned call.")
+        ] = False,
+        force: Annotated[
+            bool,
+            typer.Option(
+                "--force", help="Also stop calls that a running lllm2 session owns."
+            ),
+        ] = False,
+    ) -> None:
+        """Stop a serve call, or every orphaned call with --all."""
+        if bool(call_id) == all_calls:
+            raise typer.BadParameter("Give a call ID or --all.")
+        provider = remote_provider(name)
+        records = CallRecords(config.STATE_DIR / "remote-calls.json")
+        rows = describe_calls(provider, records)
+        targets = [r for r in rows if r["id"] == call_id] if call_id else rows
+        if call_id and not targets:
+            raise ValueError(f"No running lllm2 call {call_id} on {label}.")
+        if not targets:
+            typer.echo(f"No lllm2 serve calls are running on {label}.")
+        skipped = 0
+        for row in targets:
+            if row["status"] != "orphan" and not force:
+                skipped += 1
+                typer.echo(
+                    f"Skipped {row['id']}: {_ownership(row, command)}. "
+                    "Stop it from that session, or add --force.",
+                    err=True,
+                )
+                continue
+            provider.cancel(row["id"])
+            records.remove(provider.name, row["id"])
+            typer.echo(f"Stopped {row['id']}")
+        if skipped and call_id:
+            raise typer.Exit(1)
+
+    @group.command("models")
+    def list_models(json_output: JsonOutput = False) -> None:
+        """List the model files stored for serving."""
+        stored = remote_provider(name).models()
+        if json_output:
+            rows = [{"name": m.name, "size_bytes": m.size_bytes} for m in stored]
+            print(json.dumps(rows, indent=2))
+        elif not stored:
+            typer.echo(f"No models are stored on {label}.")
+        else:
+            for m in stored:
+                typer.echo(f"{m.name}  {m.size_bytes / 1e9:.1f} GB")
+
+    @group.command("remove")
+    def remove_model(
+        model: Annotated[str, typer.Argument(help="The name that `models` prints.")],
+    ) -> None:
+        """Delete a stored model file, unless a running call serves it."""
+        provider = remote_provider(name)
+        users = [
+            row["id"]
+            for row in describe_calls(provider)
+            if row["model"]
+            and Path(row["model"]).as_posix().endswith("/" + model.lstrip("/"))
+        ]
+        if users:
+            raise ValueError(
+                f"Serve call {', '.join(users)} uses {model}. Stop it with `{command} stop` first."
+            )
+        provider.remove_model(model)
+        typer.echo(f"Removed {model} from {label}.")
+
+    return group
+
+
+app.add_typer(provider_app("modal", "Modal"), name="modal")
 
 HARNESS_CONTEXT = {
     "allow_extra_args": True,

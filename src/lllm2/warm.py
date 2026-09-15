@@ -6,7 +6,6 @@ import json
 import threading
 import time
 
-from .discovery import hardware
 from .engine import Cancelled
 from .settings import batch_settings, cache_settings, execution_settings
 
@@ -59,7 +58,7 @@ def measure_turn(bench, s, opts, sample, prompt, cache_prompt):
 
     def sample_memory():
         while not finished.is_set():
-            h = hardware()
+            h = engine.gpu_memory()
             memory.append(
                 {
                     "elapsed_seconds": time.monotonic() - started,
@@ -157,8 +156,10 @@ def measure_turn(bench, s, opts, sample, prompt, cache_prompt):
             (h["rss_mib"] for h in host_points if h.get("rss_mib") is not None),
             default=None,
         )
+        # Samples without GPUs are unknown memory, not zero use.
         sample["peak_total_gpu_used_mib"] = max(
-            (sum(g["used_mib"] for g in m["gpus"]) for m in memory), default=None
+            (sum(g["used_mib"] for g in m["gpus"]) for m in memory if m["gpus"]),
+            default=None,
         )
 
 
@@ -166,6 +167,7 @@ def run_conversation(bench, s, opts, result):
     def save():
         bench.store.put("result", result["id"], result)
 
+    kernel = bench.engine.probe(s).get("cache_kernel")
     for repetition in range(1, opts["repeats"] + 1):
         if bench.cancel.is_set():
             raise Cancelled()
@@ -195,7 +197,7 @@ def run_conversation(bench, s, opts, result):
         )["tokens"]
         if not continuation or not replacement:
             raise RuntimeError("Could not tokenize conversation continuation.")
-        batches = batch_settings(s, bench.engine.state()["logs"])
+        batches = batch_settings(s, bench.engine.state()["logs"], bench.engine.probe(s))
         turns = []
 
         def run(
@@ -224,7 +226,7 @@ def run_conversation(bench, s, opts, result):
                 "slots": 1,
                 "context_per_slot": s.context,
                 "batch_settings": batches,
-                "cache_settings": cache_settings(s),
+                "cache_settings": cache_settings(s, kernel),
                 "prompt": {
                     "generator": "token-conversation-v1",
                     "token_ids": list(prompt),

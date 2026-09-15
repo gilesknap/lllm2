@@ -11,8 +11,11 @@ from .discovery import (
     metadata,
     probe,
 )
+from .gpu_tables import GPU_TABLES, gpu_type
 
 MTP_MODES = ("draft-mtp", "draft-mtp,ngram-simple")
+LOCAL_BACKENDS = ("CUDA", "Vulkan")
+DEFAULT_IDLE_TIMEOUT_MINUTES = 30
 LOOKUP_MODES = ("ngram-simple", "draft-mtp,ngram-simple")
 
 
@@ -44,6 +47,22 @@ class Settings:
     context_checkpoints: int | None = None
     lookup_ngram_n: int | None = None
     lookup_ngram_m: int | None = None
+    gpu_type: str = ""
+    idle_timeout_minutes: int | None = DEFAULT_IDLE_TIMEOUT_MINUTES
+
+    @property
+    def remote(self):
+        """Return whether a remote provider, not this machine, serves the model."""
+        return self.backend not in LOCAL_BACKENDS
+
+    @property
+    def gpu_backend(self):
+        """Return the llama.cpp GPU backend that runs the model.
+
+        Remote providers run the lllm2 CUDA engine release, so a remote backend
+        resolves to ``"CUDA"``.
+        """
+        return "CUDA" if self.remote else self.backend
 
     @classmethod
     def parse(cls, data):
@@ -117,7 +136,7 @@ class Settings:
             )
         for key, choices in {
             "draft_cache": ["default", "f16", "q8_0", "q4_0"],
-            "backend": ["CUDA", "Vulkan"],
+            "backend": [*LOCAL_BACKENDS, *(k for k in GPU_TABLES if k != "local")],
             "flash": ["auto", "on", "off"],
             "cache": ["f16", "q8_0", "q4_0"],
             "speculation": [
@@ -133,6 +152,31 @@ class Settings:
                 raise ValueError(f"Invalid {key}")
         if type(s.pair_confirmed) is not bool:
             raise ValueError("pair_confirmed must be boolean")
+        if s.idle_timeout_minutes == "":
+            s.idle_timeout_minutes = None
+        if s.idle_timeout_minutes is not None and (
+            type(s.idle_timeout_minutes) is not int
+            or not 0 <= s.idle_timeout_minutes <= 1440
+        ):
+            raise ValueError(
+                "idle_timeout_minutes must be blank or an integer in 0..1440; 0 or blank disables the idle timeout."
+            )
+        if type(s.gpu_type) is not str:
+            raise ValueError("gpu_type must be a string")
+        if s.remote:
+            if not s.gpu_type:
+                raise ValueError(f"Choose a {s.backend} GPU type.")
+            gpu_type(s.backend, s.gpu_type)
+            if s.engine:
+                raise ValueError(
+                    "A remote backend runs the provider's engine release; leave the engine path blank."
+                )
+            if s.device != "CUDA0":
+                raise ValueError(
+                    "A remote backend serves on one CUDA GPU; use device CUDA0."
+                )
+        elif s.gpu_type:
+            raise ValueError("A GPU type applies only to a remote backend.")
         return s
 
     def dict(self):
@@ -157,7 +201,7 @@ def cache_settings(s, kernel=None):
     return {
         "requested": {"cache": s.cache, "cache_k": s.cache_k, "cache_v": s.cache_v},
         "resolved": {"k": k, "v": v},
-        "kernel": cache_kernel_support(s.engine, s.backend)
+        "kernel": cache_kernel_support(s.engine, s.gpu_backend)
         if kernel is None
         else kernel,
         "context_evidence": "Inherited planner is calibrated for q8_0/q8_0 only; it is not a measured capacity for this pair.",
@@ -195,7 +239,7 @@ def capabilities(s, engine=None, meta=None):
 
     out = {}
     sampling_status = (
-        flag_status("--backend-sampling") if s.backend == "CUDA" else "unsupported"
+        flag_status("--backend-sampling") if s.gpu_backend == "CUDA" else "unsupported"
     )
     out["backend_sampling"] = {
         "status": sampling_status,
@@ -207,7 +251,7 @@ def capabilities(s, engine=None, meta=None):
         + " Requires ordinary CUDA Graphs and one visible CUDA device; performance needs measurement."
     )
     status = (
-        "available" if s.backend == "CUDA" and graph["supported"] else "unsupported"
+        "available" if s.gpu_backend == "CUDA" and graph["supported"] else "unsupported"
     )
     env = p["environment"] if "environment" in p else engine_environment(s.engine)
     if env.get("GGML_CUDA_DISABLE_GRAPHS") is not None:
@@ -300,7 +344,7 @@ def capabilities(s, engine=None, meta=None):
                 else ("missing prerequisites", "Checkpoint contains no MTP tensors.")
             )
         if status == "available" and mode == "draft-dflash":
-            if s.backend != "CUDA":
+            if s.gpu_backend != "CUDA":
                 status, reason = (
                     "unsupported",
                     "Initial experimental DFlash integration is CUDA only.",
@@ -365,9 +409,20 @@ def capabilities(s, engine=None, meta=None):
     return out
 
 
-def speculative_settings(s, timings=None):
+def speculative_settings(s, timings=None, engine=None):
+    """Describe the requested speculative decoding and its observed counters.
+
+    Args:
+        s: Settings to describe.
+        timings: The completion response's ``timings`` record, or None.
+        engine: Engine capability record in the ``probe()`` shape. None probes
+            ``s.engine`` locally.
+
+    Returns:
+        The mode, draft and lookup lengths, method order and draft counters.
+    """
     combined = s.speculation == "draft-mtp,ngram-simple"
-    p = probe(s.engine)
+    p = probe(s.engine) if engine is None else engine
     timings = timings or {}
     return {
         "mode": s.speculation,
@@ -446,9 +501,19 @@ def execution_settings(s, environment=None, logs=(), response=None):
     }
 
 
-def batch_settings(s, logs=()):
-    """Keep requests and help defaults separate from observed target-context values."""
-    p = probe(s.engine)
+def batch_settings(s, logs=(), engine=None):
+    """Keep requests and help defaults separate from observed target-context values.
+
+    Args:
+        s: Settings to describe.
+        logs: Engine log lines, oldest first.
+        engine: Engine capability record in the ``probe()`` shape. None probes
+            ``s.engine`` locally.
+
+    Returns:
+        The requested, advertised and observed batch and microbatch sizes.
+    """
+    p = probe(s.engine) if engine is None else engine
     defaults = batch_defaults(p["help"]) if not p["error"] else {}
     # Engine logs span restarts. Never attribute a previous launch's values to this one.
     lines = list(logs)
@@ -482,6 +547,22 @@ def batch_settings(s, logs=()):
             else "unknown; not observed",
         }
     return out
+
+
+def default_key(s):
+    """Return the store key for saved launch defaults.
+
+    Local defaults key on the checkpoint and GPU backend. Remote defaults also
+    key on the GPU type, because context and slots depend on its memory.
+
+    Args:
+        s: Settings naming the model, backend and GPU type.
+
+    Returns:
+        The key string.
+    """
+    key = str(Path(s.model).expanduser().resolve()) + "|" + s.backend
+    return key + "|" + s.gpu_type if s.remote else key
 
 
 def launch_args(s, port):
@@ -542,7 +623,7 @@ def build_launch_args(s, port, engine, meta, *, host="127.0.0.1", path=None):
             raise ValueError(
                 "Microbatch must not exceed logical batch size (including advertised engine defaults). Set both values explicitly to override defaults."
             )
-    if s.device not in p["devices"] or not s.device.startswith(s.backend):
+    if s.device not in p["devices"] or not s.device.startswith(s.gpu_backend):
         raise ValueError(
             "Choose a detected GPU device matching the backend. Check binary --list-devices output."
         )
@@ -556,7 +637,10 @@ def build_launch_args(s, port, engine, meta, *, host="127.0.0.1", path=None):
     if s.backend_sampling and caps["backend_sampling"]["status"] != "available":
         raise ValueError(caps["backend_sampling"]["reason"])
     if s.cuda_graph_opt != "default":
-        if s.backend != "CUDA" or not caps["cuda_graph_opt"]["evidence"]["supported"]:
+        if (
+            s.gpu_backend != "CUDA"
+            or not caps["cuda_graph_opt"]["evidence"]["supported"]
+        ):
             raise ValueError(
                 "Explicit CUDA streams settings require a CUDA build with the compiled switch."
             )

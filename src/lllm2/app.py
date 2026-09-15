@@ -11,14 +11,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import __version__, config, downloads
+from .backends import create_engine, engine_kind, engine_serves
 from .bench import WORKLOADS, Bench
 from .catalogue import Catalogue, Finder, local_paths, suitability
 from .defaults import starting_defaults
-from .discovery import engines, hardware, probe
+from .discovery import engines, hardware
 from .engine import Cancelled, LocalEngine
 from .launch import choose_launch, installed_models
 from .recommendations import promotion_provenance, saved_qualifications
-from .settings import Settings, capabilities, launch_args
+from .settings import LOCAL_BACKENDS, Settings, default_key
 from .store import Store
 
 
@@ -35,10 +36,45 @@ class App:
         self.store = Store()
         self.catalogue = Catalogue(self.store)
         self.finder = Finder(self.store)
-        self.engine = LocalEngine()
-        self.bench = Bench(self.engine, self.store)
+        self.engines = {"local": LocalEngine()}
+        self.engine_lock = threading.Lock()
+        self.bench = Bench(self.engines["local"], self.store)
         self.token = secrets.token_urlsafe(32)
         self.start_requests = {}
+
+    @property
+    def engine(self):
+        """Return the current engine: the one that serves or last served a model."""
+        return self.bench.engine
+
+    @engine.setter
+    def engine(self, engine):
+        self.bench.engine = engine
+
+    def engine_for(self, s):
+        """Return the engine that serves settings, creating it on first use.
+
+        The panel keeps one engine per backend kind: the local engine and one
+        remote engine per provider. Getting an engine does not make it current;
+        starting a model or an experiment does, and stops the previous engine.
+
+        Args:
+            s: Launch settings.
+
+        Returns:
+            The engine for the settings' backend.
+
+        Raises:
+            ValueError: The backend names no registered provider.
+            RuntimeError: The provider's client library is missing.
+        """
+        key = engine_kind(s)
+        with self.engine_lock:
+            engine = self.engines.get(key)
+            if engine is None or not engine_serves(engine, s):
+                engine = create_engine(s, catalogue=self.catalogue.list)
+                self.engines[key] = engine
+        return engine
 
     def catalogue_view(self):
         host = hardware()
@@ -70,7 +106,7 @@ class App:
         return settings
 
     def default_key(self, s):
-        return str(Path(s.model).expanduser().resolve()) + "|" + s.backend
+        return default_key(s)
 
     def action(self, path, data):
         if path == "/api/files":
@@ -113,6 +149,24 @@ class App:
                 "catalog": self.catalogue_view(),
             }
         if path == "/api/launch/select":
+            if data.get("backend", "") not in ("", *LOCAL_BACKENDS):
+                # A remote backend has no local engine or device to choose.
+                # Without a model, serve the top catalogue recommendation.
+                model = data.get("model", "")
+                ranked = sorted(
+                    (e for e in self.catalogue.list() if e.get("recommendation")),
+                    key=lambda e: e["recommendation"].get("rank", 999),
+                )
+                if not model and not ranked:
+                    return {"settings": None, "reason": "Choose a catalogue model."}
+                s = Settings.parse(
+                    {
+                        "model": model or str(local_paths(ranked[0])[0]),
+                        "backend": data["backend"],
+                        "gpu_type": data.get("gpu_type", ""),
+                    }
+                )
+                return starting_defaults(s, **self.engine_for(s).defaults_inputs(s))
             return choose_launch(
                 data.get("model", ""),
                 data.get("engine", ""),
@@ -124,12 +178,13 @@ class App:
             s = Settings.parse(data["settings"])
             error = None
             try:
-                if not hardware()["gpus"]:
+                engine = self.engine_for(s)
+                if not engine.hardware(s)["gpus"]:
                     raise ValueError(
                         "No NVIDIA GPU detected. Check GPU availability before starting."
                     )
-                launch_args(s, config.ENGINE_PORT)
-            except (OSError, ValueError) as e:
+                engine.launch_args(s)
+            except (OSError, ValueError, RuntimeError) as e:
                 error = str(e)
             return {
                 "valid": error is None,
@@ -177,9 +232,14 @@ class App:
             }
         if path == "/api/capabilities":
             s = Settings.parse(data["settings"])
+            engine = self.engine_for(s)
             return {
-                "features": capabilities(s),
-                "engine": {k: v for k, v in probe(s.engine).items() if k != "help"},
+                "features": engine.capabilities(s),
+                "engine": {
+                    k: v
+                    for k, v in engine.probe(s).items()
+                    if k not in ("help", "environment")
+                },
             }
         if path == "/api/default/resolve":
             s = Settings.parse(data["settings"])
@@ -204,7 +264,13 @@ class App:
                 ]
                 if provenance["kind"] == "benchmark":
                     notes.append(provenance["note"])
-                    notes.extend(saved_qualifications(provenance, resolved))
+                    notes.extend(
+                        saved_qualifications(
+                            provenance,
+                            resolved,
+                            **self.engine_for(resolved).defaults_inputs(resolved),
+                        )
+                    )
                     if provenance["context"]["used_headroom_estimate"]:
                         notes.append(
                             "Saved context uses a headroom estimate, not an observed successful allocation."
@@ -226,6 +292,8 @@ class App:
                 raise ValueError(
                     "No saved settings for this model and backend yet. Load a completed experiment into Launch or edit the draft, then choose “Save my settings”."
                 )
+            if source == "built-in" and s.remote:
+                return starting_defaults(s, **self.engine_for(s).defaults_inputs(s))
             if source == "built-in":
                 resolved = choose_launch(model_path=s.model)
                 if resolved.get("reason"):
@@ -235,7 +303,7 @@ class App:
                         resolved.get("reason") or "No recommendation available."
                     )
                 return resolved
-            return starting_defaults(s)
+            return starting_defaults(s, **self.engine_for(s).defaults_inputs(s))
         if path == "/api/default/load":
             s = Settings.parse(data["settings"])
             return self.store.get("default", self.default_key(s))
@@ -261,7 +329,7 @@ class App:
                 )
             else:
                 s = Settings.parse(data["settings"])
-            launch_args(s, config.ENGINE_PORT)
+            self.engine_for(s).launch_args(s)
             self.store.put("default", self.default_key(s), s.dict())
             self.store.put(
                 "default-evidence",
@@ -270,7 +338,8 @@ class App:
             )
             return s.dict()
         if path == "/api/benchmark":
-            return self.bench.submit(data)
+            s = Settings.parse(data["settings"])
+            return self.bench.submit(data, self.engine_for(s))
         if path in ["/api/cancel", "/api/stop"]:
             with self.bench.lock:
                 self.bench.cancel.set()
@@ -285,7 +354,8 @@ class App:
                 not isinstance(request_id, str) or not 1 <= len(request_id) <= 128
             ):
                 raise ValueError("Invalid start request identity.")
-            launch_args(s, config.ENGINE_PORT)
+            engine = self.engine_for(s)
+            engine.launch_args(s)
             with self.bench.lock:
                 if request_id in self.start_requests:
                     if self.start_requests[request_id] != s.dict():
@@ -308,6 +378,7 @@ class App:
                         raise ValueError(
                             "A model is running or has changed. Refresh status and explicitly switch or restart it."
                         )
+                self.bench.use(engine)
                 self.bench.active = True
                 self.bench.cancel.clear()
                 if request_id:
@@ -325,7 +396,7 @@ class App:
 
             def start():
                 try:
-                    self.engine.start(s, self.bench.cancel)
+                    engine.start(s, self.bench.cancel)
                     self.bench.update(status="serving", phase="Ready")
                 except Cancelled:
                     self.bench.update(status="cancelled")
@@ -530,7 +601,11 @@ def serve(host="127.0.0.1", port=8082):
         server.serve_forever()
     finally:
         app.bench.cancel.set()
-        app.engine.stop()
+        for engine in list(app.engines.values()):
+            try:
+                engine.stop()
+            except Exception as e:
+                engine.log(f"Shutdown could not stop the engine: {e}")
         server.server_close()
         lock.close()
 

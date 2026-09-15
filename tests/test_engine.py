@@ -219,6 +219,21 @@ class ServedEngine(Engine):
     def alive(self):
         return self.running
 
+    def hardware(self, s=None):
+        return {"gpus": [], "error": None, "source": "served"}
+
+    def probe(self, s):
+        raise ValueError("No engine binary to probe.")
+
+    def metadata(self, path):
+        raise ValueError("No checkpoint to read.")
+
+    def identity(self, path):
+        return {"path": path, "size": None, "mtime_ns": None}
+
+    def launch_args(self, s):
+        return []
+
     def status(self):
         return {
             "running": self.running,
