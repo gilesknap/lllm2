@@ -286,6 +286,20 @@ class Engine(abc.ABC):
             ValueError: This engine cannot run the settings.
         """
 
+    def serves(self, s):
+        """Return whether this engine runs the settings' backend.
+
+        The panel reuses an engine for every launch that it serves. The default
+        serves the local backends; a remote engine serves its provider's.
+
+        Args:
+            s: Launch settings.
+
+        Returns:
+            True when this engine can launch the settings' backend.
+        """
+        return not s.remote
+
     def capabilities(self, s):
         """Report which settings this engine and checkpoint support.
 

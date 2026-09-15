@@ -79,8 +79,7 @@ def engine_serves(engine: Engine, s: Settings) -> bool:
 
     Returns:
         True when the engine runs the settings' backend. A remote engine serves
-        every GPU type of its provider.
+        every GPU type of its provider. Any other ``Engine``, such as a test
+        double, decides through ``Engine.serves``.
     """
-    if isinstance(engine, RemoteEngine):
-        return s.remote and engine.provider.name == s.backend
-    return isinstance(engine, LocalEngine) and not s.remote
+    return engine.serves(s)

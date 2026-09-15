@@ -1193,6 +1193,19 @@ class RemoteEngine(Engine):
     def alive(self):
         return self._call is not None
 
+    def serves(self, s):
+        """Return whether the settings name this engine's provider.
+
+        A remote engine serves every GPU type of its provider.
+
+        Args:
+            s: Launch settings.
+
+        Returns:
+            True when the settings' backend is this engine's provider.
+        """
+        return s.remote and self.provider.name == s.backend
+
     def hardware(self, s=None):
         """Describe the remote GPU for starting defaults and results.
 
