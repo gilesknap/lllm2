@@ -802,6 +802,9 @@ function filteredFindEntries(){
 }
 function renderFind(){
  const rows=filteredFindEntries();
+ // Without a detected GPU nothing ranks as suitable; say why the table is empty.
+ const unsuitable=$('find-suitable').checked&&findEntries.length>0&&findEntries.every(e=>e.fit_rank>1);
+ const empty=unsuitable?'No variants are likely to fit this workstation’s GPU or RAM. Clear “Likely suitable only” to see them all.':'No matching variants. Try a different search or relax the filters.';
  for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
   const key=button.dataset.findSort,active=key===findSort.key;
   button.parentElement.setAttribute('aria-sort',active?(findSort.direction===1?'ascending':'descending'):'none');
@@ -812,7 +815,7 @@ function renderFind(){
  $('find-table').querySelector('tbody').innerHTML=rows.map(e=>{
   const saved=(discovered.catalog||[]).some(c=>c.repo===e.repo&&c.file===e.file);
   return `<tr${saved?' class="find-in-catalogue"':''}>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+`<td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td></tr>`;
- }).join('')||'<tr><td colspan="11">No matching variants. Try a different search or relax the filters.</td></tr>';
+ }).join('')||`<tr><td colspan="11">${esc(empty)}</td></tr>`;
  $('find-count').textContent=`${rows.length} of ${findEntries.length} variants shown.`;
 }
 async function searchHF(refresh=false){

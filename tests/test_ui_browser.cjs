@@ -80,6 +80,11 @@ const assert=require('node:assert/strict');
  await run("$('find-clear').click();$('find-table').querySelector('[data-find-filter=display_name]').value='!';renderFind()");
  assert.equal(await run('filteredFindEntries().length'),2);
  await run("$('find-clear').click()");
+ // When nothing is likely to fit, the empty table names the suitability filter.
+ await run("window.fitEntries=findEntries;findEntries=fitEntries.map(e=>({...e,fit_rank:2}));renderFind()");
+ assert.match(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
+ await run("findEntries=fitEntries;renderFind()");
+ assert.doesNotMatch(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
  // Many rows scroll inside the fixed viewport; titles and filters never overlap.
  await run("window.originalFindEntries=findEntries;findEntries=Array.from({length:40},(_,i)=>({...originalFindEntries[i%2],id:'row-'+i}));renderFind()");
  assert.equal(await run("$('find-results-scroll').clientHeight<=440&&$('find-results-scroll').scrollHeight>$('find-results-scroll').clientHeight"),true);
