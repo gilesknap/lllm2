@@ -413,7 +413,10 @@ class Engine(abc.ABC):
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
+            # The error is also a response: close it, or a caller that swallows
+            # this RuntimeError leaves the collector to warn about the socket.
             detail = e.read(4000).decode("utf-8", "replace")
+            e.close()
             raise RuntimeError(f"{path}: HTTP {e.code}: {detail}") from e
 
     def _await_ready(self, s, cancel, timeout, launched):
@@ -520,9 +523,9 @@ class Engine(abc.ABC):
                             if event.get("stop") is True:
                                 return event
             except urllib.error.HTTPError as e:
-                raise RuntimeError(
-                    f"/completion: HTTP {e.code}: {e.read(4000).decode('utf-8', 'replace')}"
-                ) from e
+                detail = e.read(4000).decode("utf-8", "replace")
+                e.close()
+                raise RuntimeError(f"/completion: HTTP {e.code}: {detail}") from e
 
         try:
             return self._guarded_operation("/completion stream", read, cancel, timeout)

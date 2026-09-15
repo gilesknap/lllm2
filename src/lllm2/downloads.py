@@ -182,6 +182,7 @@ def _run(dl: Download) -> None:
         dl.state = "complete"
         dl.detail = f"saved to {dl.target.parent}"
     except urllib.error.HTTPError as e:
+        e.close()
         dl.state = "error"
         dl.detail = f"HTTP {e.code} for {url_for(dl.repo, dl.file, dl.revision)}"
     except Exception as e:
