@@ -83,7 +83,10 @@ const assert=require('node:assert/strict');
  // When nothing is likely to fit, the empty table names the suitability filter.
  await run("window.fitEntries=findEntries;findEntries=fitEntries.map(e=>({...e,fit_rank:2}));renderFind()");
  assert.match(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
- await run("findEntries=fitEntries;renderFind()");
+ // A column filter that hides every row would still leave the table empty, so the hint stays away.
+ await run("$('find-table').querySelector('[data-find-filter=display_name]').value='nomatch';renderFind()");
+ assert.doesNotMatch(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
+ await run("$('find-table').querySelector('[data-find-filter=display_name]').value='';findEntries=fitEntries;renderFind()");
  assert.doesNotMatch(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
  // Many rows scroll inside the fixed viewport; titles and filters never overlap.
  await run("window.originalFindEntries=findEntries;findEntries=Array.from({length:40},(_,i)=>({...originalFindEntries[i%2],id:'row-'+i}));renderFind()");

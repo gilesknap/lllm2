@@ -776,10 +776,10 @@ function findTextTerms(query){
   .map(match=>({exclude:match[1]==='!',text:(match[2]??match[3]).toLowerCase()}))
   .filter(term=>term.text&&term.text!=='!');
 }
-function filteredFindEntries(){
+function filteredFindEntries(ignoreSuitable=false){
  const textFilters=[...$('find-table').querySelectorAll('[data-find-filter]')].map(input=>({key:input.dataset.findFilter,terms:findTextTerms(input.value)}));
  return findEntries.filter(e=>{
-  if($('find-suitable').checked&&e.fit_rank>1)return false;
+  if(!ignoreSuitable&&$('find-suitable').checked&&e.fit_rank>1)return false;
   if($('find-instruct').checked&&!e.instruct)return false;
   if($('find-quants').checked&&!/^(?:I?Q)[4-8]/.test(e.quant))return false;
   for(const {key,terms} of textFilters){
@@ -802,8 +802,8 @@ function filteredFindEntries(){
 }
 function renderFind(){
  const rows=filteredFindEntries();
- // Without a detected GPU nothing ranks as suitable; say why the table is empty.
- const unsuitable=$('find-suitable').checked&&findEntries.length>0&&findEntries.every(e=>e.fit_rank>1);
+ // Name the suitability filter only when clearing it would show rows.
+ const unsuitable=!rows.length&&$('find-suitable').checked&&filteredFindEntries(true).length>0;
  const empty=unsuitable?'No variants are likely to fit this workstation’s GPU or RAM. Clear “Likely suitable only” to see them all.':'No matching variants. Try a different search or relax the filters.';
  for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
   const key=button.dataset.findSort,active=key===findSort.key;
