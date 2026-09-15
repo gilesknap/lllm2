@@ -31,7 +31,13 @@ from .engine_install import install, provenance
 from .gpu_tables import gpu_types, pricing_caveat
 from .harness import run_harness
 from .launch import choose_launch, installed_models
-from .remote import PROVIDERS, CallRecords, describe_calls, remote_provider
+from .remote import (
+    PROVIDERS,
+    CallRecords,
+    describe_calls,
+    model_users,
+    remote_provider,
+)
 from .service import install_service
 from .settings import LOCAL_BACKENDS, Settings, default_key
 from .store import Store
@@ -594,12 +600,7 @@ def provider_app(name: str, label: str) -> typer.Typer:
     ) -> None:
         """Delete a stored model file, unless a running call serves it."""
         provider = remote_provider(name)
-        users = [
-            row["id"]
-            for row in describe_calls(provider)
-            if row["model"]
-            and Path(row["model"]).as_posix().endswith("/" + model.lstrip("/"))
-        ]
+        users = model_users(describe_calls(provider), model)
         if users:
             raise ValueError(
                 f"Serve call {', '.join(users)} uses {model}. Stop it with `{command} stop` first."

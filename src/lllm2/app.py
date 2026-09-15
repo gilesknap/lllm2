@@ -8,7 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import __version__, config, downloads
 from .backends import create_engine, engine_kind, engine_serves
@@ -17,9 +17,24 @@ from .catalogue import Catalogue, Finder, local_paths, suitability
 from .defaults import starting_defaults
 from .discovery import engines, hardware
 from .engine import Cancelled, LocalEngine
+from .gpu_tables import GPU_TABLES, gpu_types, pricing_caveat, table_hardware
 from .launch import choose_launch, installed_models
 from .recommendations import promotion_provenance, saved_qualifications
-from .settings import LOCAL_BACKENDS, Settings, default_key
+from .remote import (
+    PROVIDERS,
+    ProviderError,
+    RemoteEngine,
+    StoreDownloads,
+    catalogue_entry,
+    catalogue_source,
+    model_users,
+)
+from .settings import (
+    DEFAULT_IDLE_TIMEOUT_MINUTES,
+    LOCAL_BACKENDS,
+    Settings,
+    default_key,
+)
 from .store import Store
 
 
@@ -29,6 +44,10 @@ def measured(result):
         return False
     context = result.get("largest_observed_context")
     return bool(result.get("samples")) or (type(context) is int and context > 0)
+
+
+# Display names for remote providers; others show their capitalised name.
+PROVIDER_LABELS = {"modal": "Modal"}
 
 
 class App:
@@ -41,6 +60,7 @@ class App:
         self.bench = Bench(self.engines["local"], self.store)
         self.token = secrets.token_urlsafe(32)
         self.start_requests = {}
+        self.store_downloads = StoreDownloads()
 
     @property
     def engine(self):
@@ -76,11 +96,143 @@ class App:
                 self.engines[key] = engine
         return engine
 
-    def catalogue_view(self):
-        host = hardware()
+    def remote_engine(self, backend, gpu_type=""):
+        """Return the panel's engine for a remote provider.
+
+        Args:
+            backend: The provider name.
+            gpu_type: A GPU type for a new engine, or empty for the first type
+                in the provider's table. An existing engine keeps its type.
+
+        Returns:
+            The ``RemoteEngine``.
+
+        Raises:
+            ValueError: The backend is local or names no registered provider.
+            RuntimeError: The provider's client library is missing.
+        """
+        if backend in LOCAL_BACKENDS or backend not in PROVIDERS:
+            raise ValueError(f"Unknown remote backend: {backend}.")
+        table = gpu_types(backend)
+        s = Settings.parse({"backend": backend, "gpu_type": gpu_type or table[0].name})
+        return self.engine_for(s)
+
+    def remote_backends(self):
+        """Describe the remote backends the panel offers, without network use.
+
+        Returns:
+            One dict per registered provider with a GPU table: ``name``,
+            ``label``, ``caveat``, ``idle_timeout_minutes`` (the default) and
+            ``gpus`` with ``name``, ``label``, ``vram_gb``, ``vram_gib`` and
+            ``usd_per_hour``.
+        """
+        return [
+            {
+                "name": name,
+                "label": PROVIDER_LABELS.get(name, name.capitalize()),
+                "caveat": pricing_caveat(name),
+                "idle_timeout_minutes": DEFAULT_IDLE_TIMEOUT_MINUTES,
+                "gpus": [
+                    {
+                        "name": g.name,
+                        "label": g.label,
+                        "vram_gb": g.vram_gb,
+                        "vram_gib": g.vram_gib,
+                        "usd_per_hour": g.usd_per_hour,
+                    }
+                    for g in table
+                ],
+            }
+            for name, table in GPU_TABLES.items()
+            if name in PROVIDERS
+        ]
+
+    def selected_hardware(self, data):
+        """Describe the hardware of the backend and GPU type the panel selected.
+
+        Args:
+            data: A mapping with optional ``backend`` and ``gpu_type``.
+
+        Returns:
+            The local ``hardware()`` for a local or incomplete selection,
+            otherwise the remote GPU description, which uses a saved probe when
+            one exists. No container starts.
+        """
+        backend, gpu = data.get("backend") or "", data.get("gpu_type") or ""
+        if backend in ("", *LOCAL_BACKENDS) or not gpu:
+            return hardware()
+        try:
+            s = Settings.parse({"backend": backend, "gpu_type": gpu})
+        except ValueError:
+            return hardware()
+        try:
+            return self.engine_for(s).hardware(s)
+        except RuntimeError:
+            return table_hardware(backend, gpu)
+
+    def remote_view(self, backend):
+        """Describe a provider's stored models and running calls for the panel.
+
+        Args:
+            backend: The provider name.
+
+        Returns:
+            A dict with ``provider``, ``caveat``, ``error`` (a user-facing
+            message when the client library or credentials are missing, else
+            None), ``models`` (``name``, ``size_bytes``, ``catalogue_id``,
+            ``display_name`` and ``in_use`` call identifiers), ``stored_ids``
+            (catalogue ids whose main file is stored) and ``calls`` (the
+            ``describe_calls`` rows).
+
+        Raises:
+            ValueError: The backend names no registered provider.
+        """
+        out = {
+            "provider": backend,
+            "caveat": pricing_caveat(backend),
+            "error": None,
+            "models": [],
+            "stored_ids": [],
+            "calls": [],
+        }
+        try:
+            engine = self.remote_engine(backend)
+            rows = engine.remote_calls()
+            stored = engine.provider.models()
+        except RuntimeError as e:
+            out["error"] = str(e)
+            return out
+        entries = {}
+        for entry in self.catalogue.list():
+            try:
+                entries[catalogue_source(entry).name] = entry
+            except (KeyError, ValueError):
+                continue
+        names = {m.name for m in stored}
+        out["stored_ids"] = [e["id"] for name, e in entries.items() if name in names]
+        out["calls"] = rows
+        out["models"] = [
+            {
+                "name": m.name,
+                "size_bytes": m.size_bytes,
+                "catalogue_id": entries[m.name]["id"] if m.name in entries else None,
+                "display_name": (
+                    entries[m.name].get("display_name") or entries[m.name]["name"]
+                )
+                if m.name in entries
+                else None,
+                "in_use": model_users(rows, m.name),
+            }
+            for m in stored
+        ]
+        return out
+
+    def catalogue_view(self, data=None):
+        host = self.selected_hardware(data or {})
         entries = self.catalogue.list()
         for entry in entries:
             paths = local_paths(entry)
+            entry["path"] = str(paths[0]) if paths else None
             entry.update(
                 suitability(
                     entry.get("size_bytes") or (entry.get("size_gb") or 0) * 1e9, host
@@ -146,7 +298,8 @@ class App:
             return {
                 "models": installed_models(self.catalogue.list()),
                 "engines": engines(),
-                "catalog": self.catalogue_view(),
+                "catalog": self.catalogue_view(data),
+                "backends": self.remote_backends(),
             }
         if path == "/api/launch/select":
             if data.get("backend", "") not in ("", *LOCAL_BACKENDS):
@@ -356,6 +509,13 @@ class App:
                 raise ValueError("Invalid start request identity.")
             engine = self.engine_for(s)
             engine.launch_args(s)
+            entry = catalogue_entry(s.model, self.catalogue.list) if s.remote else None
+            if entry is not None and self.store_downloads.active(
+                s.backend, catalogue_source(entry).name
+            ):
+                raise ValueError(
+                    "This model is still downloading into the remote store. Wait for the download or cancel it first."
+                )
             with self.bench.lock:
                 if request_id in self.start_requests:
                     if self.start_requests[request_id] != s.dict():
@@ -410,10 +570,12 @@ class App:
             return {"ok": True}
         if path == "/api/models/find":
             return self.finder.search(
-                data.get("query", ""), hardware(), data.get("refresh") is True
+                data.get("query", ""),
+                self.selected_hardware(data),
+                data.get("refresh") is True,
             )
         if path == "/api/catalogue":
-            return {"entries": self.catalogue_view()}
+            return {"entries": self.catalogue_view(data)}
         if path == "/api/catalogue/add":
             return self.catalogue.add(self.finder.candidate(data["id"]))
         if path == "/api/catalogue/removal-preview":
@@ -454,6 +616,139 @@ class App:
                 return downloads.start(self.catalogue.get(data["id"])).as_dict()
         if path == "/api/download/cancel":
             return {"cancelled": downloads.cancel(data["id"])}
+        if path.startswith("/api/remote"):
+            return self.remote_action(path, data)
+        raise ValueError("Unknown action")
+
+    def remote_action(self, path, data):
+        """Handle the panel's remote backend requests.
+
+        Args:
+            path: The request path, starting with ``/api/remote``.
+            data: The request body.
+
+        Returns:
+            The JSON-serialisable response.
+
+        Raises:
+            ValueError: The request is invalid or conflicts with running work.
+            RuntimeError: The provider failed.
+        """
+        if path == "/api/remote":
+            return self.remote_view(data["backend"])
+        if path == "/api/remote/orphans":
+            found, unavailable = [], []
+            for backend in (b["name"] for b in self.remote_backends()):
+                try:
+                    rows = self.remote_engine(backend).orphans()
+                except RuntimeError as e:
+                    unavailable.append({"provider": backend, "error": str(e)})
+                    continue
+                caveat = pricing_caveat(backend)
+                found += [row | {"provider": backend, "caveat": caveat} for row in rows]
+            return {"orphans": found, "unavailable": unavailable}
+        if path == "/api/remote/stop-call":
+            engine = self.remote_engine(data["backend"])
+            row = next(
+                (r for r in engine.remote_calls() if r["id"] == data["call_id"]), None
+            )
+            if row is None:
+                raise ValueError("That remote call is no longer running.")
+            if row["status"] == "owned":
+                raise ValueError("This panel serves that call. Use Stop model instead.")
+            if row["status"] == "active":
+                owner = row["owner"] or {}
+                raise ValueError(
+                    f"Another lllm2 session (pid {owner.get('pid')} on {owner.get('host')}) serves that call. Stop it there."
+                )
+            engine.cancel_orphan(row["id"])
+            return {"ok": True}
+        if path == "/api/remote/adopt":
+            call_id = data["call_id"]
+            engine = self.remote_engine(data["backend"])
+            with self.bench.lock:
+                if self.bench.active:
+                    raise ValueError(
+                        "Wait for the current operation or cancel it first."
+                    )
+                if (
+                    self.engine.state()["running"]
+                    and data.get("replace_running") is not True
+                ):
+                    raise ValueError(
+                        "A model is running. Stop it, or confirm that adopting replaces it."
+                    )
+                self.bench.use(engine)
+                self.bench.active = True
+                self.bench.cancel.clear()
+                self.bench.progress = {
+                    "kind": "launch",
+                    "status": "starting",
+                    "phase": "Adopting remote call",
+                    "started_at": time.time(),
+                    "settings": None,
+                    "adopting": call_id,
+                }
+
+            def adopt():
+                try:
+                    engine.adopt(call_id, self.bench.cancel)
+                    self.bench.update(
+                        status="serving",
+                        phase="Ready",
+                        settings=engine.state()["settings"],
+                    )
+                except Cancelled:
+                    self.bench.update(status="cancelled")
+                except Exception as e:
+                    self.bench.update(status="failed", error=str(e))
+                finally:
+                    with self.bench.lock:
+                        self.bench.active = False
+
+            threading.Thread(target=adopt, daemon=True).start()
+            return {"ok": True}
+        if path == "/api/remote/idle":
+            engine = self.engine
+            if not isinstance(engine, RemoteEngine) or not engine.alive():
+                raise ValueError("No remote engine is running.")
+            minutes = data.get("minutes")
+            engine.set_idle_timeout(None if minutes in ("", None) else minutes)
+            return engine.status()
+        if path == "/api/remote/download":
+            entry = self.catalogue.get(data["id"])
+            engine = self.remote_engine(data["backend"])
+            with self.bench.lock:
+                if (
+                    self.bench.active
+                    and self.engine is engine
+                    and engine.status()["phase"] == "downloading model"
+                ):
+                    raise ValueError(
+                        "A model start is downloading into this store. Wait for it to finish."
+                    )
+            return self.store_downloads.start(engine.provider, entry)
+        if path == "/api/remote/download/cancel":
+            return {"cancelled": self.store_downloads.cancel(data["id"])}
+        if path == "/api/remote/models/remove":
+            backend, name = data["backend"], data["name"]
+            engine = self.remote_engine(backend)
+            if self.store_downloads.active(backend, name):
+                raise ValueError(
+                    "Cancel the download and wait for it to stop before removing this model."
+                )
+            with self.bench.lock:
+                if self.bench.active and self.engine is engine:
+                    raise ValueError(
+                        "Wait for the current operation before removing stored models."
+                    )
+                users = model_users(engine.remote_calls(), name)
+                if users:
+                    raise ValueError(
+                        f"Serve call {', '.join(users)} uses {name}. Stop it first."
+                    )
+                engine.provider.remove_model(name)
+            return self.remote_view(backend)
         raise ValueError("Unknown action")
 
 
@@ -532,6 +827,9 @@ def serve(host="127.0.0.1", port=8082):
                     "text/css; charset=utf-8",
                 )
             elif path == "/api/status":
+                query = {
+                    k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()
+                }
                 self.send(
                     200,
                     {
@@ -539,8 +837,9 @@ def serve(host="127.0.0.1", port=8082):
                         "version": __version__,
                         "engine": app.engine.state(),
                         "job": app.bench.snapshot(),
-                        "hardware": hardware(),
-                        "downloads": downloads.all_downloads(),
+                        "hardware": app.selected_hardware(query),
+                        "downloads": downloads.all_downloads()
+                        + app.store_downloads.rows(),
                         "endpoint": app.engine.base + "/v1",
                         "paths": {
                             "models": str(config.MODELS_DIR),
@@ -571,7 +870,10 @@ def serve(host="127.0.0.1", port=8082):
                     raise ValueError("Invalid request size")
                 data = json.loads(self.rfile.read(size))
                 self.send(200, app.action(urlparse(self.path).path, data))
-            except (ValueError, KeyError, TypeError, OSError) as e:
+            except (ValueError, KeyError, TypeError, OSError, ProviderError) as e:
+                # ProviderError carries provider messages, such as missing
+                # credentials, that the user can act on. Other RuntimeError
+                # exceptions stay server errors.
                 self.send(400, {"error": str(e)})
             except Exception as e:
                 app.engine.log("Panel error: " + str(e))
@@ -601,6 +903,7 @@ def serve(host="127.0.0.1", port=8082):
         server.serve_forever()
     finally:
         app.bench.cancel.set()
+        app.store_downloads.cancel_all()
         for engine in list(app.engines.values()):
             try:
                 engine.stop()

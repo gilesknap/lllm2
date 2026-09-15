@@ -10,6 +10,9 @@ Providers register a factory with ``register_provider`` and a GPU table with
 
 import abc
 import atexit
+import contextlib
+import dataclasses
+import fcntl
 import json
 import os
 import secrets
@@ -141,11 +144,21 @@ class RemoteCall:
     started: float | None = None
 
 
+class ProviderError(RuntimeError):
+    """A provider failure with a message the user can act on.
+
+    Examples are a missing client library, missing credentials or a failed
+    provider request. The panel reports these as client errors, while other
+    ``RuntimeError`` exceptions stay server errors.
+    """
+
+
 class RemoteProvider(abc.ABC):
     """A service that runs llama-server on rented GPUs.
 
-    Every method may block on the network. Methods raise ``RuntimeError`` with
-    a user-facing message for provider failures, such as missing credentials.
+    Every method may block on the network. Methods raise ``ProviderError`` (a
+    ``RuntimeError``) with a user-facing message for provider failures, such as
+    missing credentials.
 
     Attributes:
         name: The registry name. It is also the GPU table name and the
@@ -613,18 +626,50 @@ class ProbeCache:
             os.replace(temporary, self.path)
 
 
+def pid_namespace():
+    """Return this process's PID namespace identifier.
+
+    Returns:
+        A string such as ``"pid:[4026531836]"``, or None when the system does
+        not expose it.
+    """
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
+def owner_record():
+    """Describe this process as the owner of a call record.
+
+    Returns:
+        A dict with ``pid``, ``host``, ``pid_ns`` and a ``heartbeat`` of now.
+    """
+    return {
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "pid_ns": pid_namespace(),
+        "heartbeat": time.time(),
+    }
+
+
 def owner_alive(owner, now=None):
     """Return whether a call record's owner is a running lllm2 session.
 
+    The heartbeat decides. A process ID means something only in the PID
+    namespace that recorded it, so the process check applies only when the
+    owner shares this host and PID namespace. A CLI in another container then
+    trusts a running panel's heartbeat instead of a PID it cannot see.
+
     Args:
-        owner: The record's ``owner`` dict with ``pid``, ``host`` and
-            ``heartbeat`` (Unix seconds), or None.
+        owner: The record's ``owner`` dict with ``pid``, ``host``, ``pid_ns``
+            and ``heartbeat`` (Unix seconds), or None.
         now: The current Unix time, or None to read the clock.
 
     Returns:
-        True when the heartbeat is recent and, on this host, the owner process
-        still exists. A record owned by this process returns False, because
-        engines in this process are checked directly.
+        True when the heartbeat is recent and, where the process check applies,
+        the owner process still exists. A record owned by this process returns
+        False, because engines in this process are checked directly.
     """
     if not isinstance(owner, dict):
         return False
@@ -632,7 +677,12 @@ def owner_alive(owner, now=None):
     heartbeat = owner.get("heartbeat")
     if not isinstance(heartbeat, int | float) or now - heartbeat > OWNER_STALE_SECONDS:
         return False
-    if owner.get("host") == socket.gethostname():
+    namespace = owner.get("pid_ns")
+    if (
+        owner.get("host") == socket.gethostname()
+        and namespace is not None
+        and namespace == pid_namespace()
+    ):
         pid = owner.get("pid")
         if type(pid) is not int or pid <= 0 or pid == os.getpid():
             return False
@@ -649,6 +699,8 @@ class CallRecords:
     """Owned serve calls saved on disk, so a later session can adopt them.
 
     A record holds the call's API key, so the file is private to the user.
+    Every read-modify-write holds an advisory lock on a sibling ``.lock``
+    file, so the panel and the CLI do not overwrite each other's changes.
     """
 
     def __init__(self, path):
@@ -659,6 +711,14 @@ class CallRecords:
         """
         self.path = Path(path)
         self._lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def _locked(self):
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path.with_name(self.path.name + ".lock"), "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                yield
 
     def _read(self):
         try:
@@ -685,7 +745,7 @@ class CallRecords:
             call_id: The call identifier.
             record: A JSON-serialisable dict.
         """
-        with self._lock:
+        with self._locked():
             data = self._read()
             data.setdefault(provider, {})[call_id] = record
             self._write(data)
@@ -700,7 +760,7 @@ class CallRecords:
         Returns:
             The record, or None when there is none.
         """
-        with self._lock:
+        with self._locked():
             return self._read().get(provider, {}).get(call_id)
 
     def keep(self, provider, call_ids, grace=RECORD_GRACE_SECONDS):
@@ -727,7 +787,7 @@ class CallRecords:
             ]
             return any(isinstance(t, int | float) and now - t < grace for t in times)
 
-        with self._lock:
+        with self._locked():
             data = self._read()
             calls = data.get(provider, {})
             stale = {k for k, v in calls.items() if k not in running and not recent(v)}
@@ -743,12 +803,45 @@ class CallRecords:
             call_id: The call identifier.
             heartbeat: The heartbeat time in Unix seconds.
         """
-        with self._lock:
+        with self._locked():
             data = self._read()
             record = data.get(provider, {}).get(call_id)
             if isinstance(record, dict) and isinstance(record.get("owner"), dict):
                 record["owner"]["heartbeat"] = heartbeat
                 self._write(data)
+
+    def claim(self, provider, call_id):
+        """Make this process the owner of a call's record, unless a session owns it.
+
+        The check and the write happen under the record file lock, so two
+        sessions that adopt the same call at once cannot both succeed.
+
+        Args:
+            provider: The provider name.
+            call_id: The call identifier.
+
+        Returns:
+            The record, with ``owner`` set to this process.
+
+        Raises:
+            ValueError: No record holds the call's API key, or another running
+                lllm2 session owns the call.
+        """
+        with self._locked():
+            data = self._read()
+            record = data.get(provider, {}).get(call_id)
+            if not isinstance(record, dict) or "api_key" not in record:
+                raise ValueError(
+                    "No saved key for this remote call, so it cannot be adopted. Stop it instead."
+                )
+            owner = record.get("owner")
+            if owner_alive(owner):
+                raise ValueError(
+                    f"Another lllm2 session (pid {owner.get('pid')} on {owner.get('host')}) serves that call. Stop it there."
+                )
+            record["owner"] = owner_record()
+            self._write(data)
+            return record
 
     def remove(self, provider, call_id):
         """Delete a call's record, if any.
@@ -757,11 +850,29 @@ class CallRecords:
             provider: The provider name.
             call_id: The call identifier.
         """
-        with self._lock:
+        with self._locked():
             data = self._read()
             if call_id in data.get(provider, {}):
                 del data[provider][call_id]
                 self._write(data)
+
+
+def model_users(rows, name):
+    """Return the listed calls that serve a stored model.
+
+    Args:
+        rows: Rows from ``describe_calls``.
+        name: The store-relative model path.
+
+    Returns:
+        The identifiers of calls whose settings model ends with the name.
+    """
+    suffix = "/" + name.lstrip("/")
+    return [
+        row["id"]
+        for row in rows
+        if row["model"] and Path(row["model"]).as_posix().endswith(suffix)
+    ]
 
 
 def describe_calls(provider, records=None, owned=()):
@@ -826,6 +937,148 @@ def describe_calls(provider, records=None, owned=()):
     return rows
 
 
+class StoreDownloads:
+    """Catalogue downloads into remote provider model stores.
+
+    Each download runs ``RemoteProvider.ensure_model`` in a thread. Rows have
+    the shape of local downloads (``downloads.Download.as_dict``), plus
+    ``store`` (the provider name) and ``catalogue_id``, so the panel shows both
+    in one downloads area. No weights pass through this machine.
+    """
+
+    def __init__(self):
+        """Create an empty download list."""
+        self._jobs = {}
+        self._lock = threading.Lock()
+
+    def start(self, provider, entry):
+        """Start downloading a catalogue entry into a provider's store.
+
+        Args:
+            provider: The ``RemoteProvider``.
+            entry: The catalogue entry.
+
+        Returns:
+            The download row. A download of the same entry that is still
+            running is returned unchanged.
+
+        Raises:
+            ValueError: The entry has an unsafe path.
+        """
+        source = catalogue_source(entry)
+        job_id = f"{provider.name}:{entry['id']}"
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None and job["state"] in ("queued", "downloading"):
+                return dict(job)
+            job = {
+                "id": job_id,
+                "name": entry.get("display_name") or entry["name"],
+                "file": source.files[0],
+                "target": f"{provider.name} store: {source.name}",
+                "state": "downloading",
+                "detail": f"Checking the {provider.name} store",
+                "percent": 0,
+                "done_gb": 0,
+                "total_gb": 0,
+                "rate_mib_s": 0,
+                "store": provider.name,
+                "catalogue_id": entry["id"],
+                "store_name": source.name,
+            }
+            cancel = threading.Event()
+            self._jobs[job_id] = job | {"_cancel": cancel}
+        threading.Thread(
+            target=self._run, args=(provider, source, job_id, cancel), daemon=True
+        ).start()
+        return dict(job)
+
+    def _update(self, job_id, **values):
+        with self._lock:
+            self._jobs[job_id].update(values)
+
+    def _run(self, provider, source, job_id, cancel):
+        sample = [time.monotonic(), 0]
+
+        def progress(update):
+            now = time.monotonic()
+            rate = 0.0
+            if now > sample[0] and update.done_bytes >= sample[1]:
+                rate = (update.done_bytes - sample[1]) / (now - sample[0]) / 2**20
+            sample[:] = [now, update.done_bytes]
+            total = update.total_bytes or 0
+            self._update(
+                job_id,
+                file=update.file,
+                detail=f"Downloading {update.file} inside {provider.name}",
+                done_gb=round(update.done_bytes / 1e9, 2),
+                total_gb=round(total / 1e9, 2),
+                percent=round(100 * update.done_bytes / total, 1) if total else 0,
+                rate_mib_s=round(rate, 1),
+            )
+
+        try:
+            provider.ensure_model(source, progress, cancel)
+        except Cancelled:
+            self._update(job_id, state="cancelled", detail="Cancelled", rate_mib_s=0)
+        except Exception as e:
+            self._update(job_id, state="error", detail=str(e), rate_mib_s=0)
+        else:
+            self._update(
+                job_id,
+                state="complete",
+                percent=100,
+                rate_mib_s=0,
+                detail=f"Stored in {provider.name}",
+            )
+
+    def cancel(self, job_id):
+        """Cancel a running download. Partial files stay so a retry resumes.
+
+        Args:
+            job_id: The row ``id``.
+
+        Returns:
+            True when a running download was asked to stop.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job["state"] not in ("queued", "downloading"):
+                return False
+            job["_cancel"].set()
+            return True
+
+    def cancel_all(self):
+        """Cancel every running download."""
+        for row in self.rows():
+            self.cancel(row["id"])
+
+    def active(self, provider, store_name):
+        """Return whether a download of a stored model is running.
+
+        Args:
+            provider: The provider name.
+            store_name: The store-relative model path.
+
+        Returns:
+            True while such a download runs.
+        """
+        return any(
+            row["store"] == provider
+            and row["store_name"] == store_name
+            and row["state"] in ("queued", "downloading")
+            for row in self.rows()
+        )
+
+    def rows(self):
+        """Return every download row, oldest first."""
+        with self._lock:
+            return [
+                {k: v for k, v in job.items() if not k.startswith("_")}
+                for job in self._jobs.values()
+            ]
+
+
 class _Call:
     """One serve call that an engine owns, with its proxy and monitor state."""
 
@@ -841,6 +1094,8 @@ class _Call:
 
 
 _ENGINES: "weakref.WeakSet[RemoteEngine]" = weakref.WeakSet()
+# Serialises adoption, so two engines in this process cannot adopt one call.
+_ADOPT_LOCK = threading.Lock()
 
 
 def stop_owned_calls():
@@ -1255,7 +1510,7 @@ class RemoteEngine(Engine):
             self._records.remove(self.provider.name, call_id)
             raise ValueError("That remote call is no longer running.")
         record = self._records.get(self.provider.name, call_id)
-        if record is None:
+        if record is None or "api_key" not in record:
             raise ValueError(
                 "No saved key for this remote call, so it cannot be adopted. Stop it instead."
             )
@@ -1270,20 +1525,63 @@ class RemoteEngine(Engine):
             self._generation += 1
             self._error = self._download = None
         proxy = self._bind_proxy()
-        with self.guard:
-            self.gpu = record["gpu"]
-            self.argv, self.settings = record["argv"], s
-            self.execution_environment = self.attempt_environment = None
-            self.log(f"Adopting remote call {call_id}")
-            call = _Call(call_id, record["api_key"], proxy, record["started"])
-            self._own(call, s)
-            self._phase = "loading model"
+        with _ADOPT_LOCK:
+            try:
+                if any(e.call_id == call_id for e in list(_ENGINES) if e is not self):
+                    raise ValueError("This lllm2 session already serves that call.")
+                record = self._records.claim(self.provider.name, call_id)
+                s = Settings.parse(record["settings"])
+            except BaseException:
+                proxy.close()
+                raise
+            with self.guard:
+                self.gpu = record["gpu"]
+                self.argv, self.settings = record["argv"], s
+                self.idle_timeout = (
+                    s.idle_timeout_minutes * 60 if s.idle_timeout_minutes else None
+                )
+                self.execution_environment = self.attempt_environment = None
+                self.log(f"Adopting remote call {call_id}")
+                call = _Call(call_id, record["api_key"], proxy, record["started"])
+                self._own(call, s)
+                self._phase = "loading model"
         try:
             self._serve(call, s, cancel, timeout)
         except BaseException:
             if self._call is call:
                 self.stop()
             raise
+
+    def set_idle_timeout(self, minutes):
+        """Change the idle timeout, including for a call that is serving now.
+
+        The idle countdown restarts from the last request, so a shorter timeout
+        can stop an idle call at the next status check.
+
+        Args:
+            minutes: Minutes without requests before the engine stops its call,
+                or None or 0 to disable the idle timer.
+
+        Raises:
+            ValueError: The value is not blank or an integer in 0..1440.
+        """
+        if minutes is not None and (
+            type(minutes) is not int or not 0 <= minutes <= 1440
+        ):
+            raise ValueError(
+                "The idle timeout must be blank or whole minutes in 0..1440; 0 or blank disables it."
+            )
+        with self.guard:
+            self.idle_timeout = minutes * 60 if minutes else None
+            if self.settings is not None:
+                self.settings = dataclasses.replace(
+                    self.settings, idle_timeout_minutes=minutes
+                )
+            self.log(
+                f"Idle timeout set to {minutes} minutes."
+                if minutes
+                else "Idle timeout disabled; the remote engine runs until stopped."
+            )
 
     def orphans(self):
         """List running serve calls that no running lllm2 session owns.
@@ -1433,11 +1731,7 @@ class RemoteEngine(Engine):
                 "argv": self.argv,
                 "started": call.started_unix,
                 "saved": time.time(),
-                "owner": {
-                    "pid": os.getpid(),
-                    "host": socket.gethostname(),
-                    "heartbeat": time.time(),
-                },
+                "owner": owner_record(),
             },
         )
         threading.Thread(target=self._monitor, args=(call,), daemon=True).start()
@@ -1541,7 +1835,7 @@ class RemoteEngine(Engine):
         except Exception as e:
             message = f"Could not cancel remote call {call.id}: {e}"
             self.log(message)
-            raise RuntimeError(message + ". Stop it from the provider's tools.") from e
+            raise ProviderError(message + ". Stop it from the provider's tools.") from e
         self._records.remove(self.provider.name, call.id)
         self.log(f"Stopped remote call {call.id}")
 

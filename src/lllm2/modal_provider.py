@@ -25,6 +25,7 @@ from .proxy import Upstream
 from .remote import (
     DownloadProgress,
     GpuProbe,
+    ProviderError,
     RemoteCall,
     RemoteProvider,
     ServeStatus,
@@ -44,17 +45,17 @@ def create_provider():
         A new ``ModalProvider``.
 
     Raises:
-        RuntimeError: The ``modal`` package is not installed.
+        ProviderError: The ``modal`` package is not installed.
     """
     try:
         import modal
     except ImportError as error:
-        raise RuntimeError(modal_app.INSTALL_MESSAGE) from error
+        raise ProviderError(modal_app.INSTALL_MESSAGE) from error
     return ModalProvider(modal)
 
 
 def _translated(method):
-    """Turn Modal client errors into ``RuntimeError`` with a user-facing message."""
+    """Turn Modal client errors into ``ProviderError`` with a user-facing message."""
 
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
@@ -62,9 +63,9 @@ def _translated(method):
         try:
             return method(self, *args, **kwargs)
         except errors.AuthError as error:
-            raise RuntimeError(CREDENTIALS_MESSAGE) from error
+            raise ProviderError(CREDENTIALS_MESSAGE) from error
         except errors.Error as error:
-            raise RuntimeError(f"Modal request failed: {error}") from error
+            raise ProviderError(f"Modal request failed: {error}") from error
 
     return wrapper
 

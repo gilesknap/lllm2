@@ -1401,3 +1401,71 @@ section[tabindex="-1"], #comparisons {
   margin: 0;
   accent-color: var(--accent);
 }
+
+/* Remote backends: orphan banner, cold-start status, stored models. */
+.orphan-banner {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--bad);
+  border-left-width: 5px;
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.orphan-banner h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.orphan-row, .remote-model {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.orphan-row>div:first-child, .remote-model>div:first-child {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.orphan-row small, .remote-model small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.remote-status {
+  margin: 8px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--wash);
+}
+
+.remote-status p {
+  margin: 0 0 4px;
+}
+
+.remote-status small {
+  display: block;
+  margin-top: 6px;
+}
+
+.remote-idle {
+  gap: 8px;
+  align-items: center;
+}
+
+.remote-idle input {
+  width: 7em;
+}
+
+#remote-error:empty, #remote-storage-error:empty {
+  display: none;
+}
+
+.pill.stored {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}

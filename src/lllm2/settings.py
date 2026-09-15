@@ -2,6 +2,7 @@ import re
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from . import config
 from .discovery import (
     EXECUTION_ENV_KEYS,
     batch_defaults,
@@ -15,7 +16,7 @@ from .gpu_tables import GPU_TABLES, gpu_type
 
 MTP_MODES = ("draft-mtp", "draft-mtp,ngram-simple")
 LOCAL_BACKENDS = ("CUDA", "Vulkan")
-DEFAULT_IDLE_TIMEOUT_MINUTES = 30
+DEFAULT_IDLE_TIMEOUT_MINUTES = config.IDLE_TIMEOUT_MINUTES
 LOOKUP_MODES = ("ngram-simple", "draft-mtp,ngram-simple")
 
 

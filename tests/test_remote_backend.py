@@ -394,7 +394,12 @@ def record(pid, heartbeat, model="/models/example/model.gguf"):
         "argv": [],
         "started": time.time(),
         "saved": time.time(),
-        "owner": {"pid": pid, "host": socket.gethostname(), "heartbeat": heartbeat},
+        "owner": {
+            "pid": pid,
+            "host": socket.gethostname(),
+            "pid_ns": remote.pid_namespace(),
+            "heartbeat": heartbeat,
+        },
     }
 
 

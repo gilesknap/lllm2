@@ -402,6 +402,38 @@ const assert=require('node:assert/strict');
  assert.equal(await run("document.querySelectorAll('[data-context-choice=headroom]:checked').length"),0);
  await run("document.querySelector('#experiment-options [data-result=cold]').click();await new Promise(r=>setTimeout(r,60))");
  assert.equal(await run('settings().context'),8192);
+ // Remote backend: selector, GPU type defaults, Volume presence, cold-start status and orphan banner.
+ await run("await switchView('launch');customize(true);$('backend').value='modal';$('backend').dispatchEvent(new Event('input'));$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200))");
+ assert.equal(await run('settings().backend'),'modal');
+ assert.equal(await run('settings().gpu_type'),'T4');
+ assert.equal(await run('settings().context'),16384);
+ assert.equal(await run('settings().engine'),'');
+ assert.deepEqual(await run("[...$('gpu_type').options].map(o=>o.value)"),['T4','L40S']);
+ assert.equal(await run("$('engine').closest('.field-control').hidden"),true);
+ assert.match(await run("$('recommended-list').textContent"),/In Modal storage · starts without a download/);
+ await run("$('gpu_type').value='L40S';$('gpu_type').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200))");
+ assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/default/resolve').at(-1).data.settings.gpu_type"),'L40S');
+ await run("await poll()");
+ assert.match(await run("$('gpu').textContent"),/L40S/);
+ await run("fixture.engine={running:false,ready:false,provider:'modal',gpu:'L40S',phase:'starting container',elapsed_seconds:null};fixture.job={kind:'launch',status:'starting',active:true,started_at:Date.now()/1000};await poll()");
+ assert.match(await run("$('remote-phase').textContent"),/Starting the GPU container/);
+ await run("fixture.engine={running:true,ready:true,pid:null,provider:'modal',gpu:'L40S',phase:'ready',elapsed_seconds:125,usd_per_hour:1.951,estimated_cost_usd:0.07,idle_timeout_seconds:1800,idle_remaining_seconds:1700,settings:settings()};fixture.job={kind:'launch',status:'serving',active:false};await poll()");
+ assert.match(await run("$('remote-cost').textContent"),/Running 2:05 · about \$0\.07 .* idle stop in 28:20/);
+ assert.match(await run("$('remote-caveat').textContent"),/Check current Modal pricing/);
+ await run("fixture.engine={running:false,ready:false,provider:'modal',gpu:'L40S',phase:'idle stopped',idle_timeout_seconds:1800};await poll()");
+ assert.match(await run("$('remote-phase').textContent"),/stopped after 30 minutes without requests/);
+ await run("fixture.orphans=[{id:'call-1',provider:'modal',gpu:'T4',model:'/models/dense/dense.gguf',elapsed_seconds:61,usd_per_hour:0.59,estimated_cost_usd:0.01,adoptable:true,caveat:'Check current Modal pricing.'}];await refreshOrphans()");
+ assert.equal(await run("$('orphan-banner').hidden"),false);
+ for(const width of [1440,390]){
+  await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
+  assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true,`remote overflow ${width}`);
+  await p.shot(`${artifacts}/remote-${width}.png`);
+ }
+ await p.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+ await run("$('stop-call-call-1').click();await new Promise(r=>setTimeout(r,100))");
+ assert.equal(await run("$('orphan-banner').hidden"),true);
+ await run("fixture.engine={running:false,ready:false};fixture.job={status:'idle'};$('backend').value='CUDA';$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200));customize(false)");
+ assert.equal(await run('settings().gpu_type'),'');
  console.log('Experiment controls passed: visible controls, reactive estimates, keyboard add, independent combinations, empty selection guard, mocked submission and responsive layouts.');
  console.log('Results checks passed: sorting, zero/missing metrics, modes, expansion/focus across refresh, eligibility, CSV quoting, multiline clipboard fallback, full JSON, skip links and unchanged drafts/defaults.');
  console.log('Artifacts: '+artifacts);
