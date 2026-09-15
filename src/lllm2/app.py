@@ -15,7 +15,7 @@ from .bench import WORKLOADS, Bench
 from .catalogue import Catalogue, Finder, local_paths, suitability
 from .defaults import starting_defaults
 from .discovery import engines, hardware, probe
-from .engine import Cancelled, Engine
+from .engine import Cancelled, LocalEngine
 from .launch import choose_launch, installed_models
 from .recommendations import promotion_provenance, saved_qualifications
 from .settings import Settings, capabilities, launch_args
@@ -35,7 +35,7 @@ class App:
         self.store = Store()
         self.catalogue = Catalogue(self.store)
         self.finder = Finder(self.store)
-        self.engine = Engine()
+        self.engine = LocalEngine()
         self.bench = Bench(self.engine, self.store)
         self.token = secrets.token_urlsafe(32)
         self.start_requests = {}

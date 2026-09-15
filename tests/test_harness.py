@@ -9,7 +9,7 @@ from lllm2 import harness
 class HarnessTests(unittest.TestCase):
     def test_running_engine_metadata(self):
         with patch.object(
-            harness.Engine,
+            harness.LocalEngine,
             "request",
             side_effect=[
                 {"data": [{"id": "served-model"}]},
@@ -21,10 +21,12 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(base.startswith("http://127.0.0.1:"))
 
     def test_unavailable_or_invalid_engine(self):
-        with patch.object(harness.Engine, "request", side_effect=OSError("refused")):
+        with patch.object(
+            harness.LocalEngine, "request", side_effect=OSError("refused")
+        ):
             with self.assertRaisesRegex(RuntimeError, "Start a model"):
                 harness.served_model()
-        with patch.object(harness.Engine, "request", return_value={}):
+        with patch.object(harness.LocalEngine, "request", return_value={}):
             with self.assertRaisesRegex(RuntimeError, "did not report"):
                 harness.served_model()
 

@@ -23,7 +23,7 @@ from rich.progress import (
 
 from . import __version__
 from .discovery import engines
-from .engine import Cancelled, Engine
+from .engine import Cancelled, LocalEngine
 from .engine_install import install, provenance
 from .harness import run_harness
 from .launch import choose_launch, installed_models
@@ -75,7 +75,7 @@ def _launch(
         raise RuntimeError(resolved["reason"])
     settings = Settings.parse(resolved["settings"])
     settings, saved = _saved_launch_settings(settings)
-    engine, cancel = Engine(), threading.Event()
+    engine, cancel = LocalEngine(), threading.Event()
 
     def stop(*_):
         cancel.set()
@@ -84,7 +84,8 @@ def _launch(
     signal.signal(signal.SIGTERM, stop)
     try:
         engine.start(settings, cancel, timeout=timeout)
-        print(f"Ready: {engine.base}/v1 (pid {engine.process.pid})", flush=True)
+        pid = engine.state()["pid"]
+        print(f"Ready: {engine.base}/v1" + (f" (pid {pid})" if pid else ""), flush=True)
         if saved:
             print("Using saved settings from the workbench database.", flush=True)
         if resolved.get("reason"):

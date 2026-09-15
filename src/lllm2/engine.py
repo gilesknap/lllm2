@@ -1,3 +1,4 @@
+import abc
 import collections
 import csv
 import json
@@ -88,41 +89,177 @@ def gpu_processes(output):
     return desktop, competing
 
 
-class Engine:
+def process_memory(process):
+    """Sample the resident memory of an owned engine process from /proc.
+
+    Args:
+        process: The engine's ``subprocess.Popen`` handle, or None.
+
+    Returns:
+        A host memory record. Values are None and ``error`` explains why when
+        the process is not running or /proc cannot be read.
+    """
+    result = {
+        "pid": process.pid if process else None,
+        "rss_mib": None,
+        "anonymous_mib": None,
+        "swap_mib": None,
+        "lifetime_peak_rss_mib": None,
+        "available_mib": None,
+    }
+    try:
+        if process is None or process.poll() is not None:
+            raise OSError("Owned engine is not running")
+        fields = {}
+        for line in (
+            (Path("/proc") / str(process.pid) / "status").read_text().splitlines()
+        ):
+            key, _, value = line.partition(":")
+            if key in ["VmRSS", "RssAnon", "VmSwap", "VmHWM"]:
+                fields[key] = int(value.split()[0]) / 1024
+        if process.poll() is not None:
+            raise OSError("Owned engine exited during memory sampling")
+        for name, key in [
+            ("rss_mib", "VmRSS"),
+            ("anonymous_mib", "RssAnon"),
+            ("swap_mib", "VmSwap"),
+            ("lifetime_peak_rss_mib", "VmHWM"),
+        ]:
+            result[name] = fields.get(key)
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                result["available_mib"] = int(line.split()[1]) / 1024
+    except (OSError, ValueError) as e:
+        result["error"] = str(e)
+    return result
+
+
+def unsampled_memory():
+    """Return an empty host memory record for an engine with no local process.
+
+    Returns:
+        A host memory record with every value set to None.
+    """
+    return {
+        "pid": None,
+        "rss_mib": None,
+        "anonymous_mib": None,
+        "swap_mib": None,
+        "lifetime_peak_rss_mib": None,
+        "available_mib": None,
+    }
+
+
+class Engine(abc.ABC):
+    """An llama-server reachable over HTTP at a loopback ``base`` URL.
+
+    The base class holds everything that does not depend on where the server
+    runs: the bounded log buffer, the guard lock, the HTTP helpers and the
+    readiness check. Subclasses own the server's lifetime. Callers use
+    ``alive()``, ``logs()`` and ``memory_sampler()`` instead of reaching into a
+    process handle, so they need no backend branches.
+    """
+
+    LOG_LINES = 1000
+    STATE_LOG_LINES = 200
+
     def __init__(self):
-        self.process = None
         self.settings = None
         self.ready = False
         self.argv = []
         self.execution_environment = None
         self.attempt_environment = None
-        self.lines = collections.deque(maxlen=1000)
-        self.log_lock = threading.Lock()
+        self._lines = collections.deque(maxlen=self.LOG_LINES)
+        self._log_lock = threading.Lock()
         self.guard = threading.RLock()
         self.base = f"http://127.0.0.1:{config.ENGINE_PORT}"
 
+    @abc.abstractmethod
+    def start(self, s, cancel, timeout=180):
+        """Start a server for the settings and wait until it serves requests.
+
+        Args:
+            s: The launch settings.
+            cancel: An event that aborts the start when set.
+            timeout: The startup bound in seconds.
+
+        Raises:
+            Cancelled: The cancel event was set.
+            GPUUnavailable: The server cannot get the resources it needs.
+            TimeoutError: The server did not become ready in time.
+            RuntimeError: The server exited during load.
+        """
+
+    @abc.abstractmethod
+    def stop(self):
+        """Stop the owned server, if any, and forget its settings."""
+
+    @abc.abstractmethod
+    def alive(self):
+        """Return whether the owned server is running.
+
+        Returns:
+            True while a started server has not exited or been stopped.
+        """
+
+    @abc.abstractmethod
+    def status(self):
+        """Return the server's lifecycle fields.
+
+        Returns:
+            A dict with ``running``, ``ready``, ``pid`` and ``error``. ``pid``
+            is None when the server has no local process.
+        """
+
+    def memory_sampler(self):
+        """Return a callable that samples the server's host memory.
+
+        Engines without a local process keep this default, which samples
+        nothing.
+
+        Returns:
+            A callable with no arguments that returns a host memory record.
+        """
+        return unsampled_memory
+
     def log(self, message):
-        with self.log_lock:
-            self.lines.append(message)
+        """Append a line to the bounded log and echo it to stderr.
+
+        Args:
+            message: The log line, without a trailing newline.
+        """
+        with self._log_lock:
+            self._lines.append(message)
         try:
             print(f"[llama-server] {message}", file=sys.stderr, flush=True)
         except OSError:
             # Keep draining the child pipe if the terminal/journal sink closes.
             pass
 
+    def logs(self, limit=None):
+        """Return a copy of the retained log lines, oldest first.
+
+        Args:
+            limit: The maximum number of most recent lines, or None for all.
+
+        Returns:
+            A list of log lines.
+        """
+        with self._log_lock:
+            lines = list(self._lines)
+        return lines if limit is None else lines[-limit:]
+
     def state(self):
-        with self.log_lock:
-            logs = list(self.lines)[-200:]
-        process, settings = self.process, self.settings
-        exit_code = process.poll() if process is not None else None
-        running = process is not None and exit_code is None
-        return {
-            "running": running,
-            "ready": running and self.ready and self.process is process,
-            "pid": process.pid if process else None,
-            "error": f"Engine exited with code {exit_code}. See the engine log, then retry."
-            if process is not None and exit_code is not None
-            else None,
+        """Return a snapshot for the panel and the CLI.
+
+        Returns:
+            The ``status()`` fields plus settings, argv, recent logs and the
+            execution environment.
+        """
+        logs = self.logs(self.STATE_LOG_LINES)
+        status = self.status()
+        settings = self.settings
+        return status | {
             "settings": settings.dict() if settings else None,
             "argv": self.argv,
             "logs": logs,
@@ -141,125 +278,42 @@ class Engine:
             detail = e.read(4000).decode("utf-8", "replace")
             raise RuntimeError(f"{path}: HTTP {e.code}: {detail}") from e
 
-    def stop(self):
-        with self.guard:
-            self.ready = False
-            p = self.process
-            if p is None:
-                return
-            if p.poll() is None:
-                os.killpg(p.pid, signal.SIGTERM)
-                try:
-                    p.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    os.killpg(p.pid, signal.SIGKILL)
-                    try:
-                        p.wait(timeout=5)
-                    except subprocess.TimeoutExpired as e:
-                        raise GPUUnavailable(
-                            "Owned engine did not exit after kill; queue halted. Inspect workstation GPU."
-                        ) from e
-            self.process = None
-            self.settings = None
+    def _await_ready(self, s, cancel, timeout, launched):
+        """Wait for ``/health``, apply the chat template, then mark the engine ready.
 
-    def _logs(self, p):
-        for line in p.stdout:
-            self.log(line.rstrip())
-        p.stdout.close()
+        Args:
+            s: The launch settings.
+            cancel: An event that aborts the wait when set.
+            timeout: The startup bound in seconds.
+            launched: A callable that returns whether this launch is still
+                the owned, running server.
 
-    def start(self, s, cancel, timeout=180):
-        self.attempt_environment = None
-        argv = launch_args(s, config.ENGINE_PORT)
-        if cancel.is_set():
-            raise Cancelled()
-        hw = hardware()
-        if not hw["gpus"]:
-            raise GPUUnavailable("NVIDIA GPU unavailable: " + str(hw["error"]))
-        rc, processes = command(
-            [
-                "nvidia-smi",
-                "--query-compute-apps=pid,process_name",
-                "--format=csv,noheader",
-            ],
-            4,
-        )
-        if rc != 0:
-            raise GPUUnavailable("Cannot check GPU ownership: " + processes[:300])
-        # Exclude only this app's owned process before deciding whether a switch is safe.
-        owned_pid = (
-            self.process.pid if self.process and self.process.poll() is None else None
-        )
-        processes = "\n".join(
-            line
-            for line in processes.splitlines()
-            if line.split(",", 1)[0].strip() != str(owned_pid)
-        )
-        desktop, competing = gpu_processes(processes)
-        if competing:
-            raise ResourceConflict(
-                "Other GPU compute processes detected; stop the old model/server first: "
-                + "; ".join(competing)[:500]
-            )
-        if desktop:
-            self.log(
-                "Allowing desktop GPU processes: "
-                + "; ".join(desktop)
-                + ". Their VRAM and activity remain part of this workstation benchmark."
-            )
-        self.stop()
-        with socket.socket() as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(("127.0.0.1", config.ENGINE_PORT))
-            except OSError as e:
-                raise ResourceConflict(
-                    f"Port {config.ENGINE_PORT} is occupied by another process. Stop it yourself or change LLLM2_ENGINE_PORT."
-                ) from e
-        with self.guard:
-            if cancel.is_set():
-                raise Cancelled()
-            self.argv = argv
-            self.settings = s
-            self.log("Launching: " + " ".join(argv))
-            env = launch_environment(s)
-            self.execution_environment = {k: env.get(k) for k in EXECUTION_ENV_KEYS}
-            p = subprocess.Popen(
-                argv,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                start_new_session=True,
-                env=env,
-            )
-            self.attempt_environment = self.execution_environment
-            self.process = p
-            threading.Thread(target=self._logs, args=(p,), daemon=True).start()
+        Raises:
+            Cancelled: The cancel event was set or the launch was replaced.
+            RuntimeError: The server exited during load.
+            TimeoutError: ``/health`` did not answer within the timeout.
+        """
         deadline = time.monotonic() + timeout
-        try:
-            while time.monotonic() < deadline:
-                if cancel.wait(0.25):
-                    raise Cancelled()
-                if p.poll() is not None:
-                    raise RuntimeError("Engine exited during load. See engine log.")
-                try:
-                    self.request("/health", timeout=1)
-                    break
-                except Exception:
-                    pass
-            else:
-                raise TimeoutError("Engine startup exceeded timeout.")
-            body = {"messages": [{"role": "user", "content": "Hello"}]}
-            if s.effort != "default":
-                body["reasoning_effort"] = s.effort
-            self.guarded_request("/apply-template", body, cancel, min(timeout, 30))
-            with self.guard:
-                if cancel.is_set() or self.process is not p or p.poll() is not None:
-                    raise Cancelled()
-                self.ready = True
-        except BaseException:
-            self.stop()
-            raise
+        while time.monotonic() < deadline:
+            if cancel.wait(0.25):
+                raise Cancelled()
+            if not launched():
+                raise RuntimeError("Engine exited during load. See engine log.")
+            try:
+                self.request("/health", timeout=1)
+                break
+            except Exception:
+                pass
+        else:
+            raise TimeoutError("Engine startup exceeded timeout.")
+        body = {"messages": [{"role": "user", "content": "Hello"}]}
+        if s.effort != "default":
+            body["reasoning_effort"] = s.effort
+        self.guarded_request("/apply-template", body, cancel, min(timeout, 30))
+        with self.guard:
+            if cancel.is_set() or not launched():
+                raise Cancelled()
+            self.ready = True
 
     def guarded_request(self, path, body, cancel, timeout):
         return self._guarded_operation(
@@ -371,3 +425,136 @@ class Engine:
                 raise TimeoutError(f"{path} timed out: {error[0].reason}") from error[0]
             raise error[0]
         return result[0]
+
+
+class LocalEngine(Engine):
+    """An llama-server child process on this machine's NVIDIA GPU."""
+
+    def __init__(self):
+        super().__init__()
+        self.process = None
+
+    def alive(self):
+        process = self.process
+        return process is not None and process.poll() is None
+
+    def status(self):
+        process = self.process
+        exit_code = process.poll() if process is not None else None
+        running = process is not None and exit_code is None
+        return {
+            "running": running,
+            "ready": running and self.ready and self.process is process,
+            "pid": process.pid if process else None,
+            "error": f"Engine exited with code {exit_code}. See the engine log, then retry."
+            if process is not None and exit_code is not None
+            else None,
+        }
+
+    def memory_sampler(self):
+        # Bind the process now so a restart cannot mix two processes in one sample.
+        with self.guard:
+            process = self.process
+        return lambda: process_memory(process)
+
+    def stop(self):
+        with self.guard:
+            self.ready = False
+            p = self.process
+            if p is None:
+                return
+            if p.poll() is None:
+                os.killpg(p.pid, signal.SIGTERM)
+                try:
+                    p.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    os.killpg(p.pid, signal.SIGKILL)
+                    try:
+                        p.wait(timeout=5)
+                    except subprocess.TimeoutExpired as e:
+                        raise GPUUnavailable(
+                            "Owned engine did not exit after kill; queue halted. Inspect workstation GPU."
+                        ) from e
+            self.process = None
+            self.settings = None
+
+    def _drain_output(self, p):
+        for line in p.stdout:
+            self.log(line.rstrip())
+        p.stdout.close()
+
+    def start(self, s, cancel, timeout=180):
+        self.attempt_environment = None
+        argv = launch_args(s, config.ENGINE_PORT)
+        if cancel.is_set():
+            raise Cancelled()
+        hw = hardware()
+        if not hw["gpus"]:
+            raise GPUUnavailable("NVIDIA GPU unavailable: " + str(hw["error"]))
+        rc, processes = command(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=pid,process_name",
+                "--format=csv,noheader",
+            ],
+            4,
+        )
+        if rc != 0:
+            raise GPUUnavailable("Cannot check GPU ownership: " + processes[:300])
+        # Exclude only this app's owned process before deciding whether a switch is safe.
+        owned_pid = (
+            self.process.pid if self.process and self.process.poll() is None else None
+        )
+        processes = "\n".join(
+            line
+            for line in processes.splitlines()
+            if line.split(",", 1)[0].strip() != str(owned_pid)
+        )
+        desktop, competing = gpu_processes(processes)
+        if competing:
+            raise ResourceConflict(
+                "Other GPU compute processes detected; stop the old model/server first: "
+                + "; ".join(competing)[:500]
+            )
+        if desktop:
+            self.log(
+                "Allowing desktop GPU processes: "
+                + "; ".join(desktop)
+                + ". Their VRAM and activity remain part of this workstation benchmark."
+            )
+        self.stop()
+        with socket.socket() as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", config.ENGINE_PORT))
+            except OSError as e:
+                raise ResourceConflict(
+                    f"Port {config.ENGINE_PORT} is occupied by another process. Stop it yourself or change LLLM2_ENGINE_PORT."
+                ) from e
+        with self.guard:
+            if cancel.is_set():
+                raise Cancelled()
+            self.argv = argv
+            self.settings = s
+            self.log("Launching: " + " ".join(argv))
+            env = launch_environment(s)
+            self.execution_environment = {k: env.get(k) for k in EXECUTION_ENV_KEYS}
+            p = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                start_new_session=True,
+                env=env,
+            )
+            self.attempt_environment = self.execution_environment
+            self.process = p
+            threading.Thread(target=self._drain_output, args=(p,), daemon=True).start()
+        try:
+            self._await_ready(
+                s, cancel, timeout, lambda: self.process is p and p.poll() is None
+            )
+        except BaseException:
+            self.stop()
+            raise

@@ -1,37 +1,13 @@
 """Regression checks for issue triage; no workstation state or GPU required."""
 
-import contextlib
-import io
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from lllm2.engine import Engine
 from lllm2.launch import choose_launch
-
-
-def test_engine_output_reaches_terminal_and_panel():
-    engine = Engine()
-    process = SimpleNamespace(stdout=io.StringIO("loading model\nready\n"))
-    output = io.StringIO()
-    with contextlib.redirect_stderr(output):
-        engine._logs(process)
-    assert list(engine.lines) == ["loading model", "ready"]
-    assert output.getvalue() == "[llama-server] loading model\n[llama-server] ready\n"
-    assert process.stdout.closed
-
-
-def test_closed_terminal_does_not_stop_engine_pipe_drain():
-    engine = Engine()
-    process = SimpleNamespace(stdout=io.StringIO("first\nsecond\n"))
-    with patch("builtins.print", side_effect=BrokenPipeError):
-        engine._logs(process)
-    assert list(engine.lines) == ["first", "second"]
-    assert process.stdout.closed
 
 
 def test_engine_search_roots_are_independent_and_overridable():

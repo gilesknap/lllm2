@@ -450,14 +450,10 @@ class Bench:
         }
 
     def measure(self, s, workload, tokens, output, timeout):
-        with self.engine.log_lock:
-            batches = batch_settings(s, list(self.engine.lines))
+        batches = batch_settings(s, self.engine.logs())
         prompt, provenance = self.prompt(s, workload, tokens, timeout)
-        from .warm import host_memory
-
-        with self.engine.guard:
-            process = self.engine.process
-        host_before = host_memory(process)
+        host_memory = self.engine.memory_sampler()
+        host_before = host_memory()
         requested_output = output
         output = output_budget(workload, output)
         source_task = workload in TASKS
@@ -476,7 +472,7 @@ class Bench:
                         "time": stamp(),
                         "gpus": h["gpus"],
                         "error": h["error"],
-                        "host": host_memory(process),
+                        "host": host_memory(),
                     }
                 )
                 finished.wait(0.5)
@@ -505,7 +501,7 @@ class Bench:
         timings = response.get("timings", {})
         predicted = response.get("tokens_predicted", timings.get("predicted_n", 0))
         evaluated = response.get("tokens_evaluated", timings.get("prompt_n", 0))
-        host_after = host_memory(process)
+        host_after = host_memory()
         host_points = [host_before, host_after] + [m["host"] for m in memory]
         if (
             not source_task and (response.get("truncated") or predicted < output)
@@ -517,10 +513,9 @@ class Bench:
             raise RuntimeError(
                 "Prompt cache reuse or incomplete timing detected; cannot report cold prefill."
             )
-        with self.engine.log_lock:
-            execution = execution_settings(
-                s, self.engine.execution_environment, list(self.engine.lines), response
-            )
+        execution = execution_settings(
+            s, self.engine.execution_environment, self.engine.logs(), response
+        )
         return {
             "workload": workload,
             "input_tokens": evaluated,
