@@ -14,7 +14,8 @@ comparison, see [Compare and save settings](../how-to/compare-settings.md).
 Launch and Experiments have separate drafts. **Use launch settings** copies the
 launch configuration into the experiment draft. Editing that draft does not
 change the serving model, but **running an experiment stops the serving model**
-because it uses the same GPU.
+because it uses the same GPU. With a remote backend, an experiment runs on the
+rented GPU and bills while it runs.
 
 **Load settings → Recommended defaults** restores the starting configuration for
 the selected model and hardware. **My saved settings** loads your saved choice.
@@ -137,8 +138,10 @@ Changes take effect on the next launch or experiment.
 |---|---|
 | Installed checkpoint | The GGUF file containing the target model weights. Different quantizations and copies can have different memory requirements and behavior. Use the exact same checkpoint for tuning comparisons. |
 | llama-server binary | The engine executable. Its build determines the available controls and kernels. Changing the engine makes a different comparison. |
-| Backend | CUDA or Vulkan, as supported by the selected engine. The bundled installer supplies CUDA engines; an existing compatible engine can be selected by path. |
-| GPU device | The device reported by that engine for the selected backend. Free memory and other GPU applications affect what fits. |
+| Backend | Where the model runs. CUDA and Vulkan use a GPU in this workstation, as supported by the selected engine; the bundled installer supplies CUDA engines, and an existing compatible engine can be selected by path. A remote backend such as Modal rents a GPU, runs the lllm2 CUDA engine release there and serves on the usual local engine port; it hides the engine and device fields. See [Serve a model from Modal](../how-to/serve-from-modal.md). |
+| GPU device | The device reported by that engine for the selected backend. Free memory and other GPU applications affect what fits. Not used by a remote backend. |
+| Remote GPU type | The rented GPU for a remote backend, with its memory and estimated hourly price. Starting settings are sized for it. More memory fits larger models and contexts but costs more. |
+| Idle stop (minutes) | For a remote backend, minutes without requests before the container stops. Default 30, or `LLLM2_IDLE_TIMEOUT_MINUTES`; blank or 0 disables it. The timer pauses while a request runs and restarts after each request. Changing it does not require a restart. |
 | Total allocated context | Capacity in tokens for prompts and replies, shared across slots. A larger allocation needs more conversation memory; it does not make every request contain more text. |
 | Slots | Concurrent conversation slots, not CPU threads. The total context is divided between them. More slots leave less room per conversation. |
 | GPU placement | Auto asks a compatible engine to fit weights and buffers to available VRAM, with a 1 GiB margin. Some weights may remain in system RAM. Manual enables an explicit layer count. |
