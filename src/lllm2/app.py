@@ -78,9 +78,11 @@ class App:
             directory = Path(requested).expanduser() if requested else config.MODELS_DIR
             if not requested and not directory.is_dir():
                 directory = Path.home()
-            directory = directory.resolve(strict=True)
+            # Check before resolving: a strict resolve names only the first
+            # missing component, not the folder the user typed.
             if not directory.is_dir():
-                raise ValueError("Choose a directory.")
+                raise ValueError(f"No folder found at {directory}.")
+            directory = directory.resolve(strict=True)
             entries = []
             for child in directory.iterdir():
                 try:

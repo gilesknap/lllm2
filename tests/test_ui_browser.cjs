@@ -49,6 +49,16 @@ const assert=require('node:assert/strict');
  await run("switchView('experiments')");await run("$('context').value=8192;edited('context');switchView('launch')");assert.equal(await run('settings().context'),65536);
  await run("switchView('experiments')");assert.equal(await run('settings().context'),8192);await run("switchView('launch')");
  assert.equal(await run("$('gpu-placement').value"),'auto');
+ // Invalid context or slots explain what to enter instead of dividing by zero.
+ await run("window.draftBeforeChecks=settings();window.noteBeforeChecks=selectionNote");
+ for(const [context,slots] of [['-5','0'],['8192','']]){
+  await run(`$('context').value='${context}';$('slots').value='${slots}';slotNote()`);
+  assert.match(await run("$('slot-note').textContent"),/^Enter a positive total context/);
+ }
+ // Without an engine, the server's selection reason replaces the generic engine hint.
+ await run("selectionNote='No NVIDIA GPU detected. Check GPU availability before starting.';$('engine').value='';await inspect()");
+ assert.match(await run("$('error-raw').textContent"),/No NVIDIA GPU detected/);
+ await run("selectionNote=noteBeforeChecks;fill(draftBeforeChecks);await inspect()");
 
  // Find models sorts and filters metadata without changing launch/experiment drafts.
  await run("fixture.findEntries=[{id:'hf-a',name:'Small',display_name:'Small',repo:'test/Small-Instruct',file:'small-Q4_K_M.gguf',quant:'Q4_K_M',size_gb:2,fit:'Likely GPU fit',fit_rank:0,reason:'3 GiB reserved',task:'Chat / instruct',instruct:true,downloads:100,likes:2,updated:'2026-09-01',license:'apache-2.0'},{id:'hf-b',name:'Large',display_name:'Large',repo:'test/Large-Instruct',file:'large-Q4_K_M.gguf',quant:'Q4_K_M',size_gb:20,fit:'Likely needs CPU offload',fit_rank:1,reason:'4 GiB reserved',task:'Coding',instruct:true,downloads:200,likes:4,updated:'2026-09-02',license:'mit'}];await switchView('find')");
@@ -70,6 +80,14 @@ const assert=require('node:assert/strict');
  await run("$('find-clear').click();$('find-table').querySelector('[data-find-filter=display_name]').value='!';renderFind()");
  assert.equal(await run('filteredFindEntries().length'),2);
  await run("$('find-clear').click()");
+ // When nothing is likely to fit, the empty table names the suitability filter.
+ await run("window.fitEntries=findEntries;findEntries=fitEntries.map(e=>({...e,fit_rank:2}));renderFind()");
+ assert.match(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
+ // A column filter that hides every row would still leave the table empty, so the hint stays away.
+ await run("$('find-table').querySelector('[data-find-filter=display_name]').value='nomatch';renderFind()");
+ assert.doesNotMatch(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
+ await run("$('find-table').querySelector('[data-find-filter=display_name]').value='';findEntries=fitEntries;renderFind()");
+ assert.doesNotMatch(await run("$('find-table').querySelector('tbody').textContent"),/Likely suitable only/);
  // Many rows scroll inside the fixed viewport; titles and filters never overlap.
  await run("window.originalFindEntries=findEntries;findEntries=Array.from({length:40},(_,i)=>({...originalFindEntries[i%2],id:'row-'+i}));renderFind()");
  assert.equal(await run("$('find-results-scroll').clientHeight<=440&&$('find-results-scroll').scrollHeight>$('find-results-scroll').clientHeight"),true);
@@ -291,6 +309,9 @@ const assert=require('node:assert/strict');
  await run("$('add-combo').focus()");await key('Enter');
  await run("$('cache').value='q4_0';edited('cache');await inspect();$('add-combo').click()");
  assert.equal(await run("$('combo-count').textContent"),'2 selected');
+ await run("$('add-combo').click()");
+ assert.equal(await run("$('combo-count').textContent"),'2 selected');
+ assert.match(await run("$('message').textContent"),/already in Configurations to compare/);
  assert.equal(await run("$('combo-editor-count').textContent"),'2 configurations to compare');
  assert.deepEqual(await run('combinations.map(s=>s.cache)'),['q8_0','q4_0']);
  assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/benchmark').length"),benchBefore);

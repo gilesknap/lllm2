@@ -91,7 +91,12 @@ const currentLaunch=()=>view==='launch'?settings():drafts.launch?.settings;
 const modelName=path=>{const m=discovered.models?.find(m=>m.path===path),c=discovered.catalog?.find(c=>c.id===m?.catalog_id);return c?(c.recommendation?.name||c.name):path?.split('/').slice(-2).join('/')||'No model selected';};
 
 function settings(){return Object.fromEntries(settingKeys.map(k=>[k,$(k).type==='checkbox'?$(k).checked:$(k).type==='number'?(optionalNumbers.includes(k)&&$(k).value===''?null:Number($(k).value)):optionalCache.includes(k)?$(k).value||null:$(k).value]));}
-function slotNote(){$('slot-note').textContent=`${Math.floor(Number($('context').value)/Number($('slots').value)).toLocaleString()} tokens per conversation (slot), including the reply. Total allocation is divided across ${$('slots').value} slot(s).`;benchmarkCost();}
+function slotNote(){
+ const context=Number($('context').value),slots=Number($('slots').value);
+ // Blank, zero or negative entries have no meaningful per-slot size; the server rejects them too.
+ $('slot-note').textContent=context>=1&&Number.isInteger(slots)&&slots>=1?`${Math.floor(context/slots).toLocaleString()} tokens per conversation (slot), including the reply. Total allocation is divided across ${slots} slot(s).`:'Enter a positive total context and at least one slot to see the tokens per conversation.';
+ benchmarkCost();
+}
 function message(s,error=false){$('message').textContent=s;$('message').style.display='block';$('message').className=error?'error':'';}
 async function api(path,data){const r=await fetch(path,{signal:AbortSignal.timeout(path==='/api/start'?15000:path==='/api/status'?10000:180000),...(data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-LLLM2-Token':token},body:JSON.stringify(data)})});const d=await r.json();if(!r.ok)throw Error(d.error||r.statusText);return d;}
 async function attempt(fn){try{await fn();}catch(e){message(e.message,true);}}
@@ -570,7 +575,8 @@ async function inspect(){
  $('engine-alternative').hidden=true;
  $('model-facts').textContent=(discovered.models?.find(m=>m.path===selected.model)?.metadata.context?'Checkpoint metadata context limit: '+discovered.models.find(m=>m.path===selected.model).metadata.context.toLocaleString()+' tokens. ':'')+'Usable allocation is shown above.';
  launchState();
- if(!selected.model||!selected.engine){validationError=!selected.model?'Choose or download a model.':'Choose an installed GPU-enabled llama-server under Customize settings.';launchState();return;}
+ // Without an engine, the server's selection reason (such as no GPU detected) names the real cause.
+ if(!selected.model||!selected.engine){validationError=!selected.model?'Choose or download a model.':selectionNote||'Choose an installed GPU-enabled llama-server under Customize settings.';launchState();return;}
  $('features').textContent='Checking support…';
  try{
   const [c,v]=await Promise.all([api('/api/capabilities',{settings:selected}),api('/api/launch/check',{settings:selected})]);
@@ -707,7 +713,12 @@ function renderCombinations(){
  $('combos').textContent=combinations.length?combinations.map((s,i)=>`${i+1}. ${modelName(s.model)} · ${s.speculation} / ${cacheLabel(s)} / flash ${s.flash} / effort ${s.effort} / draft ${s.draft_length}`).join('\n'):'No combinations selected. Add the current settings to begin.';
  launchState();
 }
-$('add-combo').onclick=()=>{combinations.push(structuredClone(settings()));renderCombinations();};
+$('add-combo').onclick=()=>{
+ const current=settings();
+ // An identical configuration would only repeat the same benchmark.
+ if(combinations.some(s=>sameSettings(s,current))){message('These settings are already in Configurations to compare.');return;}
+ combinations.push(structuredClone(current));renderCombinations();
+};
 $('clear-combos').onclick=()=>{combinations=[];renderCombinations();};
 let contextChoice='tested';
 function headroomControl(r,key){
@@ -765,10 +776,10 @@ function findTextTerms(query){
   .map(match=>({exclude:match[1]==='!',text:(match[2]??match[3]).toLowerCase()}))
   .filter(term=>term.text&&term.text!=='!');
 }
-function filteredFindEntries(){
+function filteredFindEntries(ignoreSuitable=false){
  const textFilters=[...$('find-table').querySelectorAll('[data-find-filter]')].map(input=>({key:input.dataset.findFilter,terms:findTextTerms(input.value)}));
  return findEntries.filter(e=>{
-  if($('find-suitable').checked&&e.fit_rank>1)return false;
+  if(!ignoreSuitable&&$('find-suitable').checked&&e.fit_rank>1)return false;
   if($('find-instruct').checked&&!e.instruct)return false;
   if($('find-quants').checked&&!/^(?:I?Q)[4-8]/.test(e.quant))return false;
   for(const {key,terms} of textFilters){
@@ -791,6 +802,9 @@ function filteredFindEntries(){
 }
 function renderFind(){
  const rows=filteredFindEntries();
+ // Name the suitability filter only when clearing it would show rows.
+ const unsuitable=!rows.length&&$('find-suitable').checked&&filteredFindEntries(true).length>0;
+ const empty=unsuitable?'No variants are likely to fit this workstation’s GPU or RAM. Clear “Likely suitable only” to see them all.':'No matching variants. Try a different search or relax the filters.';
  for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
   const key=button.dataset.findSort,active=key===findSort.key;
   button.parentElement.setAttribute('aria-sort',active?(findSort.direction===1?'ascending':'descending'):'none');
@@ -801,7 +815,7 @@ function renderFind(){
  $('find-table').querySelector('tbody').innerHTML=rows.map(e=>{
   const saved=(discovered.catalog||[]).some(c=>c.repo===e.repo&&c.file===e.file);
   return `<tr${saved?' class="find-in-catalogue"':''}>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+`<td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td></tr>`;
- }).join('')||'<tr><td colspan="11">No matching variants. Try a different search or relax the filters.</td></tr>';
+ }).join('')||`<tr><td colspan="11">${esc(empty)}</td></tr>`;
  $('find-count').textContent=`${rows.length} of ${findEntries.length} variants shown.`;
 }
 async function searchHF(refresh=false){
