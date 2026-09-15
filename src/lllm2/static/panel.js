@@ -91,7 +91,12 @@ const currentLaunch=()=>view==='launch'?settings():drafts.launch?.settings;
 const modelName=path=>{const m=discovered.models?.find(m=>m.path===path),c=discovered.catalog?.find(c=>c.id===m?.catalog_id);return c?(c.recommendation?.name||c.name):path?.split('/').slice(-2).join('/')||'No model selected';};
 
 function settings(){return Object.fromEntries(settingKeys.map(k=>[k,$(k).type==='checkbox'?$(k).checked:$(k).type==='number'?(optionalNumbers.includes(k)&&$(k).value===''?null:Number($(k).value)):optionalCache.includes(k)?$(k).value||null:$(k).value]));}
-function slotNote(){$('slot-note').textContent=`${Math.floor(Number($('context').value)/Number($('slots').value)).toLocaleString()} tokens per conversation (slot), including the reply. Total allocation is divided across ${$('slots').value} slot(s).`;benchmarkCost();}
+function slotNote(){
+ const context=Number($('context').value),slots=Number($('slots').value);
+ // Blank, zero or negative entries have no meaningful per-slot size; the server rejects them too.
+ $('slot-note').textContent=context>=1&&Number.isInteger(slots)&&slots>=1?`${Math.floor(context/slots).toLocaleString()} tokens per conversation (slot), including the reply. Total allocation is divided across ${slots} slot(s).`:'Enter a positive total context and at least one slot to see the tokens per conversation.';
+ benchmarkCost();
+}
 function message(s,error=false){$('message').textContent=s;$('message').style.display='block';$('message').className=error?'error':'';}
 async function api(path,data){const r=await fetch(path,{signal:AbortSignal.timeout(path==='/api/start'?15000:path==='/api/status'?10000:180000),...(data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-LLLM2-Token':token},body:JSON.stringify(data)})});const d=await r.json();if(!r.ok)throw Error(d.error||r.statusText);return d;}
 async function attempt(fn){try{await fn();}catch(e){message(e.message,true);}}
