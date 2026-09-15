@@ -4,6 +4,9 @@ The app has three functions. ``probe`` inspects the GPU and the engine in a
 GPU container. ``download`` fetches a catalogue model from Hugging Face into
 the model Volume. ``serve`` runs llama-server, opens an encrypted Modal tunnel
 to it and publishes the tunnel address and logs until the call is cancelled.
+The tunnel address is public. llama-server requires the per-launch API key on
+every path except ``/health``, ``/v1/health`` and its web UI files. Those paths
+reveal only that the server is up.
 
 The functions do their work in plain functions (``probe_container``,
 ``fetch_model`` and ``run_server``) that receive every Modal object they use,

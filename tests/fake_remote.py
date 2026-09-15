@@ -1,9 +1,11 @@
 """A fake remote provider that runs a fake llama-server as a local process.
 
 The provider keeps its calls on disk, so a call outlives the process that
-started it, as a real remote container outlives a crashed panel. The fake
-server requires the per-launch API key on every request and implements the
-endpoints that readiness, bench and warm use, including a streamed
+started it, as a real remote container outlives a crashed panel. Like
+llama-server, the fake server answers ``/health`` and ``/v1/health`` without
+the per-launch API key and requires the key on every other path. It has no web
+UI. It implements the endpoints that readiness,
+bench, warm and the harness wrappers use, including ``/props`` and a streamed
 ``/completion`` with a single-slot prompt cache.
 """
 
@@ -86,7 +88,16 @@ TOKEN_SECONDS = float(os.environ.get("FAKE_TOKEN_SECONDS", "0"))
 if os.environ.get("FAKE_EXIT"):
     print("error loading model", flush=True)
     sys.exit(1)
-port = int(sys.argv[sys.argv.index("--port") + 1])
+
+def option(name, default):
+    return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
+
+
+port = int(option("--port", "0"))
+MODEL = option("--model", "fake.gguf")
+CONTEXT = int(option("--ctx-size", "4096"))
+SLOTS = int(option("--parallel", "1"))
+PUBLIC = {"/health", "/v1/health"}
 started = time.monotonic()
 cache = []
 lock = threading.Lock()
@@ -106,7 +117,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def authorised(self):
-        if self.headers.get("Authorization") == "Bearer " + KEY:
+        # llama-server answers these paths without the API key.
+        if self.path in PUBLIC or self.headers.get("Authorization") == "Bearer " + KEY:
             return True
         self.reply(401, {"error": {"code": 401, "message": "Invalid API Key"}})
         return False
@@ -116,8 +128,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if time.monotonic() - started < LOAD_SECONDS:
             self.reply(503, {"error": {"code": 503, "message": "Loading model"}})
-            return
-        self.reply(200, {"status": "ok"})
+        elif self.path in ("/health", "/v1/health"):
+            self.reply(200, {"status": "ok"})
+        elif self.path in ("/models", "/v1/models"):
+            self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model"}]})
+        elif self.path == "/props":
+            self.reply(
+                200,
+                {
+                    "default_generation_settings": {"n_ctx": CONTEXT // SLOTS},
+                    "total_slots": SLOTS,
+                },
+            )
+        else:
+            self.reply(404, {"error": {"code": 404, "message": "Not found"}})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))

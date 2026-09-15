@@ -5,6 +5,13 @@ warm, harness wrappers and other clients need no changes. It streams request
 and response bodies in both directions without buffering, so server-sent event
 framing reaches the client byte for byte. It removes client credentials and adds
 the remote server's API key to every forwarded request.
+
+The key does not protect every path. llama-server answers ``/health``,
+``/v1/health`` and its web UI files, such as ``/``, without it. Anyone who
+learns a provider tunnel's address can check that the server is up and load the
+web UI page, but the UI's requests need the key. Every other path, including
+``/v1/models``, ``/props``, completion, tokenization and template application,
+needs the key. The proxy itself listens only on 127.0.0.1.
 """
 
 import http.client

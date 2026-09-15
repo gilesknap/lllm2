@@ -10,11 +10,13 @@ import hashlib
 import io
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -22,7 +24,7 @@ import pytest
 from typer.testing import CliRunner
 
 from fake_remote import ENGINE, FakeProvider, free_port
-from lllm2 import cli, config, modal_app, remote
+from lllm2 import cli, config, harness, modal_app, remote
 from lllm2.app import App
 from lllm2.backends import create_engine, engine_serves
 from lllm2.bench import Bench, suite
@@ -590,6 +592,82 @@ def _launch_error(*args):
     with pytest.raises(ValueError) as caught:
         cli._launch(*args)
     return str(caught.value)
+
+
+def get_json(url):
+    with urllib.request.urlopen(url, timeout=5) as response:
+        return json.load(response)
+
+
+def test_terminal_launch_serves_the_model_until_cancelled(
+    provider, no_local_gpu, monkeypatch, capsys
+):
+    port = free_port()
+    monkeypatch.setattr(config, "ENGINE_PORT", port)
+    monkeypatch.setattr(cli, "_catalogue", lambda: [ENTRY])
+    handlers = {}
+    # Signal handlers can only be set on the main thread, so capture them.
+    monkeypatch.setattr(
+        cli.signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler)
+    )
+    exit_codes = []
+    launch = threading.Thread(
+        target=lambda: exit_codes.append(
+            cli.main(
+                [
+                    "launch",
+                    "--backend",
+                    "fake",
+                    "--gpu",
+                    "FAKE-24",
+                    "--model",
+                    "example",
+                ]
+            )
+        )
+    )
+    launch.start()
+    try:
+
+        def listed():
+            try:
+                return get_json(f"http://127.0.0.1:{port}/v1/models")["data"]
+            except OSError:
+                return None
+
+        output = []
+        # The CLI prints the address only after readiness and the template check.
+        assert eventually(
+            lambda: (
+                output.append(capsys.readouterr().out) or "Ready:" in "".join(output)
+            ),
+            timeout=60,
+        )
+        assert f"Ready: http://127.0.0.1:{port}/v1" in "".join(output)
+        assert listed()[0]["id"] == "/volume/example/model.gguf"
+        assert [c.gpu for c in provider.calls()] == ["FAKE-24"]
+    finally:
+        # A launch that failed early never sets a handler and has already ended.
+        eventually(lambda: signal.SIGINT in handlers or not launch.is_alive())
+        if signal.SIGINT in handlers:
+            handlers[signal.SIGINT](signal.SIGINT, None)
+        launch.join(30)
+    assert not launch.is_alive()
+    assert exit_codes == [0]
+    assert provider.calls() == []
+
+
+def test_harness_sees_the_remote_model_on_the_engine_port(
+    provider, engines, no_local_gpu, monkeypatch
+):
+    port = free_port()
+    monkeypatch.setattr(config, "ENGINE_PORT", port)
+    engine = create_engine(remote_settings(), catalogue=[ENTRY], poll_interval=0.05)
+    engines.append(engine)
+    engine.start(remote_settings(context=8192, slots=2), threading.Event(), timeout=30)
+    base, model, window, slots = harness.served_model()
+    assert base == f"http://127.0.0.1:{port}"
+    assert (model, window, slots) == ("/volume/example/model.gguf", 4096, 2)
 
 
 def test_models_path_is_under_the_managed_directory(state):

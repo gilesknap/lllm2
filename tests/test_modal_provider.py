@@ -17,6 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fake_remote import ENGINE, FAKE_LLAMA_SERVER, free_port
+from fake_remote import META as FAKE_META
 from lllm2 import config, discovery, engine_install, modal_app
 from lllm2.engine import Cancelled
 from lllm2.engine_release import CUDA_TRACKS, LLAMA_CPP_REF, asset_name
@@ -29,10 +31,12 @@ from lllm2.remote import (
     GpuProbe,
     ModelSource,
     RemoteCall,
+    RemoteEngine,
     StoredModel,
     catalogue_source,
     remote_provider,
 )
+from lllm2.settings import Settings
 
 GGUF = b"GGUF" + struct.pack("<IQQ", 3, 0, 0)
 META = {"architecture": "qwen3", "context": 40960, "mtp": False, "template": ""}
@@ -579,6 +583,75 @@ def test_serve_call_lifecycle(fake, provider):
     assert provider.calls() == []
     assert not provider.poll(call_id).running
     provider.cancel("fc-unknown")
+
+
+def test_remote_engine_serves_and_stops_a_modal_call(fake, provider, tmp_path):
+    """A serve call's tunnel record points the engine proxy at a local server."""
+    script = tmp_path / "fake_llama_server.py"
+    script.write_text(FAKE_LLAMA_SERVER)
+    servers = []
+
+    def serve(argv, key, env, files):
+        argv = list(argv)
+        argv[argv.index("--port") + 1] = str(port := free_port())
+        servers.append(
+            subprocess.Popen(
+                [sys.executable, str(script), *argv[1:]],
+                env={**os.environ, "LLAMA_API_KEY": key},
+            )
+        )
+        call_id = f"fc-{len(fake.calls) + 1}"
+        fake.state.put(
+            modal_app.tunnel_key(call_id),
+            {"host": "127.0.0.1", "port": port, "tls": False},
+        )
+        return {"pending": 10**6}
+
+    fake.behaviour["probe"] = lambda: {
+        "name": "Tesla T4",
+        "total_mib": 15360,
+        "engine": ENGINE,
+    }
+    fake.behaviour["serve"] = serve
+    fake.store.files["example/model.gguf"] = 3000
+    fake.state.put(
+        modal_app.meta_key("example/model.gguf"), {"size": 3000, "meta": FAKE_META}
+    )
+    engine = RemoteEngine(
+        provider,
+        "T4",
+        port=free_port(),
+        poll_interval=0.05,
+        records=tmp_path / "calls.json",
+        probes=tmp_path / "probes.json",
+        sources=lambda path: ModelSource("example/model.gguf"),
+    )
+    try:
+        engine.start(
+            Settings(model="/models/example/model.gguf"), threading.Event(), 30
+        )
+        call_id = engine.call_id
+        assert [call.id for call in provider.calls()] == [call_id]
+        # The proxy adds the call's key; the client sends only a placeholder.
+        request = urllib.request.Request(
+            engine.base + "/tokenize",
+            data=json.dumps({"content": "ab"}).encode(),
+            headers={
+                "Authorization": "Bearer placeholder",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert json.load(response) == {"tokens": [98, 99]}
+        engine.stop()
+        assert fake.calls[call_id].cancelled
+        assert provider.calls() == []
+        assert not engine.alive()
+    finally:
+        engine.shutdown()
+        for server in servers:
+            server.kill()
+            server.wait()
 
 
 def test_an_ended_call_reports_its_exit_status(fake, provider):

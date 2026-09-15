@@ -140,10 +140,24 @@ def test_start_serves_the_remote_server_on_the_engine_port(model, providers, eng
     # Clients keep their placeholder token; only the proxy holds the key.
     assert request(engine, "/health") == {"status": "ok"}
     assert request(engine, "/tokenize", {"content": "ab"}) == {"tokens": [98, 99]}
-    with pytest.raises(urllib.error.HTTPError) as direct:
-        urllib.request.urlopen(f"http://127.0.0.1:{provider.server_port}/health")
-    assert direct.value.code == 401
-    direct.value.close()
+    # The server needs the key except on the paths llama-server leaves open.
+    direct = f"http://127.0.0.1:{provider.server_port}"
+    with urllib.request.urlopen(direct + "/health") as response:
+        assert response.status == 200
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        urllib.request.urlopen(direct + "/v1/models")
+    assert refused.value.code == 401
+    refused.value.close()
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        urllib.request.urlopen(
+            urllib.request.Request(
+                direct + "/completion",
+                data=b'{"prompt": "x", "n_predict": 1}',
+                headers={"Content-Type": "application/json"},
+            )
+        )
+    assert refused.value.code == 401
+    refused.value.close()
 
     argv = state["argv"]
     assert argv[0] == ENGINE["path"]

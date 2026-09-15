@@ -305,7 +305,8 @@ class RemoteProvider(abc.ABC):
         Args:
             gpu: The provider's GPU type string.
             argv: The llama-server command line, binary first.
-            api_key: The key llama-server must require on every request. The
+            api_key: The key llama-server requires on every path except
+                ``/health``, ``/v1/health`` and its web UI files. The
                 provider passes it outside ``argv``, for example as
                 ``LLAMA_API_KEY``.
             env: Extra environment variables for llama-server.
