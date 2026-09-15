@@ -49,6 +49,16 @@ const assert=require('node:assert/strict');
  await run("switchView('experiments')");await run("$('context').value=8192;edited('context');switchView('launch')");assert.equal(await run('settings().context'),65536);
  await run("switchView('experiments')");assert.equal(await run('settings().context'),8192);await run("switchView('launch')");
  assert.equal(await run("$('gpu-placement').value"),'auto');
+ // Invalid context or slots explain what to enter instead of dividing by zero.
+ await run("window.draftBeforeChecks=settings();window.noteBeforeChecks=selectionNote");
+ for(const [context,slots] of [['-5','0'],['8192','']]){
+  await run(`$('context').value='${context}';$('slots').value='${slots}';slotNote()`);
+  assert.match(await run("$('slot-note').textContent"),/^Enter a positive total context/);
+ }
+ // Without an engine, the server's selection reason replaces the generic engine hint.
+ await run("selectionNote='No NVIDIA GPU detected. Check GPU availability before starting.';$('engine').value='';await inspect()");
+ assert.match(await run("$('error-raw').textContent"),/No NVIDIA GPU detected/);
+ await run("selectionNote=noteBeforeChecks;fill(draftBeforeChecks);await inspect()");
 
  // Find models sorts and filters metadata without changing launch/experiment drafts.
  await run("fixture.findEntries=[{id:'hf-a',name:'Small',display_name:'Small',repo:'test/Small-Instruct',file:'small-Q4_K_M.gguf',quant:'Q4_K_M',size_gb:2,fit:'Likely GPU fit',fit_rank:0,reason:'3 GiB reserved',task:'Chat / instruct',instruct:true,downloads:100,likes:2,updated:'2026-09-01',license:'apache-2.0'},{id:'hf-b',name:'Large',display_name:'Large',repo:'test/Large-Instruct',file:'large-Q4_K_M.gguf',quant:'Q4_K_M',size_gb:20,fit:'Likely needs CPU offload',fit_rank:1,reason:'4 GiB reserved',task:'Coding',instruct:true,downloads:200,likes:4,updated:'2026-09-02',license:'mit'}];await switchView('find')");

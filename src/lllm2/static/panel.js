@@ -575,7 +575,8 @@ async function inspect(){
  $('engine-alternative').hidden=true;
  $('model-facts').textContent=(discovered.models?.find(m=>m.path===selected.model)?.metadata.context?'Checkpoint metadata context limit: '+discovered.models.find(m=>m.path===selected.model).metadata.context.toLocaleString()+' tokens. ':'')+'Usable allocation is shown above.';
  launchState();
- if(!selected.model||!selected.engine){validationError=!selected.model?'Choose or download a model.':'Choose an installed GPU-enabled llama-server under Customize settings.';launchState();return;}
+ // Without an engine, the server's selection reason (such as no GPU detected) names the real cause.
+ if(!selected.model||!selected.engine){validationError=!selected.model?'Choose or download a model.':selectionNote||'Choose an installed GPU-enabled llama-server under Customize settings.';launchState();return;}
  $('features').textContent='Checking support…';
  try{
   const [c,v]=await Promise.all([api('/api/capabilities',{settings:selected}),api('/api/launch/check',{settings:selected})]);
