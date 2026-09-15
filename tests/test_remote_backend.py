@@ -540,7 +540,9 @@ def test_modal_models_and_remove(modal_cli, tmp_path):
     result = invoke("models")
     assert result.output.strip() == "example/model.gguf  0.0 GB"
     rows = json.loads(invoke("models", "--json").output)
-    assert rows == [{"name": "example/model.gguf", "size_bytes": 2_000_000}]
+    assert rows == [
+        {"name": "example/model.gguf", "size_bytes": 2_000_000, "catalogue_id": None}
+    ]
     blocked = invoke("remove", "example/model.gguf")
     assert isinstance(blocked.exception, ValueError)
     assert active in str(blocked.exception)

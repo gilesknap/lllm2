@@ -259,8 +259,10 @@ class FakeProvider(RemoteProvider):
             for p in sorted(volume.rglob("*.gguf"))
         ]
 
-    def remove_model(self, name):
+    def remove_model(self, name, companions=()):
         (self.root / "volume" / name).unlink()
+        for companion in companions:
+            (self.root / "volume" / companion).unlink(missing_ok=True)
 
     def model_path(self, name):
         return "/volume/" + name

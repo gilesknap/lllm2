@@ -212,18 +212,22 @@ class ModalProvider(RemoteProvider):
         ]
 
     @_translated
-    def remove_model(self, name):
-        self._check_name(name)
+    def remove_model(self, name, companions=()):
+        files = (name, *companions)
+        for file in files:
+            self._check_name(file)
         errors = self.modal.exception
-        for path in (name, name + ".part"):
-            try:
-                self._volume.remove_file(path)
-            except errors.NotFoundError:
-                if path == name:
-                    raise ValueError(
-                        f"No model named {name} in the Modal Volume."
-                    ) from None
+        removed = False
+        for file in files:
+            for path in (file, file + ".part"):
+                try:
+                    self._volume.remove_file(path)
+                    removed = True
+                except errors.NotFoundError:
+                    pass
         self._state.pop(modal_app.meta_key(name), None)
+        if not removed:
+            raise ValueError(f"No model named {name} in the Modal Volume.")
 
     def model_path(self, name):
         self._check_name(name)

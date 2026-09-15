@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import signal
 import sys
 import unittest
 from pathlib import Path
@@ -11,10 +12,12 @@ from unittest.mock import ANY, MagicMock, patch
 from typer.testing import CliRunner
 
 from lllm2 import cli, config, modal_app
+from lllm2.discovery import CATALOG
 from lllm2.modal_provider import ModalProvider
-from lllm2.remote import GpuProbe, ProbeCache
+from lllm2.remote import GpuProbe, ProbeCache, catalogue_source, companion_names
 from lllm2.settings import Settings
 from lllm2.store import Store
+from test_modal_provider import META, FakeModal
 
 REMOTE_COMMANDS = (
     ["setup"],
@@ -22,8 +25,12 @@ REMOTE_COMMANDS = (
     ["list"],
     ["models"],
     ["stop", "--all"],
+    ["download", "qwen3-8b"],
     ["remove", "A/a.gguf"],
+    ["remove", "qwen3-8b"],
 )
+# A catalogue entry with a companion multimodal projector file.
+COMPANION_ENTRY = next(e for e in CATALOG if e.get("mmproj"))
 
 
 class ModalError(Exception):
@@ -493,6 +500,129 @@ class ModalCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("Unknown modal GPU type: Z9. Choose one of: T4, L4", errors)
         provider.assert_not_called()
+
+    def modal_client(self, fake):
+        """Serve every provider lookup from one fake ``modal`` module."""
+        return patch(
+            "lllm2.modal_provider.create_provider",
+            side_effect=lambda: ModalProvider(
+                fake, poll_interval=0, deploy=lambda: None
+            ),
+        )
+
+    def test_download_shows_progress_and_a_rerun_downloads_nothing(self):
+        fake, entry = FakeModal(), COMPANION_ENTRY
+        source = catalogue_source(entry)
+        stored = [source.name, *companion_names(entry)]
+
+        def download(name, repo, files, revision):
+            self.assertEqual((name, files), (source.name, list(source.files)))
+
+            def poll(call):
+                fake.state.put(
+                    modal_app.download_key(call.object_id),
+                    {"file": files[0], "done_bytes": 10**9, "total_bytes": 2 * 10**9},
+                )
+                if not call.pending:
+                    fake.store.files.update(dict.fromkeys(stored, 2 * 10**9))
+
+            return {"pending": 2, "result": dict(META), "on_poll": poll}
+
+        fake.behaviour["download"] = download
+        with self.modal_client(fake):
+            first = self.runner.invoke(cli.app, ["modal", "download", entry["id"]])
+            rerun = self.runner.invoke(cli.app, ["modal", "download", entry["id"]])
+            listed = self.runner.invoke(cli.app, ["modal", "models"])
+        self.assertEqual(first.exit_code, 0, first.output)
+        self.assertIn(f"Downloading {source.files[0]} inside Modal", first.stderr)
+        self.assertIn(f"Stored {source.name} on Modal.", first.stdout)
+        self.assertEqual(rerun.exit_code, 0, rerun.output)
+        self.assertIn("already stored on Modal; nothing downloaded", rerun.stdout)
+        self.assertEqual(rerun.stderr, "")
+        # The rerun starts no download call.
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(listed.exit_code, 0, listed.output)
+        for path in stored:
+            self.assertIn(f"{path}  2.0 GB  {entry['id']}", listed.stdout)
+
+    def test_ctrl_c_cancels_the_download_and_keeps_the_partial_file(self):
+        fake = FakeModal()
+        partial = catalogue_source(COMPANION_ENTRY).name + ".part"
+
+        def download(*_args):
+            def poll(_call):
+                fake.store.files[partial] = 1000
+                signal.raise_signal(signal.SIGINT)
+
+            return {"pending": 100, "on_poll": poll}
+
+        fake.behaviour["download"] = download
+        before = signal.getsignal(signal.SIGINT)
+        with self.modal_client(fake):
+            result = self.runner.invoke(
+                cli.app, ["modal", "download", COMPANION_ENTRY["id"]]
+            )
+        self.assertEqual(result.exit_code, 130, result.output)
+        self.assertIn(
+            f"rerun `lllm2 modal download {COMPANION_ENTRY['id']}` to resume",
+            flat(result.stderr),
+        )
+        self.assertEqual([call.cancelled for call in fake.calls.values()], [True])
+        self.assertFalse(any(str(key).startswith("heartbeat:") for key in fake.state))
+        self.assertEqual(fake.store.files, {partial: 1000})
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
+
+    def test_download_names_close_matches_for_an_unknown_id(self):
+        with patch.object(cli, "remote_provider") as provider:
+            code, errors = self.main(["download", "qwen3-8"])
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown catalogue id: qwen3-8. Close matches: qwen3-8b", errors)
+        provider.assert_not_called()
+
+    def test_remove_takes_a_catalogue_id_or_stored_name_and_deletes_companions(self):
+        fake, entry = FakeModal(), COMPANION_ENTRY
+        main, (projector,) = catalogue_source(entry).name, companion_names(entry)
+        fake.store.files.update(
+            {main: 10, projector + ".part": 5, "other/x.gguf": 7, "extra/y.gguf": 3}
+        )
+        with self.modal_client(fake):
+            listed = self.runner.invoke(cli.app, ["modal", "models", "--json"])
+            by_id = self.runner.invoke(cli.app, ["modal", "remove", entry["id"]])
+            by_name = self.runner.invoke(cli.app, ["modal", "remove", "other/x.gguf"])
+            code, errors = self.main(["remove", "other/x.gguf"])
+        rows = {row["name"]: row["catalogue_id"] for row in json.loads(listed.stdout)}
+        self.assertEqual(
+            rows, {main: entry["id"], "other/x.gguf": None, "extra/y.gguf": None}
+        )
+        self.assertEqual(by_id.exit_code, 0, by_id.output)
+        self.assertIn(f"Removed {main} from Modal.", by_id.stdout)
+        self.assertEqual(by_name.exit_code, 0, by_name.output)
+        self.assertEqual(fake.store.files, {"extra/y.gguf": 3})
+        self.assertEqual(code, 2)
+        self.assertIn("No catalogue id or stored model named other/x.gguf", errors)
+        self.assertIn("Close matches: extra/y.gguf", errors)
+        # A stored name that escapes the Volume resolves to nothing and deletes nothing.
+        with self.modal_client(fake):
+            for name in ("../extra/y.gguf", "/extra/y.gguf", "extra/../extra/y.gguf"):
+                code, errors = self.main(["remove", name])
+                self.assertEqual(code, 2, name)
+                self.assertIn(f"No catalogue id or stored model named {name}", errors)
+        self.assertEqual(fake.store.files, {"extra/y.gguf": 3})
+
+    def test_remove_refuses_a_model_that_a_running_call_serves(self):
+        fake = FakeModal()
+        name = catalogue_source(COMPANION_ENTRY).name
+        fake.store.files[name] = 10
+        row = {"id": "fc-9", "model": str(config.MODELS_DIR / name)}
+        with (
+            self.modal_client(fake),
+            patch.object(cli, "describe_calls", return_value=[row]),
+        ):
+            code, errors = self.main(["remove", COMPANION_ENTRY["id"]])
+        self.assertEqual(code, 2)
+        self.assertIn(f"Serve call fc-9 uses {name}", errors)
+        self.assertIn("lllm2 modal stop", errors)
+        self.assertEqual(fake.store.files, {name: 10})
 
     def test_gpu_help_shows_the_pricing_caveat(self):
         for args in (["launch"], ["modal", "list"], ["modal", "probe"]):

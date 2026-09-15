@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import difflib
 import json
 import signal
 import threading
@@ -35,9 +37,12 @@ from .remote import (
     PROVIDERS,
     CallRecords,
     ProbeCache,
+    catalogue_source,
+    companion_names,
     describe_calls,
     model_users,
     remote_provider,
+    stored_entries,
 )
 from .service import install_service
 from .settings import LOCAL_BACKENDS, Settings, default_key
@@ -212,6 +217,82 @@ def _print_remote_launch(settings: Settings, state: dict) -> None:
         print(
             "Idle timeout disabled: the GPU bills until you press Ctrl-C.", flush=True
         )
+
+
+@contextlib.contextmanager
+def _transfer_progress():
+    """Show phase labels and a byte progress bar on stderr.
+
+    A terminal gets a live bar. Other output gets a line every 10 seconds and
+    at completion, so stdout stays free for results.
+
+    Yields:
+        A callable ``report(label, completed, total, transfer)``. A new label
+        prints once. ``transfer`` True shows ``completed`` of ``total`` bytes
+        (``total`` None when unknown); False hides the bar.
+    """
+    console = Console(stderr=True)
+    with Progress(
+        BarColumn(),
+        TaskProgressColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        disable=not console.is_terminal,
+        transient=True,
+        redirect_stdout=False,
+        redirect_stderr=False,
+    ) as display:
+        task = display.add_task("download", total=None, visible=False)
+        phase = ""
+        last_update = time.monotonic()
+
+        def report(label: str, completed: int, total: int | None, transfer: bool):
+            nonlocal phase, last_update
+            if label != phase:
+                phase = label
+                console.print(label, markup=False)
+                display.update(task, visible=transfer)
+                display.refresh()
+            if not transfer:
+                return
+            display.update(
+                task,
+                completed=completed,
+                total=total,
+                refresh=total is not None and completed == total,
+            )
+            now = time.monotonic()
+            if not console.is_terminal and (
+                now - last_update >= 10 or (total is not None and completed == total)
+            ):
+                amount = f"Downloaded {completed / 1_000_000:.1f} MB"
+                if total:
+                    amount += f" / {total / 1_000_000:.1f} MB ({completed / total:.0%})"
+                console.print(amount, markup=False)
+                last_update = now
+
+        yield report
+
+
+def _catalogue_choice(model: str, catalogue: list[dict]) -> dict | None:
+    """Find a catalogue entry by id or directory name.
+
+    Args:
+        model: The catalogue id or name.
+        catalogue: The catalogue entries.
+
+    Returns:
+        The entry, or None when no entry matches.
+    """
+    return next((e for e in catalogue if model in (e.get("id"), e.get("name"))), None)
+
+
+def _close_matches(model: str, choices) -> str:
+    """Return a sentence naming the choices that resemble a mistyped name."""
+    matches = difflib.get_close_matches(model, sorted(set(choices)), n=5, cutoff=0.5)
+    return f" Close matches: {', '.join(matches)}." if matches else ""
 
 
 def _gpu_choice(provider: str, gpu: str):
@@ -394,50 +475,15 @@ def install_engine(
 
     Example: lllm2 engines install cuda
     """
-    console = Console(stderr=True)
-    with Progress(
-        BarColumn(),
-        TaskProgressColumn(),
-        DownloadColumn(),
-        TransferSpeedColumn(),
-        TimeRemainingColumn(),
-        console=console,
-        disable=not console.is_terminal,
-        transient=True,
-        redirect_stdout=False,
-        redirect_stderr=False,
-    ) as display:
-        task = display.add_task("download", total=None, visible=False)
-        phase = ""
-        last_update = time.monotonic()
-
-        def report(label: str, completed: int, total: int | None) -> None:
-            nonlocal phase, last_update
-            downloading = label == "Downloading engine"
-            if label != phase:
-                phase = label
-                console.print(label, markup=False)
-                display.update(task, visible=downloading)
-                display.refresh()
-            if not downloading:
-                return
-            display.update(
-                task,
-                completed=completed,
-                total=total,
-                refresh=total is not None and completed == total,
-            )
-            now = time.monotonic()
-            if not console.is_terminal and (
-                now - last_update >= 10 or (total is not None and completed == total)
-            ):
-                amount = f"Downloaded {completed / 1_000_000:.1f} MB"
-                if total is not None:
-                    amount += f" / {total / 1_000_000:.1f} MB ({completed / total:.0%})"
-                console.print(amount, markup=False)
-                last_update = now
-
-        binary = install(backend.value, name=name, force=force, progress=report)
+    with _transfer_progress() as report:
+        binary = install(
+            backend.value,
+            name=name,
+            force=force,
+            progress=lambda label, completed, total: report(
+                label, completed, total, label == "Downloading engine"
+            ),
+        )
     print(binary)
 
 
@@ -669,30 +715,129 @@ def provider_app(name: str, label: str) -> typer.Typer:
 
     @group.command("models")
     def list_models(json_output: JsonOutput = False) -> None:
-        """List the model files stored for serving."""
+        """List the model files stored for serving, with sizes and catalogue ids."""
         stored = remote_provider(name).models()
+        ids: dict[str, str | None] = {}
+        for main, entry in stored_entries(_catalogue()).items():
+            for file in (main, *companion_names(entry)):
+                ids.setdefault(file, entry.get("id"))
         if json_output:
-            rows = [{"name": m.name, "size_bytes": m.size_bytes} for m in stored]
+            rows = [
+                {
+                    "name": m.name,
+                    "size_bytes": m.size_bytes,
+                    "catalogue_id": ids.get(m.name),
+                }
+                for m in stored
+            ]
             print(json.dumps(rows, indent=2))
         elif not stored:
             typer.echo(f"No models are stored on {label}.")
         else:
             for m in stored:
-                typer.echo(f"{m.name}  {m.size_bytes / 1e9:.1f} GB")
+                catalogue_id = ids.get(m.name)
+                typer.echo(
+                    f"{m.name}  {m.size_bytes / 1e9:.1f} GB"
+                    + (f"  {catalogue_id}" if catalogue_id else "")
+                )
+
+    @group.command("download")
+    def download_model(
+        model: Annotated[
+            str, typer.Argument(help="The catalogue id, as in `lllm2 launch --model`.")
+        ],
+    ) -> None:
+        """Download a catalogue model and its companion files into the store.
+
+        The download runs inside the provider, so no weights pass through this
+        machine. A stored model downloads nothing. Press Ctrl-C to cancel; the
+        partial download stays in the store and a rerun resumes it.
+
+        Example: lllm2 modal download qwen3-8b
+        """
+        catalogue = _catalogue()
+        entry = _catalogue_choice(model, catalogue)
+        if entry is None:
+            raise ValueError(
+                f"Unknown catalogue id: {model}."
+                + _close_matches(model, (e["id"] for e in catalogue if e.get("id")))
+            )
+        source = catalogue_source(entry)
+        provider = remote_provider(name)
+        cancel = threading.Event()
+        reported = False
+
+        def progress(update) -> None:
+            nonlocal reported
+            reported = True
+            report(
+                f"Downloading {update.file} inside {label}",
+                update.done_bytes,
+                update.total_bytes,
+                True,
+            )
+
+        def stop(*_) -> None:
+            cancel.set()
+
+        handlers = {
+            sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)
+        }
+        try:
+            with _transfer_progress() as report:
+                provider.ensure_model(source, progress, cancel)
+        except Cancelled:
+            typer.echo(
+                f"Cancelled. The partial download stays on {label}; "
+                f"rerun `{command} download {entry['id']}` to resume.",
+                err=True,
+            )
+            raise typer.Exit(130) from None
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        if reported:
+            typer.echo(f"Stored {source.name} on {label}.")
+        else:
+            typer.echo(
+                f"{source.name} is already stored on {label}; nothing downloaded."
+            )
 
     @group.command("remove")
     def remove_model(
-        model: Annotated[str, typer.Argument(help="The name that `models` prints.")],
+        model: Annotated[
+            str,
+            typer.Argument(help="A catalogue id, or the name that `models` prints."),
+        ],
     ) -> None:
-        """Delete a stored model file, unless a running call serves it."""
+        """Delete a stored model with its companion files, unless a call serves it.
+
+        Example: lllm2 modal remove qwen3-8b
+        """
+        catalogue = _catalogue()
+        entries = stored_entries(catalogue)
         provider = remote_provider(name)
-        users = model_users(describe_calls(provider), model)
+        entry = _catalogue_choice(model, catalogue)
+        if entry is not None:
+            stored = catalogue_source(entry).name
+        else:
+            stored = model
+            entry = entries.get(model)
+            names = [] if entry else [m.name for m in provider.models()]
+            if entry is None and model not in names:
+                raise ValueError(
+                    f"No catalogue id or stored model named {model} on {label}."
+                    + _close_matches(
+                        model, [e["id"] for e in catalogue if e.get("id")] + names
+                    )
+                )
+        users = model_users(describe_calls(provider), stored)
         if users:
             raise ValueError(
-                f"Serve call {', '.join(users)} uses {model}. Stop it with `{command} stop` first."
+                f"Serve call {', '.join(users)} uses {stored}. Stop it with `{command} stop` first."
             )
-        provider.remove_model(model)
-        typer.echo(f"Removed {model} from {label}.")
+        provider.remove_model(stored, companion_names(entry) if entry else ())
+        typer.echo(f"Removed {stored} from {label}.")
 
     return group
 

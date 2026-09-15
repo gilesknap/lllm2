@@ -228,6 +228,25 @@ def test_chat_template_file_is_sent_with_the_call(model, providers, engines, tmp
     assert provider.spawned[0]["files"] == {"chat.jinja": "{{ messages }}"}
 
 
+def test_local_weights_are_never_uploaded(model, providers, engines, tmp_path):
+    weights = b"GGUF" + os.urandom(1 << 20)
+    Path(model).write_bytes(weights)
+    template = tmp_path / "chat.jinja"
+    template.write_text("{{ messages }}")
+    provider = providers()
+    engines(provider).start(
+        Settings(model=model, chat_template=str(template)), threading.Event(), 30
+    )
+    (spawned,) = provider.spawned
+    # Only small text templates travel with the call; the model stays in the store.
+    assert spawned["files"] == {"chat.jinja": "{{ messages }}"}
+    argv = spawned["argv"]
+    assert argv[argv.index("--model") + 1] == "/volume/example/model.gguf"
+    assert provider.downloads == ["example/model.gguf"]
+    stored = tmp_path / "remote" / "volume" / "example" / "model.gguf"
+    assert stored.read_bytes() != weights
+
+
 def test_model_outside_the_managed_directory_is_rejected(model, providers, engines):
     provider = providers()
     engine = engines(provider)

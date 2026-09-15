@@ -255,11 +255,16 @@ class RemoteProvider(abc.ABC):
         """
 
     @abc.abstractmethod
-    def remove_model(self, name: str) -> None:
-        """Delete a model file from the store.
+    def remove_model(self, name: str, companions: tuple[str, ...] = ()) -> None:
+        """Delete a model file, its companion files and their partial downloads.
 
         Args:
-            name: The store-relative path.
+            name: The store-relative path of the main file.
+            companions: The store-relative paths of companion files, such as
+                a multimodal projector or split shards.
+
+        Raises:
+            ValueError: No file or partial download of the model is stored.
         """
 
     @abc.abstractmethod
@@ -410,6 +415,43 @@ def catalogue_source(entry: dict) -> ModelSource:
         files=files,
         revision=entry.get("revision"),
     )
+
+
+def companion_names(entry: dict) -> tuple[str, ...]:
+    """Return the store names of a catalogue model's files after the main file.
+
+    Args:
+        entry: A catalogue entry.
+
+    Returns:
+        The store-relative paths of companion files, such as a multimodal
+        projector or split shards.
+
+    Raises:
+        ValueError: If the entry has an unsafe directory or file path.
+    """
+    source = catalogue_source(entry)
+    directory = source.name[: -len(source.files[0])]
+    return tuple(directory + file for file in source.files[1:])
+
+
+def stored_entries(catalogue) -> dict[str, dict]:
+    """Map the store name of each catalogue model's main file to its entry.
+
+    Args:
+        catalogue: Catalogue entries.
+
+    Returns:
+        A dict from store-relative path to entry. Entries with unsafe paths
+        are left out.
+    """
+    entries = {}
+    for entry in catalogue:
+        try:
+            entries[catalogue_source(entry).name] = entry
+        except (KeyError, ValueError):
+            continue
+    return entries
 
 
 def model_source(path: str) -> ModelSource:

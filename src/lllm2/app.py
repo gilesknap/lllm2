@@ -27,7 +27,9 @@ from .remote import (
     StoreDownloads,
     catalogue_entry,
     catalogue_source,
+    companion_names,
     model_users,
+    stored_entries,
 )
 from .settings import (
     DEFAULT_IDLE_TIMEOUT_MINUTES,
@@ -202,12 +204,7 @@ class App:
         except RuntimeError as e:
             out["error"] = str(e)
             return out
-        entries = {}
-        for entry in self.catalogue.list():
-            try:
-                entries[catalogue_source(entry).name] = entry
-            except (KeyError, ValueError):
-                continue
+        entries = stored_entries(self.catalogue.list())
         names = {m.name for m in stored}
         out["stored_ids"] = [e["id"] for name, e in entries.items() if name in names]
         out["calls"] = rows
@@ -747,7 +744,9 @@ class App:
                     raise ValueError(
                         f"Serve call {', '.join(users)} uses {name}. Stop it first."
                     )
-                engine.provider.remove_model(name)
+                entry = stored_entries(self.catalogue.list()).get(name)
+                companions = companion_names(entry) if entry else ()
+                engine.provider.remove_model(name, companions)
             return self.remote_view(backend)
         raise ValueError("Unknown action")
 

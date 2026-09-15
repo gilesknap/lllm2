@@ -17,14 +17,16 @@ from unittest.mock import patch
 import pytest
 
 from fake_remote import FakeProvider, free_port
-from lllm2 import config, remote
+from lllm2 import config, modal_app, remote
 from lllm2.app import App
 from lllm2.bench import Bench
 from lllm2.catalogue import Catalogue
 from lllm2.engine import LocalEngine
+from lllm2.modal_provider import ModalProvider
 from lllm2.remote import CallRecords, StoreDownloads
 from lllm2.settings import Settings
 from lllm2.store import Store
+from test_modal_provider import META, FakeModal
 
 ENTRY = {
     "id": "example",
@@ -479,6 +481,70 @@ def test_a_served_model_cannot_be_removed(app):
             "/api/remote/models/remove",
             {"backend": "fake", "name": "example/model.gguf"},
         )
+
+
+@pytest.fixture
+def modal_client(providers):
+    """Register the Modal provider over a fake ``modal`` module."""
+    fake = FakeModal()
+    with patch.dict(
+        remote.PROVIDERS,
+        {"modal": lambda: ModalProvider(fake, poll_interval=0, deploy=lambda: None)},
+    ):
+        yield fake
+
+
+def test_modal_client_lists_downloads_and_removes_volume_models(app, modal_client):
+    entry = dict(ENTRY, mmproj="mmproj.gguf")
+    fake = modal_client
+
+    def download(name, repo, files, revision):
+        assert (name, repo, files) == (
+            "example/model.gguf",
+            "fake/example-GGUF",
+            ["model.gguf", "mmproj.gguf"],
+        )
+
+        def poll(call):
+            fake.state.put(
+                modal_app.download_key(call.object_id),
+                {"file": files[-1], "done_bytes": 1000, "total_bytes": 4000},
+            )
+            if not call.pending:
+                fake.store.files.update({f"example/{f}": 4000 for f in files})
+
+        return {"pending": 3, "result": dict(META), "on_poll": poll}
+
+    fake.behaviour["download"] = download
+    request = {"backend": "modal", "id": "example"}
+    with (
+        patch.object(Catalogue, "list", lambda self: [dict(entry)]),
+        patch.object(Catalogue, "get", lambda self, id: dict(entry)),
+    ):
+        view = app.action("/api/remote", {"backend": "modal"})
+        assert (view["error"], view["models"], view["stored_ids"]) == (None, [], [])
+        row = app.action("/api/remote/download", request)
+        assert (row["id"], row["store"]) == ("modal:example", "modal")
+        assert eventually(lambda: app.store_downloads.rows()[0]["state"] == "complete")
+        # Progress from the download container reached the downloads area.
+        (row,) = app.store_downloads.rows()
+        assert row["file"] == "mmproj.gguf" and row["detail"] == "Stored in modal"
+        view = app.action("/api/remote", {"backend": "modal"})
+        assert view["stored_ids"] == ["example"]
+        assert [(m["name"], m["size_bytes"]) for m in view["models"]] == [
+            ("example/mmproj.gguf", 4000),
+            ("example/model.gguf", 4000),
+        ]
+        # A second download of a complete model starts no download call.
+        app.action("/api/remote/download", request)
+        assert eventually(lambda: app.store_downloads.rows()[0]["state"] == "complete")
+        assert len(fake.calls) == 1
+        view = app.action(
+            "/api/remote/models/remove",
+            {"backend": "modal", "name": "example/model.gguf"},
+        )
+    assert view["models"] == [] and view["stored_ids"] == []
+    assert fake.store.files == {}
 
 
 def test_missing_client_or_credentials_give_a_clear_message(app):

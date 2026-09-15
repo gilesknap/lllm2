@@ -450,6 +450,104 @@ def test_remove_model_deletes_the_file_and_its_partial_download(fake, provider):
         provider.remove_model("../escape.gguf")
 
 
+def test_remove_model_deletes_companions_and_a_partial_only_model(fake, provider):
+    fake.store.files.update(
+        {
+            "G/g.gguf": 10,
+            "G/mmproj.gguf": 2,
+            "G/mmproj.gguf.part": 1,
+            "P/p.gguf.part": 4,
+            "K/k.gguf": 9,
+        }
+    )
+    fake.state.put(modal_app.meta_key("G/g.gguf"), {"size": 10, "meta": META})
+    provider.remove_model("G/g.gguf", ("G/mmproj.gguf",))
+    # A cancelled download leaves only a partial file, which remove also deletes.
+    provider.remove_model("P/p.gguf")
+    assert fake.store.files == {"K/k.gguf": 9}
+    assert provider.stored_metadata("G/g.gguf") is None
+    for name, companions in (
+        ("K/k.gguf", ("../escape.gguf",)),
+        ("/K/k.gguf", ()),
+        ("K/../K/k.gguf", ()),
+        ("K/k.gguf", ("/etc/passwd",)),
+    ):
+        with pytest.raises(ValueError, match="Unsafe"):
+            provider.remove_model(name, companions)
+    assert fake.store.files == {"K/k.gguf": 9}
+
+
+def _values(value):
+    """Yield every leaf value, key included, of nested call arguments."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _values(key)
+            yield from _values(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            yield from _values(item)
+    else:
+        yield value
+
+
+def test_the_provider_never_uploads_model_files(fake, provider):
+    source = ModelSource("M/m.gguf", "org/repo", ("m.gguf", "mmproj.gguf"))
+
+    def download(*_args):
+        def poll(call):
+            if not call.pending:
+                fake.store.files.update({"M/m.gguf": 10**9, "M/mmproj.gguf": 10**8})
+
+        return {"pending": 1, "result": dict(META), "on_poll": poll}
+
+    fake.behaviour["download"] = download
+    fake.behaviour["serve"] = lambda *args: {"pending": 10**6}
+    provider.ensure_model(source, lambda update: None, threading.Event())
+    provider.spawn(
+        "T4",
+        ["llama-server", "--model", provider.model_path(source.name)],
+        "key",
+        {},
+        {"chat.jinja": "{{ messages }}"},
+    )
+    download_call, serve_call = fake.calls.values()
+    # The download names the Hugging Face files; the container fetches them.
+    assert download_call.args == ("M/m.gguf", "org/repo", list(source.files), None)
+    assert serve_call.args[3] == {"chat.jinja": "{{ messages }}"}
+    for call in (download_call, serve_call):
+        for value in _values(call.args):
+            assert not isinstance(value, bytes | bytearray | memoryview)
+            assert not isinstance(value, str) or len(value) < 4096
+
+
+def test_fetch_model_requests_nothing_when_every_file_is_complete(
+    tmp_path, monkeypatch
+):
+    directory = tmp_path / "M"
+    directory.mkdir()
+    for file in ("m.gguf", "mmproj.gguf"):
+        (directory / file).write_bytes(GGUF)
+
+    def opener(*_args, **_kwargs):
+        raise AssertionError("a complete file must not be downloaded again")
+
+    monkeypatch.setattr(modal_app.discovery, "metadata", lambda path: dict(META))
+    updates, commits = [], []
+    meta = modal_app.fetch_model(
+        "M/m.gguf",
+        "org/repo",
+        ["m.gguf", "mmproj.gguf"],
+        None,
+        lambda *update: updates.append(update),
+        lambda: commits.append(1),
+        root=str(tmp_path),
+        opener=opener,
+    )
+    assert meta == META
+    size = len(GGUF)
+    assert updates == [("m.gguf", size, size), ("mmproj.gguf", size, size)]
+
+
 def test_serve_call_lifecycle(fake, provider):
     fake.behaviour["serve"] = lambda argv, key, env, files: {"pending": 10**6}
     fake.state.put(modal_app.download_key("fc-other"), {"file": "x"})
