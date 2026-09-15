@@ -713,7 +713,12 @@ function renderCombinations(){
  $('combos').textContent=combinations.length?combinations.map((s,i)=>`${i+1}. ${modelName(s.model)} · ${s.speculation} / ${cacheLabel(s)} / flash ${s.flash} / effort ${s.effort} / draft ${s.draft_length}`).join('\n'):'No combinations selected. Add the current settings to begin.';
  launchState();
 }
-$('add-combo').onclick=()=>{combinations.push(structuredClone(settings()));renderCombinations();};
+$('add-combo').onclick=()=>{
+ const current=settings();
+ // An identical configuration would only repeat the same benchmark.
+ if(combinations.some(s=>sameSettings(s,current))){message('These settings are already in Configurations to compare.');return;}
+ combinations.push(structuredClone(current));renderCombinations();
+};
 $('clear-combos').onclick=()=>{combinations=[];renderCombinations();};
 let contextChoice='tested';
 function headroomControl(r,key){
