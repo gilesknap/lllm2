@@ -423,6 +423,16 @@ def test_long_stream_holds_off_the_idle_timer(model, providers, engines, clock):
     )
     assert final["stop"] is True and len(events) == 26
     assert engine.alive()
+
+    def countdown_started():
+        # The proxy ends the request just after the client reads the final
+        # event. Until then the countdown stays full however far the clock
+        # moves; afterwards one step shortens it.
+        clock.advance(1)
+        return engine.status()["idle_remaining_seconds"] < 60
+
+    assert eventually(countdown_started)
+    assert engine.alive()
     clock.advance(60)
     assert eventually(lambda: not engine.alive())
 
