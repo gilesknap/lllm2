@@ -4,7 +4,7 @@ const optionalNumbers=['gpu_layers','batch_size','ubatch_size','cache_ram_mib','
 const optionalCache=['cache_k','cache_v'];
 const cachePair=s=>[s.cache_k||s.cache,s.cache_v||s.cache];
 const cacheLabel=s=>{const [k,v]=cachePair(s);return `K ${k} / V ${v}`;};
-const settingValue=(s,k)=>optionalNumbers.includes(k)||optionalCache.includes(k)?s[k]??null:k==='backend_sampling'?s[k]??false:k==='cuda_graph_opt'?s[k]??'default':s[k];
+const settingValue=(s,k)=>optionalNumbers.includes(k)||optionalCache.includes(k)?s[k]??null:k==='backend_sampling'?s[k]??false:k==='cuda_graph_opt'?s[k]??'default':k==='gpu_type'?s[k]??'':s[k];
 // Shared launch and feature copy; help buttons stay outside labels.
 const launchHelp={
  model:['Installed checkpoint','The GGUF file contains the model weights. Size and precision affect memory, speed and answers. Keep the recommended checkpoint unless comparing models.'],
