@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -81,8 +82,13 @@ def fake_modal(state):
 
 
 def flat(text):
-    """Join help text that the terminal renderer wrapped inside a box."""
-    return " ".join(text.replace("│", " ").split())
+    """Join help text that the terminal renderer wrapped and styled.
+
+    Typer forces styled output when GITHUB_ACTIONS is set, so the ANSI codes
+    are removed before joining.
+    """
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+    return " ".join(plain.replace("│", " ").split())
 
 
 class CliTests(unittest.TestCase):
