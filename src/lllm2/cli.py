@@ -28,12 +28,13 @@ from .defaults import starting_defaults
 from .discovery import CATALOG, engines
 from .engine import Cancelled
 from .engine_install import install, provenance
-from .gpu_tables import gpu_types, pricing_caveat
+from .gpu_tables import GPU_TABLES, gpu_type, gpu_types, pricing_caveat
 from .harness import run_harness
 from .launch import choose_launch, installed_models
 from .remote import (
     PROVIDERS,
     CallRecords,
+    ProbeCache,
     describe_calls,
     model_users,
     remote_provider,
@@ -211,6 +212,28 @@ def _print_remote_launch(settings: Settings, state: dict) -> None:
         print(
             "Idle timeout disabled: the GPU bills until you press Ctrl-C.", flush=True
         )
+
+
+def _gpu_choice(provider: str, gpu: str):
+    """Return a provider's GPU table entry, naming the valid types on a miss.
+
+    Args:
+        provider: The provider name.
+        gpu: The GPU type string.
+
+    Returns:
+        The ``GpuType`` entry.
+
+    Raises:
+        ValueError: The provider's table has no such GPU type.
+    """
+    try:
+        return gpu_type(provider, gpu)
+    except ValueError:
+        names = ", ".join(g.name for g in gpu_types(provider))
+        raise ValueError(
+            f"Unknown {provider} GPU type: {gpu}. Choose one of: {names}."
+        ) from None
 
 
 def _launch_backend(value: str) -> str:
@@ -444,7 +467,8 @@ def launch(
     gpu: Annotated[
         str,
         typer.Option(
-            help="Remote GPU type, such as T4 or L40S; required with a remote backend."
+            help="Remote GPU type, such as T4 or L40S; required with a remote backend. "
+            + " ".join(pricing_caveat(p) for p in GPU_TABLES)
         ),
     ] = "",
     idle_timeout: Annotated[
@@ -496,30 +520,92 @@ def provider_app(name: str, label: str) -> typer.Typer:
         label: The provider name for messages.
 
     Returns:
-        A Typer group with setup, list, stop, models and remove commands.
+        A Typer group with setup, probe, list, stop, models and remove commands.
     """
     command = f"lllm2 {name}"
+    caveat = pricing_caveat(name)
     group = typer.Typer(
-        help=f"Set up {label}, and list or stop lllm2 serve calls and stored models there.",
+        help=f"Set up {label}, probe a GPU type, and list or stop lllm2 serve calls and stored models there.",
         no_args_is_help=True,
     )
 
     @group.command("setup")
     def setup() -> None:
-        """Verify credentials, deploy the lllm2 app and print its version."""
-        version = remote_provider(name).setup()
-        typer.echo(
-            f"{label} credentials work."
-            + (f" Deployed lllm2 app version {version}." if version else "")
-        )
+        """Verify credentials and deploy the lllm2 app unless it is current.
 
-    @group.command("list")
-    def list_calls(json_output: JsonOutput = False) -> None:
-        """List running lllm2 serve calls with owner, elapsed time and cost.
-
-        A call that no running lllm2 session owns is an orphan that bills
-        until you stop it.
+        Rerunning changes nothing when this lllm2 version is already deployed.
         """
+        deployment = remote_provider(name).setup()
+        message = f"{label} credentials work."
+        if deployment.version and deployment.deployed:
+            message += f" Deployed lllm2 app version {deployment.version}."
+        elif deployment.version:
+            message += f" lllm2 app version {deployment.version} is already deployed; nothing changed."
+        typer.echo(message)
+
+    @group.command(
+        "probe",
+        help=f"Start a short, billed {label} GPU container on a GPU type and print "
+        "the GPU name, VRAM, engine devices and engine sha256. Later launches and "
+        f"validation use the saved result. {caveat}",
+    )
+    def probe(
+        # A default value, not Annotated: postponed annotations cannot see
+        # this function's enclosing variables.
+        gpu: str = typer.Option(
+            ...,
+            help=f"The {label} GPU type: "
+            + ", ".join(g.name for g in gpu_types(name))
+            + ".",
+        ),
+        json_output: Annotated[
+            bool, typer.Option("--json", help="Print the probe record as JSON.")
+        ] = False,
+    ) -> None:
+        """Run the probe function on one GPU type."""
+        entry = _gpu_choice(name, gpu)
+        provider = remote_provider(name)
+        result = provider.probe(entry.name)
+        engine = result.engine
+        saved = config.STATE_DIR / "remote-probes.json"
+        try:
+            ProbeCache(saved).put(provider.name, entry.name, result)
+        except OSError as error:
+            typer.echo(f"Could not save the probe to {saved}: {error}", err=True)
+        if json_output:
+            record = {
+                "gpu_type": entry.name,
+                "name": result.name,
+                "total_mib": result.total_mib,
+                "engine": {k: v for k, v in engine.items() if k != "help"},
+            }
+            print(json.dumps(record, indent=2))
+            return
+        typer.echo(f"GPU type: {entry.name}")
+        typer.echo(f"GPU: {result.name}")
+        typer.echo(
+            f"VRAM: {result.total_mib} MiB ({result.total_mib / 1024:.1f} GiB); "
+            f"table figure {entry.vram_gb} GB"
+        )
+        typer.echo(
+            f"Engine devices: {', '.join(engine.get('devices') or []) or 'none'}"
+        )
+        typer.echo(f"Engine sha256: {engine.get('sha256') or 'unknown'}")
+        version = (engine.get("version") or "").strip().splitlines()
+        if version:
+            typer.echo(f"Engine version: {version[-1]}")
+        if engine.get("error"):
+            typer.echo(f"Engine error: {engine['error']}", err=True)
+        typer.echo(f"Estimated cost: ${entry.usd_per_hour:.2f} per hour. {caveat}")
+
+    @group.command(
+        "list",
+        help="List running lllm2 serve calls with owner, elapsed time and cost.\n\n"
+        "A call that no running lllm2 session owns is an orphan that bills until "
+        f"you stop it. {caveat}",
+    )
+    def list_calls(json_output: JsonOutput = False) -> None:
+        """List running lllm2 serve calls."""
         provider = remote_provider(name)
         rows = describe_calls(provider)
         if json_output:

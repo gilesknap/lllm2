@@ -8,6 +8,7 @@ from lllm2.gpu_tables import (
     GpuType,
     gpu_type,
     gpu_types,
+    pricing_caveat,
     register_gpu_table,
     table_hardware,
 )
@@ -69,6 +70,15 @@ class GpuTableTests(unittest.TestCase):
                 self.assertGreater(entry.total_mib, entry.vram_gb * 900)
                 self.assertAlmostEqual(entry.vram_gib, entry.total_mib / 1024, 0)
                 self.assertGreater(entry.usd_per_hour, 0)
+
+    def test_every_table_entry_has_vram_price_and_a_pricing_caveat(self):
+        for provider, table in GPU_TABLES.items():
+            self.assertIn("check current", pricing_caveat(provider).lower())
+            for entry in table:
+                with self.subTest(provider=provider, gpu=entry.name):
+                    self.assertGreater(entry.vram_gb, 0)
+                    self.assertGreater(entry.total_mib, 0)
+                    self.assertGreater(entry.usd_per_hour, 0)
 
     def test_unknown_provider_or_gpu_type_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unknown GPU provider"):

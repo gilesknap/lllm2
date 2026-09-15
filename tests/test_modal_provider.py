@@ -1,10 +1,14 @@
 """The Modal provider and app functions, with a fake ``modal`` module."""
 
 import dis
+import hashlib
 import io
+import json
+import os
 import struct
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import urllib.request
@@ -13,12 +17,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from lllm2 import config, modal_app
+from lllm2 import config, discovery, engine_install, modal_app
 from lllm2.engine import Cancelled
+from lllm2.engine_release import CUDA_TRACKS, LLAMA_CPP_REF, asset_name
 from lllm2.gpu_tables import pricing_caveat
 from lllm2.modal_provider import ModalProvider
 from lllm2.proxy import Upstream
 from lllm2.remote import (
+    Deployment,
     DownloadProgress,
     GpuProbe,
     ModelSource,
@@ -130,6 +136,11 @@ class FakeFunction:
     def with_options(self, *, gpu=None):
         return FakeFunction(self.modal, self.name, gpu)
 
+    def hydrate(self):
+        if self.modal.lookup_error is not None:
+            raise self.modal.lookup_error
+        return self
+
     def remote(self, *args):
         self.modal.remote_calls.append((self.name, self.gpu, args))
         return self.modal.behaviour[self.name](*args)
@@ -159,6 +170,7 @@ class FakeModal:
         self.state, self.queue, self.store = FakeDict(), FakeQueue(), FakeVolume()
         self.calls, self.remote_calls = {}, []
         self.behaviour = {}
+        self.lookup_error = None
         self.Dict = SimpleNamespace(from_name=lambda name, **_: self.state)
         self.Queue = SimpleNamespace(from_name=lambda name, **_: self.queue)
         self.Volume = SimpleNamespace(from_name=lambda name, **_: self.store)
@@ -230,8 +242,88 @@ def test_app_deploys_on_first_use_and_after_a_code_change(fake, deploys, monkeyp
     first.probe("L4")
     assert deploys == [1]
     monkeypatch.setattr(modal_app, "deployment_version", lambda: "1.1+def")
-    assert ModalProvider(fake, deploy=lambda: deploys.append(1)).setup() == "1.1+def"
+    assert ModalProvider(fake, deploy=lambda: deploys.append(1)).setup() == Deployment(
+        "1.1+def", True
+    )
     assert deploys == [1, 1]
+
+
+def test_setup_rerun_does_not_redeploy(fake, provider, deploys):
+    first = provider.setup()
+    assert first == Deployment(fake.state[modal_app.DEPLOYMENT_KEY], True)
+    assert provider.setup() == Deployment(first.version, False)
+    rerun = ModalProvider(fake, deploy=lambda: deploys.append(1)).setup()
+    assert rerun == Deployment(first.version, False)
+    assert deploys == [1]
+
+
+def test_setup_redeploys_an_app_deleted_outside_lllm2(fake, provider, deploys):
+    first = provider.setup()
+    fake.lookup_error = NotFoundError("app not found")
+    rerun = ModalProvider(fake, deploy=lambda: deploys.append(1)).setup()
+    assert rerun == Deployment(first.version, True)
+    assert deploys == [1, 1]
+
+
+def test_setup_reports_a_failed_app_lookup(fake, provider, deploys):
+    provider.setup()
+    fake.lookup_error = Error("service unavailable")
+    with pytest.raises(RuntimeError, match="service unavailable"):
+        ModalProvider(fake, deploy=lambda: deploys.append(1)).setup()
+    assert deploys == [1]
+
+
+def test_probe_hashes_the_binary_that_a_local_install_hashes(tmp_path, monkeypatch):
+    """The image and a local install unpack the same tarball to the same sha256."""
+    server = b"#!/bin/sh\nexit 0\n"
+    metadata = {
+        "requested_ref": LLAMA_CPP_REF,
+        "cuda_track": CUDA_TRACKS["13"],
+        "lllm2_version": "0.3.0",
+        "backend": "cuda",
+        "architecture": "x86_64",
+        "glibc": "2.28",
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        for name, data in {
+            "./llama-server": server,
+            "./lllm2-engine.json": json.dumps(metadata).encode(),
+            "./libggml-cuda.so": b"library",
+        }.items():
+            member = tarfile.TarInfo(name)
+            member.size, member.mode = len(data), 0o755
+            bundle.addfile(member, io.BytesIO(data))
+    archive = buffer.getvalue()
+    checksum = f"{hashlib.sha256(archive).hexdigest()}  {asset_name('13')}\n"
+
+    def download(url, destination, **_kwargs):
+        destination.write_bytes(checksum.encode() if url == "checksum" else archive)
+
+    monkeypatch.setattr(
+        engine_install, "_release_asset_urls", lambda _asset: ("archive", "checksum")
+    )
+    monkeypatch.setattr(engine_install, "_download", download)
+    monkeypatch.setattr(engine_install, "cuda_track", lambda: "13")
+    monkeypatch.setattr(engine_install.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(engine_install.platform, "machine", lambda: "x86_64")
+    local = engine_install.install("cuda", root=tmp_path / "local")
+    image = tmp_path / "image"
+    # The image build installs each track without a driver, as install_engines does.
+    engine_install.install("cuda", track="13", root=image, check_startup=False)
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    smi = tools / "nvidia-smi"
+    smi.write_text("#!/bin/sh\necho 'NVIDIA L4, 23034'\n")
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
+
+    probed = modal_app.probe_container(modal_app.engine_binary(str(image)))
+
+    expected = hashlib.sha256(server).hexdigest()
+    assert discovery.probe(local)["sha256"] == expected
+    assert probed["engine"]["sha256"] == expected
+    assert (probed["name"], probed["total_mib"]) == ("NVIDIA L4", 23034)
 
 
 def test_a_deleted_app_is_redeployed(fake, provider, deploys):

@@ -47,6 +47,21 @@ RECORD_GRACE_SECONDS = 120
 
 
 @dataclass(frozen=True)
+class Deployment:
+    """What ``RemoteProvider.setup`` prepared.
+
+    Attributes:
+        version: The deployed code version, or an empty string when the
+            provider deploys nothing.
+        deployed: True when this call deployed, False when the deployment
+            was already current.
+    """
+
+    version: str = ""
+    deployed: bool = False
+
+
+@dataclass(frozen=True)
 class GpuProbe:
     """What a provider's probe found in a container with one GPU type.
 
@@ -174,16 +189,17 @@ class RemoteProvider(abc.ABC):
     server_port: int = 8080
     engine_path: str = "llama-server"
 
-    def setup(self) -> str:
+    def setup(self) -> Deployment:
         """Check the credentials and prepare the provider account for lllm2.
 
-        Providers that deploy code, such as Modal, deploy it here. The default
-        does nothing.
+        Providers that deploy code, such as Modal, deploy it here when the
+        deployment is missing or out of date. A repeat call changes nothing.
+        The default does nothing.
 
         Returns:
-            A version string for the prepared deployment, or an empty string.
+            The deployed version and whether this call deployed it.
         """
-        return ""
+        return Deployment()
 
     def stored_metadata(self, name: str) -> dict | None:
         """Return cached GGUF metadata for a stored model without downloading.

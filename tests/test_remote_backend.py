@@ -462,7 +462,7 @@ class TestOwnership:
 
 class SetupProvider(FakeProvider):
     def setup(self):
-        return "1.2.3-fake"
+        return remote.Deployment("1.2.3-fake", True)
 
 
 @pytest.fixture
@@ -482,6 +482,21 @@ def modal_cli(state, other_session):
 
 def invoke(*args):
     return CliRunner().invoke(cli.app, ["modal", *args])
+
+
+def test_a_cli_probe_feeds_later_validation_without_a_container(
+    provider, engines, no_local_gpu
+):
+    probe = CliRunner().invoke(
+        cli.provider_app("fake", "Fake"), ["probe", "--gpu", "FAKE-24"]
+    )
+    assert probe.exit_code == 0, probe.output
+    assert provider.probes == ["FAKE-24"]
+    s = remote_settings()
+    engine = make_engine(provider, engines)
+    assert engine.hardware(s)["gpus"][0]["name"] == "Fake GPU 24GB (probed)"
+    assert engine.probe(s)["sha256"] == ENGINE["sha256"]
+    assert provider.probes == ["FAKE-24"]
 
 
 def test_modal_setup_prints_the_deployed_version(modal_cli):

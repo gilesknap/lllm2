@@ -1,16 +1,78 @@
 import contextlib
 import io
 import json
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 from typer.testing import CliRunner
 
-from lllm2 import cli, config
+from lllm2 import cli, config, modal_app
+from lllm2.modal_provider import ModalProvider
+from lllm2.remote import GpuProbe, ProbeCache
 from lllm2.settings import Settings
 from lllm2.store import Store
+
+REMOTE_COMMANDS = (
+    ["setup"],
+    ["probe", "--gpu", "T4"],
+    ["list"],
+    ["models"],
+    ["stop", "--all"],
+    ["remove", "A/a.gguf"],
+)
+
+
+class ModalError(Exception):
+    pass
+
+
+class AuthError(ModalError):
+    pass
+
+
+class NotFoundError(ModalError):
+    pass
+
+
+class Refusing:
+    """A Modal object whose every method fails authentication."""
+
+    def __getattr__(self, name):
+        def refuse(*_args, **_kwargs):
+            raise AuthError("Token missing")
+
+        return refuse
+
+
+class StateDict(dict):
+    def put(self, key, value):
+        self[key] = value
+
+
+def fake_modal(state):
+    """Build the parts of the ``modal`` module that setup and listing touch."""
+    return SimpleNamespace(
+        exception=SimpleNamespace(
+            Error=ModalError, AuthError=AuthError, NotFoundError=NotFoundError
+        ),
+        volume=SimpleNamespace(FileEntryType=SimpleNamespace(FILE=1)),
+        Dict=SimpleNamespace(from_name=lambda *_a, **_k: state),
+        Queue=SimpleNamespace(from_name=lambda *_a, **_k: Refusing()),
+        Volume=SimpleNamespace(from_name=lambda *_a, **_k: Refusing()),
+        Function=SimpleNamespace(
+            from_name=lambda *_a, **_k: SimpleNamespace(hydrate=lambda: None)
+        ),
+        FunctionCall=Refusing(),
+    )
+
+
+def flat(text):
+    """Join help text that the terminal renderer wrapped inside a box."""
+    return " ".join(text.replace("│", " ").split())
 
 
 class CliTests(unittest.TestCase):
@@ -349,6 +411,95 @@ class CliTests(unittest.TestCase):
                     run.assert_called_once_with(
                         name, args[1:] if args[0] == "--" else args
                     )
+
+
+class ModalCliTests(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+        state = TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        patcher = patch.object(config, "STATE_DIR", Path(state.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def main(self, args):
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            code = cli.main(["modal", *args])
+        return code, errors.getvalue()
+
+    def test_remote_commands_name_the_extra_when_modal_is_missing(self):
+        with patch.dict(sys.modules, {"modal": None}):
+            for args in REMOTE_COMMANDS:
+                with self.subTest(args=args):
+                    code, errors = self.main(args)
+                    self.assertEqual(code, 2)
+                    self.assertIn("pip install 'lllm2[modal]'", errors)
+
+    def test_remote_commands_point_at_setup_without_credentials(self):
+        def provider():
+            return ModalProvider(fake_modal(Refusing()), deploy=AssertionError)
+
+        with patch("lllm2.modal_provider.create_provider", side_effect=provider):
+            for args in REMOTE_COMMANDS:
+                with self.subTest(args=args):
+                    code, errors = self.main(args)
+                    self.assertEqual(code, 2)
+                    self.assertIn("modal token new", errors)
+                    self.assertIn("lllm2 modal setup", errors)
+
+    def test_setup_deploys_once_and_a_rerun_says_nothing_changed(self):
+        state, deploys = StateDict(), []
+        with (
+            patch.object(modal_app, "deployment_version", return_value="1.0+abc"),
+            patch(
+                "lllm2.modal_provider.create_provider",
+                side_effect=lambda: ModalProvider(
+                    fake_modal(state), deploy=lambda: deploys.append(1)
+                ),
+            ),
+        ):
+            first = self.runner.invoke(cli.app, ["modal", "setup"])
+            rerun = self.runner.invoke(cli.app, ["modal", "setup"])
+        self.assertEqual(first.exit_code, 0, first.output)
+        self.assertIn("Deployed lllm2 app version 1.0+abc.", first.output)
+        self.assertEqual(rerun.exit_code, 0, rerun.output)
+        self.assertIn("1.0+abc is already deployed; nothing changed.", rerun.output)
+        self.assertEqual(deploys, [1])
+
+    def test_probe_prints_the_gpu_and_engine_and_saves_the_probe(self):
+        digest = "ab" * 32
+        found = GpuProbe(
+            "NVIDIA L4",
+            23034,
+            {"devices": ["CUDA0"], "sha256": digest, "version": "version: 1 (x)"},
+        )
+        provider = MagicMock()
+        provider.name = "modal"
+        provider.probe.return_value = found
+        with patch.object(cli, "remote_provider", return_value=provider):
+            result = self.runner.invoke(cli.app, ["modal", "probe", "--gpu", "L4"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        provider.probe.assert_called_once_with("L4")
+        for text in ("GPU: NVIDIA L4", "VRAM: 23034 MiB", "CUDA0", digest):
+            self.assertIn(text, result.output)
+        self.assertIn("Check current Modal pricing", flat(result.output))
+        saved = ProbeCache(config.STATE_DIR / "remote-probes.json")
+        self.assertEqual(saved.get("modal", "L4"), found)
+
+    def test_probe_rejects_an_unknown_gpu_type_before_contacting_modal(self):
+        with patch.object(cli, "remote_provider") as provider:
+            code, errors = self.main(["probe", "--gpu", "Z9"])
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown modal GPU type: Z9. Choose one of: T4, L4", errors)
+        provider.assert_not_called()
+
+    def test_gpu_help_shows_the_pricing_caveat(self):
+        for args in (["launch"], ["modal", "list"], ["modal", "probe"]):
+            with self.subTest(args=args):
+                result = self.runner.invoke(cli.app, [*args, "--help"])
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertIn("Check current Modal pricing", flat(result.output))
 
 
 if __name__ == "__main__":

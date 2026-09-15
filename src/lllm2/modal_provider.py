@@ -23,6 +23,7 @@ from . import modal_app
 from .engine import Cancelled
 from .proxy import Upstream
 from .remote import (
+    Deployment,
     DownloadProgress,
     GpuProbe,
     ProviderError,
@@ -120,9 +121,11 @@ class ModalProvider(RemoteProvider):
         """Check the credentials and deploy the app if it is out of date.
 
         Returns:
-            The deployed app version.
+            A ``Deployment`` with the app version, and ``deployed`` False when
+            the workspace already runs this version.
         """
-        return self._ensure_deployed()
+        deployed = self._ensure_deployed(verify=True)
+        return Deployment(self._deployed, deployed)
 
     @_translated
     def probe(self, gpu):
@@ -287,15 +290,32 @@ class ModalProvider(RemoteProvider):
                 self._forget(call_id)
         return sorted(found, key=lambda call: call.started or 0)
 
-    def _ensure_deployed(self):
+    def _ensure_deployed(self, verify=False):
+        """Deploy the app unless the workspace already runs this version.
+
+        Args:
+            verify: Look the app up in the workspace as well as reading the
+                recorded version, so an app deleted outside lllm2 redeploys.
+                A failed lookup other than "not found" raises.
+
+        Returns:
+            True when this call deployed the app.
+        """
         with self._lock:
-            if self._deployed is False:
-                version = modal_app.deployment_version()
-                if self._state.get(modal_app.DEPLOYMENT_KEY) != version:
-                    self._deploy()
-                    self._state.put(modal_app.DEPLOYMENT_KEY, version)
-                self._deployed = version
-            return self._deployed
+            if self._deployed is not False and not verify:
+                return False
+            version = modal_app.deployment_version()
+            deployed = self._state.get(modal_app.DEPLOYMENT_KEY) != version
+            if not deployed and verify:
+                try:
+                    self.modal.Function.from_name(modal_app.APP_NAME, "probe").hydrate()
+                except self.modal.exception.NotFoundError:
+                    deployed = True
+            if deployed:
+                self._deploy()
+                self._state.put(modal_app.DEPLOYMENT_KEY, version)
+            self._deployed = version
+            return deployed
 
     def _call(self, name, gpu, action):
         """Look up an app function and act on it, redeploying a missing app once."""
