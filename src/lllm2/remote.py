@@ -698,17 +698,20 @@ def pid_namespace():
         return None
 
 
-def owner_record():
+def owner_record(now=None):
     """Describe this process as the owner of a call record.
 
+    Args:
+        now: The heartbeat time in Unix seconds, or None to read the clock.
+
     Returns:
-        A dict with ``pid``, ``host``, ``pid_ns`` and a ``heartbeat`` of now.
+        A dict with ``pid``, ``host``, ``pid_ns`` and ``heartbeat``.
     """
     return {
         "pid": os.getpid(),
         "host": socket.gethostname(),
         "pid_ns": pid_namespace(),
-        "heartbeat": time.time(),
+        "heartbeat": time.time() if now is None else now,
     }
 
 
@@ -762,13 +765,17 @@ class CallRecords:
     file, so the panel and the CLI do not overwrite each other's changes.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, clock=time.time):
         """Use a record file.
 
         Args:
             path: The JSON file path. It need not exist.
+            clock: A wall clock in Unix seconds for the record grace period and
+                owner heartbeats. Tests replace it to move time without
+                sleeping.
         """
         self.path = Path(path)
+        self.clock = clock
         self._lock = threading.Lock()
 
     @contextlib.contextmanager
@@ -822,6 +829,22 @@ class CallRecords:
         with self._locked():
             return self._read().get(provider, {}).get(call_id)
 
+    def providers(self):
+        """Return the providers that have at least one call record.
+
+        Reading the file needs no provider request, so a caller can skip
+        providers with nothing to check.
+
+        Returns:
+            The provider names, sorted.
+        """
+        with self._locked():
+            return sorted(
+                name
+                for name, calls in self._read().items()
+                if isinstance(calls, dict) and calls
+            )
+
     def keep(self, provider, call_ids, grace=RECORD_GRACE_SECONDS):
         """Delete the records of calls that are no longer running.
 
@@ -833,7 +856,7 @@ class CallRecords:
             call_ids: The identifiers of the running calls.
             grace: Seconds for which a saved or refreshed record stays.
         """
-        now = time.time()
+        now = self.clock()
         running = set(call_ids)
 
         def recent(record):
@@ -894,11 +917,12 @@ class CallRecords:
                     "No saved key for this remote call, so it cannot be adopted. Stop it instead."
                 )
             owner = record.get("owner")
-            if owner_alive(owner):
+            now = self.clock()
+            if owner_alive(owner, now):
                 raise ValueError(
                     f"Another lllm2 session (pid {owner.get('pid')} on {owner.get('host')}) serves that call. Stop it there."
                 )
-            record["owner"] = owner_record()
+            record["owner"] = owner_record(now)
             self._write(data)
             return record
 
@@ -934,7 +958,7 @@ def model_users(rows, name):
     ]
 
 
-def describe_calls(provider, records=None, owned=()):
+def describe_calls(provider, records=None, owned=(), now=None):
     """List the provider's running lllm2 serve calls with their ownership.
 
     Also deletes saved records of calls that have ended, after a grace period.
@@ -943,6 +967,7 @@ def describe_calls(provider, records=None, owned=()):
         provider: The ``RemoteProvider``.
         records: The ``CallRecords``, or None for the state directory file.
         owned: The identifiers of calls that engines in this process own.
+        now: The current Unix time, or None to read the records' clock.
 
     Returns:
         A list of dicts, oldest first, with ``id``, ``gpu``, ``started`` (Unix
@@ -957,7 +982,7 @@ def describe_calls(provider, records=None, owned=()):
         records = CallRecords(config.STATE_DIR / "remote-calls.json")
     running = provider.calls()
     records.keep(provider.name, [c.id for c in running])
-    now = time.time()
+    now = records.clock() if now is None else now
     rows = []
     for call in running:
         record = records.get(provider.name, call.id) or {}
@@ -1141,15 +1166,15 @@ class StoreDownloads:
 class _Call:
     """One serve call that an engine owns, with its proxy and monitor state."""
 
-    def __init__(self, call_id, api_key, proxy, started):
+    def __init__(self, call_id, api_key, proxy, started, clock, wall_clock):
         self.id = call_id
         self.api_key = api_key
         self.proxy = proxy
-        self.started = time.monotonic() - max(0.0, time.time() - started)
+        self.started = clock() - max(0.0, wall_clock() - started)
         self.started_unix = started
         self.upstream = None
         self.done = threading.Event()
-        self.heartbeat = time.monotonic()
+        self.heartbeat = clock()
 
 
 _ENGINES: "weakref.WeakSet[RemoteEngine]" = weakref.WeakSet()
@@ -1179,12 +1204,20 @@ class RemoteEngine(Engine):
     GPU ownership and desktop checks do not apply. An idle timer stops the call
     when no request has passed through the proxy for ``idle_timeout`` seconds.
 
+    Two clocks drive the timing. ``clock`` is monotonic and times the idle
+    countdown, elapsed cost, start deadlines and heartbeat intervals.
+    ``wall_clock`` gives Unix seconds for call records, owner heartbeats and
+    orphan staleness, because other processes read those. Tests replace both
+    to move time forward without sleeping.
+
     Attributes:
         provider: The ``RemoteProvider``.
         gpu: The provider's GPU type string.
         idle_timeout: Seconds without requests before a ready engine stops
             itself, or None or 0 to disable the idle timer.
         port: The loopback port the proxy listens on.
+        clock: The monotonic clock in seconds.
+        wall_clock: The wall clock in Unix seconds.
     """
 
     def __init__(
@@ -1199,6 +1232,8 @@ class RemoteEngine(Engine):
         sources=None,
         catalogue=None,
         probes=None,
+        clock=time.monotonic,
+        wall_clock=time.time,
     ):
         """Create an engine for one provider GPU type.
 
@@ -1218,6 +1253,10 @@ class RemoteEngine(Engine):
                 sources and estimated metadata for models not yet stored.
             probes: The path of the GPU probe cache file. None uses the state
                 directory.
+            clock: A monotonic clock in seconds for the idle timer, elapsed
+                time, start deadlines and heartbeat intervals.
+            wall_clock: A clock in Unix seconds for call records, owner
+                heartbeats and orphan staleness.
         """
         super().__init__()
         self.provider = provider
@@ -1226,8 +1265,11 @@ class RemoteEngine(Engine):
         self.port = config.ENGINE_PORT if port is None else port
         self.base = f"http://127.0.0.1:{self.port}"
         self.poll_interval = poll_interval
+        self.clock = clock
+        self.wall_clock = wall_clock
         self._records = CallRecords(
-            config.STATE_DIR / "remote-calls.json" if records is None else records
+            config.STATE_DIR / "remote-calls.json" if records is None else records,
+            clock=lambda: self.wall_clock(),
         )
         self._catalogue = catalogue
         self._sources = sources or catalogue_sources(catalogue)
@@ -1455,11 +1497,11 @@ class RemoteEngine(Engine):
             The rows of ``describe_calls``.
         """
         owned = {engine.call_id for engine in list(_ENGINES)} - {None}
-        return describe_calls(self.provider, self._records, owned)
+        return describe_calls(self.provider, self._records, owned, self.wall_clock())
 
     def status(self):
         call = self._call
-        elapsed = time.monotonic() - call.started if call is not None else None
+        elapsed = self.clock() - call.started if call is not None else None
         try:
             price = gpu_type(self.provider.name, self.gpu).usd_per_hour
         except ValueError:
@@ -1545,7 +1587,9 @@ class RemoteEngine(Engine):
                 self._phase = "starting container"
                 call_id = self.provider.spawn(self.gpu, argv, api_key, env, files)
                 self.attempt_environment = self.execution_environment
-                call = _Call(call_id, api_key, proxy, time.time())
+                call = _Call(
+                    call_id, api_key, proxy, self.wall_clock(), *self._clocks()
+                )
                 proxy = None
                 self._own(call, s)
             self._serve(call, s, cancel, timeout)
@@ -1587,7 +1631,7 @@ class RemoteEngine(Engine):
                 "No saved key for this remote call, so it cannot be adopted. Stop it instead."
             )
         owner = record.get("owner")
-        if call_id != self.call_id and owner_alive(owner):
+        if call_id != self.call_id and owner_alive(owner, self.wall_clock()):
             raise ValueError(
                 f"Another lllm2 session (pid {owner.get('pid')} on {owner.get('host')}) serves that call. Stop it there."
             )
@@ -1614,7 +1658,13 @@ class RemoteEngine(Engine):
                 )
                 self.execution_environment = self.attempt_environment = None
                 self.log(f"Adopting remote call {call_id}")
-                call = _Call(call_id, record["api_key"], proxy, record["started"])
+                call = _Call(
+                    call_id,
+                    record["api_key"],
+                    proxy,
+                    record["started"],
+                    *self._clocks(),
+                )
                 self._own(call, s)
                 self._phase = "loading model"
         try:
@@ -1713,8 +1763,12 @@ class RemoteEngine(Engine):
         except Exception as e:
             self.log(f"Shutdown could not stop the remote engine: {e}")
 
+    def _clocks(self):
+        # Read the attributes at call time, so a replaced clock takes effect.
+        return (lambda: self.clock()), (lambda: self.wall_clock())
+
     def _bind_proxy(self):
-        proxy = EngineProxy(self.port, self.log)
+        proxy = EngineProxy(self.port, self.log, clock=lambda: self.clock())
         try:
             proxy.start()
         except OSError as e:
@@ -1802,27 +1856,27 @@ class RemoteEngine(Engine):
                 "settings": s.dict(),
                 "argv": self.argv,
                 "started": call.started_unix,
-                "saved": time.time(),
-                "owner": owner_record(),
+                "saved": self.wall_clock(),
+                "owner": owner_record(self.wall_clock()),
             },
         )
         threading.Thread(target=self._monitor, args=(call,), daemon=True).start()
 
     def _serve(self, call, s, cancel, timeout):
-        deadline = time.monotonic() + timeout
+        deadline = self.clock() + timeout
         while call.upstream is None:
             if cancel.wait(0.05):
                 raise Cancelled()
             if self._call is not call:
                 raise RuntimeError("Engine exited during load. See engine log.")
-            if time.monotonic() > deadline:
+            if self.clock() > deadline:
                 raise TimeoutError("Engine startup exceeded timeout.")
         call.proxy.connect(call.upstream, call.api_key)
         self._phase = "loading model"
         self._await_ready(
             s,
             cancel,
-            max(deadline - time.monotonic(), 1),
+            max(deadline - self.clock(), 1),
             lambda: self._call is call,
         )
         with self.guard:
@@ -1861,12 +1915,12 @@ class RemoteEngine(Engine):
             call.done.wait(self.poll_interval)
 
     def _heartbeat(self, call):
-        now = time.monotonic()
+        now = self.clock()
         if now - call.heartbeat < OWNER_HEARTBEAT_SECONDS:
             return
         call.heartbeat = now
         try:
-            self._records.touch(self.provider.name, call.id, time.time())
+            self._records.touch(self.provider.name, call.id, self.wall_clock())
         except OSError as e:
             self.log(f"Could not refresh the remote call record: {e}")
 
@@ -1917,4 +1971,4 @@ class RemoteEngine(Engine):
         active, last = call.proxy.activity()
         if active:
             return float(self.idle_timeout)
-        return max(0.0, self.idle_timeout - (time.monotonic() - last))
+        return max(0.0, self.idle_timeout - (self.clock() - last))

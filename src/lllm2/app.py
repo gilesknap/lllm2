@@ -22,6 +22,7 @@ from .launch import choose_launch, installed_models
 from .recommendations import promotion_provenance, saved_qualifications
 from .remote import (
     PROVIDERS,
+    CallRecords,
     ProviderError,
     RemoteEngine,
     StoreDownloads,
@@ -634,8 +635,17 @@ class App:
         if path == "/api/remote":
             return self.remote_view(data["backend"])
         if path == "/api/remote/orphans":
+            # Contact a provider only when the panel selects it, this panel
+            # already runs its engine, or local call records name it. A local
+            # session with no records then makes no provider request.
             found, unavailable = [], []
+            checked = {data.get("backend"), *self.engines}
+            checked.update(
+                CallRecords(config.STATE_DIR / "remote-calls.json").providers()
+            )
             for backend in (b["name"] for b in self.remote_backends()):
+                if backend not in checked:
+                    continue
                 try:
                     rows = self.remote_engine(backend).orphans()
                 except RuntimeError as e:

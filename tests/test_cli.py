@@ -1,7 +1,9 @@
 import contextlib
 import io
 import json
+import os
 import signal
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +15,7 @@ from typer.testing import CliRunner
 
 from lllm2 import cli, config, modal_app
 from lllm2.discovery import CATALOG
+from lllm2.engine import Cancelled
 from lllm2.modal_provider import ModalProvider
 from lllm2.remote import GpuProbe, ProbeCache, catalogue_source, companion_names
 from lllm2.settings import Settings
@@ -291,21 +294,116 @@ class CliTests(unittest.TestCase):
         with patch.object(cli, "_launch", return_value=0) as launch:
             self.assertEqual(self.runner.invoke(cli.app, ["launch"]).exit_code, 0)
             launch.assert_called_once_with("", "", "", "", 180, "", None)
-        with patch.object(cli, "_launch", return_value=0) as launch:
-            result = self.runner.invoke(
-                cli.app,
-                [
-                    "launch",
-                    "--backend",
-                    "modal",
-                    "--gpu",
-                    "L40S",
-                    "--idle-timeout",
-                    "0",
-                ],
-            )
-            self.assertEqual(result.exit_code, 0, result.output)
-            launch.assert_called_once_with("", "", "modal", "", 180, "L40S", 0)
+        for value, expected in (("0", 0), ("off", 0), ("45", 45)):
+            with patch.object(cli, "_launch", return_value=0) as launch:
+                result = self.runner.invoke(
+                    cli.app,
+                    [
+                        "launch",
+                        "--backend",
+                        "modal",
+                        "--gpu",
+                        "L40S",
+                        "--idle-timeout",
+                        value,
+                    ],
+                )
+                self.assertEqual(result.exit_code, 0, result.output)
+                launch.assert_called_once_with(
+                    "", "", "modal", "", 180, "L40S", expected
+                )
+        for value in ("-1", "1441", "soon"):
+            with patch.object(cli, "_launch", return_value=0) as launch:
+                result = self.runner.invoke(
+                    cli.app, ["launch", "--backend", "modal", "--idle-timeout", value]
+                )
+                self.assertEqual(result.exit_code, 2, result.output)
+                launch.assert_not_called()
+
+    def test_remote_idle_timeout_order_is_flag_environment_saved_default(self):
+        values = {
+            "model": "/models/example.gguf",
+            "backend": "modal",
+            "gpu_type": "T4",
+        }
+        saved = Settings.parse(values | {"context": 32768, "idle_timeout_minutes": 90})
+        default = Settings.parse(values).idle_timeout_minutes
+        cases = (
+            # (flag, environment variable value or None, saved?, expected)
+            (5, 7, True, 5),
+            (0, 7, True, 0),
+            (None, 7, True, 7),
+            (None, 0, True, 0),
+            (None, None, True, 90),
+            (None, None, False, default),
+        )
+        for flag, environment, has_saved, expected in cases:
+            with self.subTest(flag=flag, environment=environment, saved=has_saved):
+                engine = MagicMock()
+                engine.start.side_effect = Cancelled()
+                engine.defaults_inputs.return_value = {}
+                with (
+                    patch.object(cli, "_catalogue", return_value=[]),
+                    patch.object(
+                        cli, "_remote_model_path", return_value="/models/example.gguf"
+                    ),
+                    patch.object(cli, "create_engine", return_value=engine),
+                    patch.object(
+                        cli,
+                        "_saved_launch_settings",
+                        side_effect=lambda s, has_saved=has_saved: (
+                            (Settings.parse(saved.dict()), True)
+                            if has_saved
+                            else (s, False)
+                        ),
+                    ),
+                    patch.object(
+                        cli,
+                        "starting_defaults",
+                        side_effect=lambda s, **_: {"settings": s.dict()},
+                    ),
+                    patch.object(
+                        config, "IDLE_TIMEOUT_FROM_ENVIRONMENT", environment is not None
+                    ),
+                    patch.object(config, "IDLE_TIMEOUT_MINUTES", environment or 0),
+                    patch.object(cli.signal, "signal"),
+                ):
+                    code = cli._launch("", "", "modal", "", 30, "T4", flag)
+                self.assertEqual(code, 130)
+                started = engine.start.call_args.args[0]
+                if has_saved:
+                    self.assertEqual(started.context, 32768)
+                self.assertEqual(started.idle_timeout_minutes, expected)
+
+    def test_idle_timeout_environment_variable_sets_the_settings_default(self):
+        code = (
+            "from lllm2 import config\n"
+            "from lllm2.settings import Settings\n"
+            "s = Settings.parse({'model': '/m.gguf', 'backend': 'modal', 'gpu_type': 'T4'})\n"
+            "print(Settings().idle_timeout_minutes, s.idle_timeout_minutes,\n"
+            "      config.IDLE_TIMEOUT_FROM_ENVIRONMENT)\n"
+        )
+        for value, expected in (
+            ("7", "7 7 True"),
+            ("off", "0 0 True"),
+            (None, "30 30 False"),
+        ):
+            with self.subTest(value=value):
+                env = {
+                    k: v
+                    for k, v in os.environ.items()
+                    if k != "LLLM2_IDLE_TIMEOUT_MINUTES"
+                }
+                if value is not None:
+                    env["LLLM2_IDLE_TIMEOUT_MINUTES"] = value
+                result = subprocess.run(
+                    [sys.executable, "-c", code],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    check=True,
+                )
+                self.assertEqual(result.stdout.strip(), expected)
 
     def test_saved_launch_settings_override_tuning_but_not_discovery(self):
         selected = Settings(

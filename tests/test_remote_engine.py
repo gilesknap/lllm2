@@ -18,6 +18,10 @@ from lllm2 import config
 from lllm2.engine import Cancelled, ResourceConflict
 from lllm2.remote import (
     DEFAULT_IDLE_TIMEOUT,
+    OWNER_HEARTBEAT_SECONDS,
+    OWNER_STALE_SECONDS,
+    RECORD_GRACE_SECONDS,
+    CallRecords,
     RemoteEngine,
     model_source,
     stop_owned_calls,
@@ -57,6 +61,31 @@ def eventually(check, timeout=10):
             return True
         time.sleep(0.02)
     return check()
+
+
+class FakeClock:
+    """A clock that stands still until a test moves it."""
+
+    def __init__(self, now):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def clock():
+    """A fake monotonic clock for the idle timer and heartbeat intervals."""
+    return FakeClock(1000.0)
+
+
+@pytest.fixture
+def wall():
+    """A fake wall clock for call records and owner heartbeats."""
+    return FakeClock(time.time())
 
 
 @pytest.fixture
@@ -339,44 +368,63 @@ def test_call_that_ends_remotely_is_reported(model, providers, engines):
     assert "Remote engine stopped" in state["error"]
 
 
-def test_idle_engine_stops_its_call(model, providers, engines):
+def monitor_rounds():
+    """Give the engine's status monitor several polls at the fixture interval."""
+    time.sleep(0.3)
+
+
+def test_idle_engine_stops_its_call(model, providers, engines, clock):
     provider = providers()
-    engine = engines(provider, idle_timeout=1)
+    engine = engines(provider, idle_timeout=60, clock=clock)
     engine.start(Settings(model=model), threading.Event(), timeout=30)
-    assert engine.status()["idle_remaining_seconds"] <= 1
-    assert eventually(lambda: not engine.alive(), timeout=5)
-    assert engine.status()["phase"] == "idle stopped"
-    assert any("No requests for 1 seconds" in line for line in engine.logs())
+    assert engine.status()["idle_remaining_seconds"] == 60
+    clock.advance(59)
+    monitor_rounds()
+    assert engine.alive() and engine.status()["idle_remaining_seconds"] == 1
+    clock.advance(1)
+    assert eventually(lambda: not engine.alive())
+    state = engine.state()
+    assert state["phase"] == "idle stopped" and state["call_id"] is None
+    assert any("No requests for 60 seconds" in line for line in engine.logs())
     assert provider.calls() == []
 
 
-def test_requests_reset_the_idle_timer(model, providers, engines):
+def test_requests_reset_the_idle_timer(model, providers, engines, clock):
     provider = providers()
-    engine = engines(provider, idle_timeout=1)
+    engine = engines(provider, idle_timeout=60, clock=clock)
     engine.start(Settings(model=model), threading.Event(), timeout=30)
-    until = time.monotonic() + 2.5
-    while time.monotonic() < until:
+    # Five requests 50 seconds apart span well over the 60 second timeout.
+    for _ in range(5):
+        clock.advance(50)
         request(engine, "/health")
+        assert engine.status()["idle_remaining_seconds"] == 60
+        monitor_rounds()
         assert engine.alive()
-        time.sleep(0.3)
-    assert eventually(lambda: not engine.alive(), timeout=5)
+    clock.advance(60)
+    assert eventually(lambda: not engine.alive())
 
 
-def test_long_stream_holds_off_the_idle_timer(model, providers, engines):
-    provider = providers(server_env={"FAKE_TOKEN_SECONDS": "0.1"})
-    engine = engines(provider, idle_timeout=1)
+def test_long_stream_holds_off_the_idle_timer(model, providers, engines, clock):
+    provider = providers(server_env={"FAKE_TOKEN_SECONDS": "0.05"})
+    engine = engines(provider, idle_timeout=60, clock=clock)
     engine.start(Settings(model=model), threading.Event(), timeout=30)
     events = []
-    # One request that streams for about 2.5 seconds, longer than the idle timeout.
+
+    def token(event):
+        # Each token takes 10 fake seconds, so the stream lasts 250 seconds.
+        events.append(event)
+        clock.advance(10)
+
     final = engine.stream_completion(
         {"prompt": "hello", "n_predict": 25, "stream": True},
         threading.Event(),
         30,
-        events.append,
+        token,
     )
     assert final["stop"] is True and len(events) == 26
     assert engine.alive()
-    assert eventually(lambda: not engine.alive(), timeout=5)
+    clock.advance(60)
+    assert eventually(lambda: not engine.alive())
 
 
 def test_call_records_are_private_and_keys_stay_out_of_status_and_logs(
@@ -391,10 +439,11 @@ def test_call_records_are_private_and_keys_stay_out_of_status_and_logs(
     assert not any(key in line for line in engine.logs())
 
 
-def test_disabled_idle_timer_keeps_the_call(model, providers, engines):
-    engine = engines(idle_timeout=None)
+def test_disabled_idle_timer_keeps_the_call(model, providers, engines, clock):
+    engine = engines(idle_timeout=None, clock=clock)
     engine.start(Settings(model=model), threading.Event(), timeout=30)
-    time.sleep(1.2)
+    clock.advance(10**6)
+    monitor_rounds()
     assert engine.alive()
     status = engine.status()
     assert status["idle_timeout_seconds"] is None
@@ -473,6 +522,68 @@ def test_orphan_from_a_crashed_session_can_be_cancelled(
     assert provider.calls() == [] and engine.orphans() == []
     with pytest.raises(ValueError, match="no longer running"):
         engine.adopt(call_id)
+
+
+def test_owner_heartbeat_refreshes_the_call_record(
+    model, providers, engines, clock, wall, tmp_path
+):
+    engine = engines(providers(), clock=clock, wall_clock=wall)
+    engine.start(Settings(model=model), threading.Event(), timeout=30)
+
+    def heartbeat():
+        records = json.loads((tmp_path / "calls.json").read_text())
+        return records["fake"][engine.call_id]["owner"]["heartbeat"]
+
+    assert heartbeat() == wall.now
+    started = wall.now
+    wall.advance(OWNER_HEARTBEAT_SECONDS - 1)
+    clock.advance(OWNER_HEARTBEAT_SECONDS - 1)
+    monitor_rounds()
+    assert heartbeat() == started
+    wall.advance(1)
+    clock.advance(1)
+    assert eventually(lambda: heartbeat() == wall.now)
+
+
+def test_stale_owner_heartbeat_turns_a_call_into_an_orphan(
+    model, providers, engines, wall, tmp_path
+):
+    provider = providers()
+    port = free_port()
+    argv = ["llama-server", "--port", str(port)]
+    call_id = provider.spawn("FAKE-24", argv, "key", {}, {})
+    assert eventually(lambda: provider.calls() != [])
+    records = CallRecords(tmp_path / "calls.json")
+    record = {
+        "api_key": "key",
+        "gpu": "FAKE-24",
+        "settings": Settings(model=model).dict(),
+        "argv": argv,
+        "started": wall.now,
+        "saved": wall.now,
+    }
+    # The owner lives in another PID namespace, so only its heartbeat counts.
+    owner = {"pid": 1, "host": "elsewhere", "pid_ns": "pid:[1]", "heartbeat": wall.now}
+    records.put("fake", call_id, record | {"owner": owner})
+    records.put("fake", "ended", record)
+    engine = engines(provider, wall_clock=wall)
+
+    (row,) = engine.remote_calls()
+    assert (row["id"], row["status"]) == (call_id, "active")
+    assert engine.orphans() == []
+    with pytest.raises(ValueError, match="Another lllm2 session"):
+        engine.adopt(call_id)
+    # A recent record survives a provider list that does not show its call.
+    assert records.get("fake", "ended") is not None
+
+    wall.advance(max(OWNER_STALE_SECONDS, RECORD_GRACE_SECONDS) + 1)
+    assert [o["id"] for o in engine.orphans()] == [call_id]
+    assert records.get("fake", "ended") is None
+
+    engine.adopt(call_id, timeout=30)
+    assert engine.state()["ready"] and engine.call_id == call_id
+    assert records.get("fake", call_id)["owner"]["heartbeat"] == wall.now
+    assert engine.orphans() == []
 
 
 def test_orphan_without_a_saved_key_can_only_be_cancelled(model, providers, engines):

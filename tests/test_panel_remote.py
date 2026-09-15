@@ -64,10 +64,10 @@ class FakeClock:
 
 
 @pytest.fixture
-def clock(monkeypatch):
+def clock(app):
     fake = FakeClock()
-    # remote.py and proxy.py both read time.monotonic at call time.
-    monkeypatch.setattr(time, "monotonic", fake)
+    # The panel's remote engine and its proxy read this clock at call time.
+    app.remote_engine("fake").clock = fake
     return fake
 
 
@@ -557,7 +557,7 @@ def test_missing_client_or_credentials_give_a_clear_message(app):
     with patch.dict(remote.PROVIDERS, {"fake": missing}):
         view = app.action("/api/remote", {"backend": "fake"})
         assert "pip install 'lllm2[modal]'" in view["error"]
-        orphans = app.action("/api/remote/orphans", {})
+        orphans = app.action("/api/remote/orphans", {"backend": "fake"})
         assert orphans["orphans"] == []
         assert "pip install" in orphans["unavailable"][0]["error"]
         # Validation reports the missing client instead of failing the request.
@@ -618,6 +618,38 @@ def test_idle_timeout_environment_variable():
             read({"LLLM2_IDLE_TIMEOUT_MINUTES": value})
 
 
+def test_orphan_check_contacts_only_selected_or_recorded_providers(app):
+    contacted = []
+
+    def provider(name):
+        def create():
+            contacted.append(name)
+            raise RuntimeError(f"{name} contacted")
+
+        return create
+
+    empty = {"orphans": [], "unavailable": []}
+    with patch.dict(
+        remote.PROVIDERS, {"fake": provider("fake"), "modal": provider("modal")}
+    ):
+        # A local session with no call records makes no provider request.
+        for data in ({}, {"backend": "CUDA"}, {"backend": ""}):
+            assert app.action("/api/remote/orphans", data) == empty
+        assert contacted == [] and set(app.engines) == {"local"}
+        # Selecting a remote backend checks that provider only.
+        orphans = app.action("/api/remote/orphans", {"backend": "modal"})
+        assert [u["provider"] for u in orphans["unavailable"]] == ["modal"]
+        assert contacted == ["modal"]
+        # A local call record can be an orphan, so its provider is checked.
+        contacted.clear()
+        CallRecords(config.STATE_DIR / "remote-calls.json").put(
+            "fake", "fc-1", {"gpu": "FAKE-24"}
+        )
+        orphans = app.action("/api/remote/orphans", {"backend": "CUDA"})
+        assert [u["provider"] for u in orphans["unavailable"]] == ["fake"]
+        assert contacted == ["fake"]
+
+
 def test_local_panel_works_without_the_modal_extra(app):
     local = {"gpus": [{"name": "RTX", "total_mib": 24000}], "source": "local"}
     # The real Modal factory, with the modal package hidden.
@@ -642,7 +674,7 @@ def local_panel_without_modal(app, local):
         # Selecting Modal shows the table GPU instead of failing the status poll.
         modal_host = app.selected_hardware({"backend": "modal", "gpu_type": "T4"})
         assert (modal_host["source"], modal_host["gpu_type"]) == ("modal", "T4")
-    orphans = app.action("/api/remote/orphans", {})
+    orphans = app.action("/api/remote/orphans", {"backend": "modal"})
     (unavailable,) = [u for u in orphans["unavailable"] if u["provider"] == "modal"]
     assert "lllm2[modal]" in unavailable["error"]
     assert "lllm2[modal]" in app.action("/api/remote", {"backend": "modal"})["error"]

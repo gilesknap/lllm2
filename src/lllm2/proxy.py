@@ -77,15 +77,18 @@ class EngineProxy:
     wait for each other.
     """
 
-    def __init__(self, port, on_log=None):
+    def __init__(self, port, on_log=None, clock=time.monotonic):
         """Create a proxy for a loopback port.
 
         Args:
             port: The loopback port to listen on. Zero picks a free port.
             on_log: A callable that receives one log line, or None.
+            clock: A monotonic clock in seconds that stamps request activity.
+                Tests replace it to move time without sleeping.
         """
         self.port = port
         self._on_log = on_log
+        self._clock = clock
         self._lock = threading.Lock()
         self._upstream = None
         self._api_key = None
@@ -96,7 +99,7 @@ class EngineProxy:
         # it, so ``close`` needs its own reference.
         self._connections = {}
         self._active = 0
-        self._last_activity = time.monotonic()
+        self._last_activity = self._clock()
 
     def start(self):
         """Bind the loopback port and serve requests on a background thread.
@@ -121,7 +124,7 @@ class EngineProxy:
         """
         with self._lock:
             self._upstream, self._api_key = upstream, api_key
-            self._last_activity = time.monotonic()
+            self._last_activity = self._clock()
 
     def close(self):
         """Release the port and end every forwarded request in flight.
@@ -148,7 +151,7 @@ class EngineProxy:
 
         Returns:
             A tuple of the number of requests in flight and the
-            ``time.monotonic()`` value when a request last started or ended.
+            clock value when a request last started or ended.
         """
         with self._lock:
             return self._active, self._last_activity
@@ -175,7 +178,7 @@ class EngineProxy:
                 )
             self._connections[connection] = None
             self._active += 1
-            self._last_activity = time.monotonic()
+            self._last_activity = self._clock()
             return connection, key
 
     def _end(self, connection):
@@ -183,7 +186,7 @@ class EngineProxy:
         with self._lock:
             self._connections.pop(connection, None)
             self._active -= 1
-            self._last_activity = time.monotonic()
+            self._last_activity = self._clock()
 
     def _track(self, connection):
         with self._lock:

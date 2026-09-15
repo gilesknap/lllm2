@@ -1009,7 +1009,7 @@ $('remote-remove-confirm').onclick=async()=>{
  finally{$('remote-remove-confirm').disabled=false;}
 };
 async function refreshOrphans(){
- try{orphans=(await api('/api/remote/orphans',{})).orphans;}catch{orphans=[];}
+ try{orphans=(await api('/api/remote/orphans',{backend:currentLaunch()?.backend||''})).orphans;}catch{orphans=[];}
  renderOrphans();
 }
 function renderOrphans(){

@@ -153,8 +153,12 @@ def _launch(
             resolved = starting_defaults(selection, **engine.defaults_inputs(selection))
             settings = Settings.parse(resolved["settings"])
             notes.extend(resolved.get("notes", []))
+        # Idle timeout order: the flag, then LLLM2_IDLE_TIMEOUT_MINUTES, then
+        # the saved launch settings, then the default (see config).
         if idle_timeout is not None:
             settings.idle_timeout_minutes = idle_timeout
+        elif config.IDLE_TIMEOUT_FROM_ENVIRONMENT:
+            settings.idle_timeout_minutes = config.IDLE_TIMEOUT_MINUTES
     else:
         if gpu or idle_timeout is not None:
             raise ValueError(
@@ -518,11 +522,9 @@ def launch(
         ),
     ] = "",
     idle_timeout: Annotated[
-        int | None,
+        str | None,
         typer.Option(
-            min=0,
-            max=1440,
-            help="Minutes without requests before a remote engine stops; 0 disables it. Default: saved settings, else 30.",
+            help="Minutes without requests before a remote engine stops; 0 or off disables it. Default: LLLM2_IDLE_TIMEOUT_MINUTES, else saved settings, else 30.",
         ),
     ] = None,
 ) -> None:
@@ -536,9 +538,13 @@ def launch(
     Example: lllm2 launch --backend CUDA --timeout 300;
     lllm2 launch --backend modal --gpu L40S --model qwen3.8-27b
     """
-    raise typer.Exit(
-        _launch(model, engine, backend, device, timeout, gpu, idle_timeout)
-    )
+    minutes = None
+    if idle_timeout is not None:
+        try:
+            minutes = config.parse_idle_timeout_minutes(idle_timeout, "--idle-timeout")
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="--idle-timeout") from e
+    raise typer.Exit(_launch(model, engine, backend, device, timeout, gpu, minutes))
 
 
 def _elapsed(seconds: float | None) -> str:
