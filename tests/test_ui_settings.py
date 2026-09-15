@@ -220,3 +220,20 @@ class SettingsRecoveryTests(unittest.TestCase):
                     self.assertRaises(ValueError),
                 ):
                     self.app.action(route, {"result_id": "measured"})
+
+
+class FileBrowserTests(unittest.TestCase):
+    def test_missing_folder_error_names_the_requested_path(self):
+        app = App.__new__(App)
+        with tempfile.TemporaryDirectory() as temp:
+            gguf = Path(temp) / "model.gguf"
+            gguf.write_bytes(b"GGUF")
+            for requested in (Path(temp) / "absent" / "deeper", gguf):
+                with (
+                    self.subTest(requested=requested),
+                    self.assertRaises(ValueError) as caught,
+                ):
+                    app.action("/api/files", {"directory": str(requested)})
+                self.assertEqual(
+                    str(caught.exception), f"No folder found at {requested}."
+                )
