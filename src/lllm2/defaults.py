@@ -78,16 +78,38 @@ def context_plan(
     return share * slots, slots
 
 
-def starting_defaults(selection):
+def starting_defaults(selection, host=None, engine=None, meta=None):
+    """Resolve starting settings for a checkpoint, engine and GPU.
+
+    Args:
+        selection: Settings naming the model, engine, backend and device.
+        host: Hardware description in the ``hardware()`` shape. None detects
+            local hardware. A description whose ``source`` is not ``"local"``
+            skips measured profiles and local desktop and driver probes.
+        engine: Engine capability record in the ``probe()`` shape. None probes
+            the selected binary locally.
+        meta: GGUF metadata record in the ``metadata()`` shape. None reads the
+            selected checkpoint locally.
+
+    Returns:
+        A dict with ``settings``, ``source`` and ``notes``.
+    """
+    if host is not None and host.get("source", "local") != "local":
+        fallback = inherited_defaults(selection, host, engine, meta)
+        fallback["notes"] = [
+            "Measured built-in profiles cover local GPUs only; using fallback guidance."
+        ] + fallback["notes"]
+        return fallback
     measured, qualifications = measured_defaults(selection)
     if measured:
         return measured
-    fallback = inherited_defaults(selection)
+    fallback = inherited_defaults(selection, host, engine, meta)
     fallback["notes"] = qualifications + fallback["notes"]
     return fallback
 
 
-def inherited_defaults(selection):
+def inherited_defaults(selection, host=None, engine=None, meta=None):
+    """Resolve inherited estimated settings; arguments match ``starting_defaults``."""
     # Never carry experiments or another model's drafter/effort into a new model.
     s = Settings(
         model=selection.model,
@@ -102,7 +124,7 @@ def inherited_defaults(selection):
             "source": "generic fallback",
             "notes": ["Select a checkpoint and engine to load inherited tuning."],
         }
-    p = probe(s.engine)
+    p = probe(s.engine) if engine is None else engine
     automatic_layers = {"--fit", "--fit-target"}.issubset(p["flags"])
     if automatic_layers:
         notes.append(
@@ -113,9 +135,9 @@ def inherited_defaults(selection):
     devices = [d for d in p["devices"] if d.startswith(s.backend)]
     if s.device not in devices:
         s.device = devices[0] if devices else ""
-    caps = capabilities(s)
+    m = metadata(s.model) if meta is None else meta
+    caps = capabilities(s, p, m)
     entry = catalogue_entry(s.model)
-    m = metadata(s.model)
     s.flash = "on" if caps["flash"]["status"] == "available" else "auto"
     if caps["cache"]["status"] == "available" and s.flash == "on":
         s.cache = "q8_0"
@@ -123,7 +145,8 @@ def inherited_defaults(selection):
         notes.append(
             "This binary cannot apply the inherited q8_0/flash settings; generic cache/context retained."
         )
-    host = hardware()
+    host = hardware() if host is None else host
+    local = host.get("source", "local") == "local"
     cards = host["gpus"]
     low_vram = entry.get("low_vram_defaults") if entry else None
     if (
@@ -190,21 +213,24 @@ def inherited_defaults(selection):
         else:
             notes.append("Binary lacks the inherited chat-template override flag.")
     if entry and len(cards) == 1 and s.cache == "q8_0":
-        rc, state = command(["systemctl", "is-active", "graphical.target"], 5)
-        desktop = state.strip() != "inactive"
-        rc, reserved = command(
-            [
-                "nvidia-smi",
-                "--id=" + cards[0]["uuid"],
-                "--query-gpu=memory.reserved",
-                "--format=csv,noheader,nounits",
-            ],
-            4,
-        )
-        try:
-            reserve = max(0, int(reserved.strip())) if rc == 0 else 512
-        except ValueError:
-            reserve = 512
+        # A remote container runs no desktop, and its driver reserve is unknown.
+        desktop, reserve = False, 512
+        if local:
+            rc, state = command(["systemctl", "is-active", "graphical.target"], 5)
+            desktop = state.strip() != "inactive"
+            rc, reserved = command(
+                [
+                    "nvidia-smi",
+                    "--id=" + cards[0]["uuid"],
+                    "--query-gpu=memory.reserved",
+                    "--format=csv,noheader,nounits",
+                ],
+                4,
+            )
+            try:
+                reserve = max(0, int(reserved.strip())) if rc == 0 else 512
+            except ValueError:
+                reserve = 512
         ceiling = min(entry["max_ctx"], m["context"] or entry["max_ctx"])
         try:
             s.context, s.slots = context_plan(

@@ -142,20 +142,50 @@ class Settings:
         return self.cache_k or self.cache, self.cache_v or self.cache
 
 
-def cache_settings(s):
+def cache_settings(s, kernel=None):
+    """Describe the requested and resolved attention cache types.
+
+    Args:
+        s: Settings to describe.
+        kernel: Cache kernel evidence in the ``cache_kernel_support`` shape. None
+            reads the library next to the local engine binary.
+
+    Returns:
+        The requested and resolved types with kernel evidence and caveats.
+    """
     k, v = s.cache_pair()
     return {
         "requested": {"cache": s.cache, "cache_k": s.cache_k, "cache_v": s.cache_v},
         "resolved": {"k": k, "v": v},
-        "kernel": cache_kernel_support(s.engine, s.backend),
+        "kernel": cache_kernel_support(s.engine, s.backend)
+        if kernel is None
+        else kernel,
         "context_evidence": "Inherited planner is calibrated for q8_0/q8_0 only; it is not a measured capacity for this pair.",
         "state_scope": "K/V choices apply to attention cache; hybrid recurrent states retain engine-selected precision. Draft cache is unchanged.",
     }
 
 
-def capabilities(s):
-    p = probe(s.engine)
-    m = metadata(s.model)
+def capabilities(s, engine=None, meta=None):
+    """Report which settings the engine binary and checkpoint support.
+
+    Args:
+        s: Settings to check.
+        engine: Engine capability record in the ``probe()`` shape: ``path``,
+            ``flags``, ``help``, ``devices`` and ``error``. The optional keys
+            ``cuda_graph`` (``cuda_graph_support()`` shape), ``cache_kernel``
+            (``cache_kernel_support()`` shape) and ``environment`` (the engine's
+            process environment) replace evidence that is otherwise read next
+            to the local binary. None probes ``s.engine`` locally.
+        meta: GGUF metadata record in the ``metadata()`` shape. The optional key
+            ``drafter`` holds the DFlash drafter's record in the same shape and
+            replaces the local drafter file check. None reads ``s.model``
+            locally.
+
+    Returns:
+        A dict mapping each feature name to its status and reason.
+    """
+    p = probe(s.engine) if engine is None else engine
+    m = metadata(s.model) if meta is None else meta
     flags, help_text = p["flags"], p["help"]
 
     def flag_status(flag):
@@ -171,7 +201,7 @@ def capabilities(s):
         "status": sampling_status,
         "reason": "Experimental target GPU sampling requires CUDA and --backend-sampling. Requests may fall back to CPU; no measured benefit implied. Draft sampling is unchanged.",
     }
-    graph = cuda_graph_support(s.engine)
+    graph = p.get("cuda_graph") or cuda_graph_support(s.engine)
     reason = (
         graph["reason"]
         + " Requires ordinary CUDA Graphs and one visible CUDA device; performance needs measurement."
@@ -179,7 +209,7 @@ def capabilities(s):
     status = (
         "available" if s.backend == "CUDA" and graph["supported"] else "unsupported"
     )
-    env = engine_environment(s.engine)
+    env = p["environment"] if "environment" in p else engine_environment(s.engine)
     if env.get("GGML_CUDA_DISABLE_GRAPHS") is not None:
         status, reason = (
             "missing prerequisites",
@@ -203,7 +233,7 @@ def capabilities(s):
             "status": status,
             "reason": f"Binary probe: {flag}. Actual model/backend behavior is validated on launch.",
         }
-    pair = cache_settings(s)
+    pair = cache_settings(s, p.get("cache_kernel"))
     k, v = s.cache_pair()
     out["cache_pair"] = {
         "status": out["cache"]["status"]
@@ -275,7 +305,9 @@ def capabilities(s):
                     "unsupported",
                     "Initial experimental DFlash integration is CUDA only.",
                 )
-            elif not s.drafter or not Path(s.drafter).expanduser().is_file():
+            elif not s.drafter or (
+                "drafter" not in m and not Path(s.drafter).expanduser().is_file()
+            ):
                 status, reason = (
                     "missing prerequisites",
                     "Provide a target-specific ordinary DFlash GGUF (DFlash 2 is not integrated).",
@@ -285,7 +317,7 @@ def capabilities(s):
                     "missing prerequisites",
                     "Confirm this drafter was trained and converted for this exact target; filenames alone are insufficient.",
                 )
-            elif metadata(s.drafter)["error"]:
+            elif (m["drafter"] if "drafter" in m else metadata(s.drafter))["error"]:
                 status, reason = (
                     "missing prerequisites",
                     "Drafter is not a readable GGUF.",
@@ -453,7 +485,53 @@ def batch_settings(s, logs=()):
 
 
 def launch_args(s, port):
-    p = probe(s.engine)
+    """Build the llama-server command line for a local launch.
+
+    Args:
+        s: Settings to launch.
+        port: Loopback port for llama-server.
+
+    Returns:
+        The argument list, starting with the local binary path.
+
+    Raises:
+        ValueError: If the binary or checkpoint cannot run these settings.
+    """
+    return build_launch_args(s, port, probe(s.engine), metadata(s.model))
+
+
+def build_launch_args(s, port, engine, meta, *, host="127.0.0.1", path=None):
+    """Build the llama-server command line from supplied engine and GGUF facts.
+
+    Local launches supply the local probe results. A remote provider supplies
+    its own probe results and catalogue metadata, so both share one builder.
+
+    Args:
+        s: Settings to launch.
+        port: Port for llama-server to listen on.
+        engine: Engine capability record in the ``probe()`` shape. Its ``path``
+            is the binary path where the command runs. See ``capabilities`` for
+            optional evidence keys.
+        meta: GGUF metadata record in the ``metadata()`` shape. A remote
+            DFlash launch supplies the drafter's record under ``drafter``.
+        host: Address for llama-server to bind.
+        path: Function that maps a local model, drafter or template path to the
+            path where the command runs. None resolves local paths and checks
+            that the chat template file exists.
+
+    Returns:
+        The argument list, starting with ``engine["path"]``.
+
+    Raises:
+        ValueError: If the binary or checkpoint cannot run these settings.
+    """
+    p, m = engine, meta
+
+    def target(value):
+        if path is None:
+            return str(Path(value).expanduser().resolve())
+        return path(str(value))
+
     if s.batch_size is not None or s.ubatch_size is not None:
         defaults = batch_defaults(p["help"]) if not p["error"] else {}
         batch = s.batch_size if s.batch_size is not None else defaults.get("batch_size")
@@ -468,18 +546,17 @@ def launch_args(s, port):
         raise ValueError(
             "Choose a detected GPU device matching the backend. Check binary --list-devices output."
         )
-    m = metadata(s.model)
     if m["error"]:
         raise ValueError("Cannot read checkpoint: " + m["error"])
     if m["context"] and s.context // s.slots > m["context"]:
         raise ValueError(
             "Requested context per slot exceeds checkpoint context metadata."
         )
-    caps = capabilities(s)
+    caps = capabilities(s, p, m)
     if s.backend_sampling and caps["backend_sampling"]["status"] != "available":
         raise ValueError(caps["backend_sampling"]["reason"])
     if s.cuda_graph_opt != "default":
-        if s.backend != "CUDA" or not cuda_graph_support(s.engine)["supported"]:
+        if s.backend != "CUDA" or not caps["cuda_graph_opt"]["evidence"]["supported"]:
             raise ValueError(
                 "Explicit CUDA streams settings require a CUDA build with the compiled switch."
             )
@@ -497,8 +574,8 @@ def launch_args(s, port):
             args.append(str(value))
 
     for flag, value in [
-        ("--model", str(Path(s.model).expanduser().resolve())),
-        ("--host", "127.0.0.1"),
+        ("--model", target(s.model)),
+        ("--host", host),
         ("--port", port),
         ("--ctx-size", s.context),
         ("--parallel", s.slots),
@@ -528,10 +605,9 @@ def launch_args(s, port):
         if value is not None:
             add(flag, value)
     if s.chat_template:
-        template = Path(s.chat_template).expanduser().resolve()
-        if not template.is_file():
+        if path is None and not Path(s.chat_template).expanduser().is_file():
             raise ValueError("Chat template file does not exist.")
-        add("--chat-template-file", template)
+        add("--chat-template-file", target(s.chat_template))
     if "--perf" in p["flags"]:
         add("--perf")
     if "--no-context-shift" in p["flags"]:
@@ -569,7 +645,7 @@ def launch_args(s, port):
         if s.speculation == "draft-dflash":
             if s.flash != "on":
                 raise ValueError("DFlash requires flash attention on.")
-            add("--model-draft", str(Path(s.drafter).expanduser().resolve()))
+            add("--model-draft", target(s.drafter))
             if "--spec-draft-device" in p["flags"]:
                 add("--spec-draft-device", s.device)
     elif "--spec-type" in p["flags"]:

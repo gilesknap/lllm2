@@ -143,6 +143,13 @@ def host_memory():
 
 
 def hardware():
+    """Describe the local GPUs and host memory.
+
+    Returns:
+        A hardware description with ``gpus``, ``error``, ``ram_gib``, ``ram`` and
+        ``source``. ``source`` is ``"local"``; a table-built description for a
+        remote provider carries the provider name instead.
+    """
     rc, out = command(
         [
             "nvidia-smi",
@@ -179,6 +186,7 @@ def hardware():
         "error": None if cards else out[:500],
         "ram_gib": total,
         "ram": ram,
+        "source": "local",
     }
 
 
