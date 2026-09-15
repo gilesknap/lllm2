@@ -59,15 +59,27 @@ MODAL_GPUS: tuple[GpuType, ...] = (
     GpuType("B200", "NVIDIA B200", 180, 6.250),
 )
 
+MODAL_PRICING_CAVEAT = (
+    "Costs are estimates from Modal's published per-GPU prices, checked 2026-09-15, "
+    "and exclude CPU, memory and storage charges. Check current Modal pricing at "
+    "https://modal.com/pricing."
+)
+
 GPU_TABLES: dict[str, tuple[GpuType, ...]] = {"modal": MODAL_GPUS}
 
+PRICING_CAVEATS: dict[str, str] = {"modal": MODAL_PRICING_CAVEAT}
 
-def register_gpu_table(provider: str, table: tuple[GpuType, ...]) -> None:
+
+def register_gpu_table(
+    provider: str, table: tuple[GpuType, ...], caveat: str = ""
+) -> None:
     """Register or replace the GPU type table for a provider.
 
     Args:
         provider: The provider name. It becomes the hardware ``source``.
         table: The GPU types the provider offers.
+        caveat: The text that the panel and CLI show next to cost estimates.
+            Empty uses a generic caveat.
 
     Raises:
         ValueError: If the provider name is ``"local"`` or the table is empty.
@@ -75,6 +87,26 @@ def register_gpu_table(provider: str, table: tuple[GpuType, ...]) -> None:
     if provider == "local" or not table:
         raise ValueError("A provider table needs a non-local name and GPU types.")
     GPU_TABLES[provider] = tuple(table)
+    PRICING_CAVEATS[provider] = caveat or (
+        f"Costs are estimates from {provider}'s published prices. "
+        "Check current pricing with the provider."
+    )
+
+
+def pricing_caveat(provider: str) -> str:
+    """Return the text to show next to a provider's cost estimates.
+
+    Args:
+        provider: A registered provider name.
+
+    Returns:
+        A sentence that says the cost is an estimate and where to check prices.
+
+    Raises:
+        ValueError: If no table is registered for the provider.
+    """
+    gpu_types(provider)
+    return PRICING_CAVEATS[provider]
 
 
 def gpu_types(provider: str) -> tuple[GpuType, ...]:

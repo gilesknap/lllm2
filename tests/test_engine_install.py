@@ -128,6 +128,38 @@ class InstallTests(unittest.TestCase):
             any("--force" in stage and "Driver too old" in stage for stage in stages)
         )
 
+    def test_explicit_track_skips_the_driver_check(self):
+        self.metadata["cuda_track"] = CUDA_TRACKS["12"]
+        with (
+            patch.object(installer, "cuda_track", side_effect=AssertionError),
+            patch.object(
+                installer, "_release_asset_urls", return_value=("archive", "checksum")
+            ),
+            patch.object(
+                installer,
+                "_download",
+                side_effect=lambda url, destination, **_: destination.write_bytes(
+                    f"{hashlib.sha256(archive).hexdigest()}  {asset_name('12')}\n".encode()
+                    if url == "checksum"
+                    else archive
+                ),
+            ),
+            patch.object(
+                installer.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stderr=""),
+            ) as run,
+        ):
+            archive = self.archive()
+            binary = installer.install(
+                "cuda", root=self.root, track="12", check_startup=False
+            )
+            run.assert_not_called()
+        self.assertEqual(binary.parent.name, f"llama-{LLAMA_CPP_REF}-cuda12.9.1")
+        self.assertEqual(installer.provenance(binary)["cuda_track"], CUDA_TRACKS["12"])
+        with self.assertRaisesRegex(ValueError, "CUDA track"):
+            installer.install("cuda", root=self.root, track="11")
+
     def test_force_preserves_normal_selection_and_existing_engines(self):
         binary = self.install(force=True)
         self.assertEqual(installer.provenance(binary)["cuda_track"], CUDA_TRACKS["13"])

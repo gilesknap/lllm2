@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
+from .catalogue import files as catalogue_files
+from .catalogue import local_paths
 from .discovery import EXECUTION_ENV_KEYS
 from .engine import Cancelled, Engine, ResourceConflict
 from .gpu_tables import gpu_type, table_hardware
@@ -309,6 +311,39 @@ def remote_provider(name: str) -> RemoteProvider:
     except KeyError:
         raise ValueError(f"Unknown remote provider: {name}.") from None
     return factory()
+
+
+def _modal_provider() -> RemoteProvider:
+    from .modal_provider import create_provider
+
+    return create_provider()
+
+
+register_provider("modal", _modal_provider)
+
+
+def catalogue_source(entry: dict) -> ModelSource:
+    """Describe a catalogue model for a provider to download from Hugging Face.
+
+    Args:
+        entry: A catalogue entry with ``name``, ``repo``, ``file`` and the
+            optional ``files``, ``mmproj`` and ``revision`` keys.
+
+    Returns:
+        A source whose name matches the model's path under the managed model
+        directory, so local and remote stores use the same layout.
+
+    Raises:
+        ValueError: If the entry has an unsafe directory or file path.
+    """
+    local_paths(entry)
+    files = tuple(catalogue_files(entry))
+    return ModelSource(
+        name=f"{entry['name']}/{files[0]}",
+        repo=entry["repo"],
+        files=files,
+        revision=entry.get("revision"),
+    )
 
 
 def model_source(path: str) -> ModelSource:

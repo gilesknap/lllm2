@@ -221,10 +221,36 @@ def install(
     force: bool = False,
     root: Path | None = None,
     progress: InstallProgress | None = None,
+    track: str | None = None,
+    check_startup: bool = True,
 ) -> Path:
-    """Verify, stage, probe and atomically publish a release engine."""
+    """Verify, stage, probe and atomically publish a release engine.
+
+    Args:
+        backend: The engine backend. Only ``"cuda"`` is supported.
+        name: The engine directory name. Empty uses the release name.
+        force: Continue with the CUDA 12 engine when the driver check fails.
+        root: The engine home. None uses the configured engine home.
+        progress: A callable that receives the phase, completed and total units.
+        track: A ``CUDA_TRACKS`` key that selects the engine without checking
+            the driver, for example when building a container image that has
+            no GPU. None selects the engine from the installed driver.
+        check_startup: Run ``llama-server --help`` before publishing. The
+            binary needs the NVIDIA driver library to start, so an image build
+            without a GPU skips this and checks the engine on a GPU later.
+
+    Returns:
+        The installed ``llama-server`` path.
+
+    Raises:
+        ValueError: The backend, name or track is invalid.
+        FileExistsError: A different engine already uses the name.
+        RuntimeError: The platform, driver, download or engine check failed.
+    """
     if backend != "cuda":
         raise ValueError(f"Unknown install backend {backend!r}; choose cuda.")
+    if track is not None and track not in CUDA_TRACKS:
+        raise ValueError(f"Unknown CUDA track {track!r}.")
     for label, value in (("ref", LLAMA_CPP_REF), ("name", name or LLAMA_CPP_REF)):
         if value in (".", "..") or not re.fullmatch(r"[A-Za-z0-9._-]+", value):
             raise ValueError(
@@ -233,19 +259,20 @@ def install(
     if platform.system() != "Linux" or platform.machine() not in ("x86_64", "AMD64"):
         raise RuntimeError("Release CUDA engines require Linux x86_64.")
     report = progress or (lambda _phase, _completed, _total: None)
-    report("Checking NVIDIA driver", 0, None)
-    try:
-        track = cuda_track()
-    except RuntimeError as error:
-        if not force:
-            raise
-        track = "12"
-        report(
-            f"Warning: {error} Continuing with CUDA {CUDA_TRACKS[track]} "
-            "because --force was requested; GPU execution may fail.",
-            0,
-            None,
-        )
+    if track is None:
+        report("Checking NVIDIA driver", 0, None)
+        try:
+            track = cuda_track()
+        except RuntimeError as error:
+            if not force:
+                raise
+            track = "12"
+            report(
+                f"Warning: {error} Continuing with CUDA {CUDA_TRACKS[track]} "
+                "because --force was requested; GPU execution may fail.",
+                0,
+                None,
+            )
     name = name or f"llama-{LLAMA_CPP_REF}-cuda{CUDA_TRACKS[track]}"
     root = (root or config.ENGINE_HOME).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -300,24 +327,25 @@ def install(
             )
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             raise RuntimeError("Engine archive has no executable llama-server.")
-        report("Checking engine startup", 0, None)
-        try:
-            check = subprocess.run(
-                [str(candidate), "--help"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=engine_environment(candidate),
-                timeout=60,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            raise RuntimeError(
-                f"Downloaded llama-server could not start: {error}"
-            ) from error
-        if check.returncode:
-            raise RuntimeError(
-                "Downloaded llama-server could not start: " + check.stderr[-1000:]
-            )
+        if check_startup:
+            report("Checking engine startup", 0, None)
+            try:
+                check = subprocess.run(
+                    [str(candidate), "--help"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=engine_environment(candidate),
+                    timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                raise RuntimeError(
+                    f"Downloaded llama-server could not start: {error}"
+                ) from error
+            if check.returncode:
+                raise RuntimeError(
+                    "Downloaded llama-server could not start: " + check.stderr[-1000:]
+                )
         # Release tarballs can be reused unchanged by later Python releases.
         # Keep build provenance distinct from the version doing this installation.
         record.pop("matches_release", None)
