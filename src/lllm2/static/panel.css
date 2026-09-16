@@ -1362,9 +1362,11 @@ section[tabindex="-1"], #comparisons {
 #find-table {min-width:1900px;width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed}
 #find-table thead {position:sticky;top:0;z-index:1;background:var(--card)}
 #find-table th {vertical-align:middle;padding:10px 8px 4px;width:170px;white-space:normal}
-#find-table th:first-child {width:260px}
-#find-table th:nth-child(2),#find-table th:nth-child(5) {width:230px}
-#find-table th:last-child {width:160px}
+/* Column widths follow the header order: catalogue action, model, publisher,
+   quantisation, size, suitability, then the rest at the default width. */
+#find-table th:first-child {width:150px}
+#find-table th:nth-child(2) {width:260px}
+#find-table th:nth-child(3),#find-table th:nth-child(6) {width:230px}
 #find-table th button {display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-height:40px;text-align:left;font-weight:600;border:0;background:none;color:var(--dim);padding:4px 0}
 #find-table th[aria-sort=ascending] button,#find-table th[aria-sort=descending] button {color:var(--accent)}
 #find-table .find-filter-row td {padding:4px 8px 10px;vertical-align:top}
