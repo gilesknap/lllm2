@@ -480,7 +480,18 @@ const assert=require('node:assert/strict');
  assert.match(await run("$('remote-phase').textContent"),/Starting the GPU container/);
  await run("fixture.engine={running:true,ready:true,pid:null,provider:'modal',gpu:'L40S',phase:'ready',elapsed_seconds:125,usd_per_hour:1.951,estimated_cost_usd:0.07,idle_timeout_seconds:1800,idle_remaining_seconds:1700,settings:settings()};fixture.job={kind:'launch',status:'serving',active:false};await poll()");
  assert.match(await run("$('remote-cost').textContent"),/Running 2:05 · about \$0\.07 .* idle stop in 28:20/);
+ assert.match(await run("$('remote-cost').textContent"),/at ~\$1\.95\/hour/);
  assert.match(await run("$('remote-caveat').textContent"),/Check current Modal pricing/);
+ // An unknown rate must read as unknown: $0.00/hour understates the bill.
+ await run("fixture.engine={...fixture.engine,usd_per_hour:null,estimated_cost_usd:null};await poll()");
+ assert.match(await run("$('remote-cost').textContent"),/at an unknown hourly rate/);
+ // A remote download is held under `${backend}:${id}`, so a rerender while it
+ // runs must not enable its button again.
+ await run("fixture.downloads=[{id:'modal:dense',name:'Qwen3.8-27B',store:'modal',catalogue_id:'dense',state:'downloading',percent:10,done_gb:1,total_gb:10,rate_mib_s:50,target:'modal store'}];await poll()");
+ assert.equal(await run("$('download-action-modal:dense').dataset.remoteDownload"),'dense');
+ await run("fixture.delay=200;$('download-action-modal:dense').click();await new Promise(r=>setTimeout(r,50));await poll()");
+ assert.equal(await run("$('download-action-modal:dense').disabled"),true);
+ await run("await new Promise(r=>setTimeout(r,400));fixture.delay=0;fixture.downloads=[];await poll()");
  // Up but still loading, with no start job: it must not read as running.
  await run("fixture.engine={running:true,ready:false,pid:null,provider:'modal',gpu:'L40S',phase:'loading model',elapsed_seconds:185,usd_per_hour:1.951,settings:settings()};fixture.job={status:'idle',active:false};await poll()");
  assert.equal(await run("$('start').textContent"),'Loading model\u2026');
@@ -501,6 +512,10 @@ const assert=require('node:assert/strict');
   await p.shot(`${artifacts}/remote-${width}.png`);
  }
  await p.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+ assert.match(await run("$('orphan-banner').textContent"),/at ~\$0\.59\/hour/);
+ // The banner must not understate an orphan that bills at an unknown rate.
+ await run("fixture.orphans=[{...fixture.orphans[0],usd_per_hour:null}];await refreshOrphans()");
+ assert.match(await run("$('orphan-banner').textContent"),/at an unknown hourly rate/);
  await run("$('stop-call-call-1').click();await new Promise(r=>setTimeout(r,100))");
  assert.equal(await run("$('orphan-banner').hidden"),true);
  await run("fixture.engine={running:false,ready:false};fixture.job={status:'idle'};$('backend').value='CUDA';$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200));customize(false)");

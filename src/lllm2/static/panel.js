@@ -94,6 +94,8 @@ const remoteBackend=b=>!!b&&!localBackends.includes(b);
 const backendInfo=b=>discovered.backends?.find(x=>x.name===b);
 const backendLabel=s=>remoteBackend(s?.backend)?`${backendInfo(s.backend)?.label||s.backend} · ${s.gpu_type||'choose a GPU type'}`:s?.backend||'';
 const money=n=>Number.isFinite(n)?'$'+n.toFixed(2):'unknown';
+// An unknown rate must read as unknown: $0.00/hour understates the bill.
+const hourlyRate=n=>Number.isFinite(n)?`~${money(n)}/hour`:'an unknown hourly rate';
 const clockText=seconds=>{const t=Math.max(0,Math.floor(seconds||0)),h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=String(t%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${s}`:`${m}:${s}`;};
 const selection=()=>{const s=currentLaunch()||{};return remoteBackend(s.backend)?{backend:s.backend,gpu_type:s.gpu_type||''}:{backend:s.backend||''};};
 const snapshot=()=>JSON.stringify(settings());
@@ -526,7 +528,7 @@ function remoteStatusState(running,launchJob){
   $('remote-cost').textContent='';$('remote-idle-row').hidden=true;$('remote-caveat').textContent='';return;
  }
  $('remote-phase').textContent=`${label}: ${remotePhase(running)}${running.phase==='probing'?' (a first launch on this GPU type runs a short probe container)':''}`;
- $('remote-cost').textContent=running.running?`Running ${clockText(running.elapsed_seconds)} · about ${money(running.estimated_cost_usd)} so far at ~$${(running.usd_per_hour??0).toFixed(2)}/hour · ${running.idle_remaining_seconds!=null?'idle stop in '+clockText(running.idle_remaining_seconds):running.ready&&!running.idle_timeout_seconds?'idle stop off: runs until you stop it':'idle timer starts when ready'}`:'No GPU container is billing yet.';
+ $('remote-cost').textContent=running.running?`Running ${clockText(running.elapsed_seconds)} · about ${money(running.estimated_cost_usd)} so far at ${hourlyRate(running.usd_per_hour)} · ${running.idle_remaining_seconds!=null?'idle stop in '+clockText(running.idle_remaining_seconds):running.ready&&!running.idle_timeout_seconds?'idle stop off: runs until you stop it':'idle timer starts when ready'}`:'No GPU container is billing yet.';
  $('remote-idle-row').hidden=!running.running;
  if(!running.running)idleEdited=false;
  if(document.activeElement!==$('remote-idle')&&!idleEdited)$('remote-idle').value=running.idle_timeout_seconds?Math.round(running.idle_timeout_seconds/60):'';
@@ -561,9 +563,13 @@ function renderHardware(hardware){
  $('ram-available').textContent=Number.isFinite(ram.available_gib)?`${fmt(ram.available_gib)} GiB RAM available to applications.`:'Available RAM could not be read.';
 }
 const pendingDownloads=new Set();
+// Key a pending download the way its click handler does: a remote download is
+// held under `${backend}:${id}`, so reading data-download alone would miss it
+// and a rerender would enable the button in the middle of the request.
+const downloadKey=b=>b.dataset.remoteDownload?`${b.dataset.store||currentLaunch()?.backend}:${b.dataset.remoteDownload}`:b.dataset.download;
 function modelControlsState(){
  for(const b of document.querySelectorAll('[data-select-model],[data-download],[data-verify],[data-remote-download],[data-remote-remove]')){
-  b.disabled=!connected||pendingAction||pendingDownloads.has(b.dataset.download)||(b.dataset.selectModel?(resolving||scanPending||b.dataset.selectModel===currentLaunch()?.model):false);
+  b.disabled=!connected||pendingAction||pendingDownloads.has(downloadKey(b))||(b.dataset.selectModel?(resolving||scanPending||b.dataset.selectModel===currentLaunch()?.model):false);
  }
 }
 function renderMarkup(id,markup){
@@ -1056,7 +1062,7 @@ async function refreshOrphans(){
 function renderOrphans(){
  $('orphan-banner').hidden=!orphans.length;
  const running=!!statusState.engine?.running;
- renderMarkup('orphan-banner',orphans.length?`<h2>${orphans.length===1?'A remote model is':'Remote models are'} still running from an earlier session</h2><p class="muted">No running lllm2 session owns ${orphans.length===1?'this call':'these calls'}, so ${orphans.length===1?'it bills':'they bill'} until adopted or stopped.</p>`+orphans.map(o=>{const label=backendInfo(o.provider)?.label||o.provider;return `<div class="orphan-row"><div><b>${esc(label)} · ${esc(o.gpu||'unknown GPU')} · ${esc(modelName(o.model))}</b><small>Running ${clockText(o.elapsed_seconds)} when checked · about ${money(o.estimated_cost_usd)} so far at ~$${(o.usd_per_hour??0).toFixed(2)}/hour · call ${esc(o.id)}</small>${o.adoptable?'':'<small>No saved key on this workstation, so it can only be stopped.</small>'}<small>${esc(o.caveat||'')}</small></div><div class="row"><button id="adopt-${esc(o.id)}" data-adopt="${esc(o.id)}" data-provider="${esc(o.provider)}" ${o.adoptable?'':'disabled'}>${running?'Stop current model and adopt':'Adopt and serve'}</button><button id="stop-call-${esc(o.id)}" data-stop-call="${esc(o.id)}" data-provider="${esc(o.provider)}">Stop call</button></div></div>`;}).join(''):'');
+ renderMarkup('orphan-banner',orphans.length?`<h2>${orphans.length===1?'A remote model is':'Remote models are'} still running from an earlier session</h2><p class="muted">No running lllm2 session owns ${orphans.length===1?'this call':'these calls'}, so ${orphans.length===1?'it bills':'they bill'} until adopted or stopped.</p>`+orphans.map(o=>{const label=backendInfo(o.provider)?.label||o.provider;return `<div class="orphan-row"><div><b>${esc(label)} · ${esc(o.gpu||'unknown GPU')} · ${esc(modelName(o.model))}</b><small>Running ${clockText(o.elapsed_seconds)} when checked · about ${money(o.estimated_cost_usd)} so far at ${hourlyRate(o.usd_per_hour)} · call ${esc(o.id)}</small>${o.adoptable?'':'<small>No saved key on this workstation, so it can only be stopped.</small>'}<small>${esc(o.caveat||'')}</small></div><div class="row"><button id="adopt-${esc(o.id)}" data-adopt="${esc(o.id)}" data-provider="${esc(o.provider)}" ${o.adoptable?'':'disabled'}>${running?'Stop current model and adopt':'Adopt and serve'}</button><button id="stop-call-${esc(o.id)}" data-stop-call="${esc(o.id)}" data-provider="${esc(o.provider)}">Stop call</button></div></div>`;}).join(''):'');
 }
 $('orphan-banner').onclick=e=>attempt(async()=>{
  const adopt=e.target.closest('[data-adopt]'),stop=e.target.closest('[data-stop-call]'),b=adopt||stop;if(!b||b.disabled)return;
