@@ -151,9 +151,14 @@ class FakeEngine(Engine):
                     self.reply({"data": [{"id": engine.argv[2]}]})
                 elif self.path == "/props":
                     s = engine.settings
+                    # llama.cpp reports the context of one slot here, not the
+                    # whole pool. Settings validation rejects a context the
+                    # slots do not divide exactly, so this division is safe.
                     self.reply(
                         {
-                            "default_generation_settings": {"n_ctx": s.context},
+                            "default_generation_settings": {
+                                "n_ctx": s.context // s.slots
+                            },
                             "total_slots": s.slots,
                         }
                     )
