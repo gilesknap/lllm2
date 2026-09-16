@@ -1,9 +1,15 @@
 """Metadata discovery, catalogue ownership and persistent download queue behaviour."""
 
+import email.message
+import http.client
+import io
 import queue
+import struct
 import tempfile
 import threading
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -258,3 +264,90 @@ class CatalogueTests(unittest.TestCase):
         self.assertTrue(path.exists())
         self.assertIsNotNone(self.store.get("default", "saved"))
         self.assertIsNone(self.store.get("catalogue", "new"))
+
+
+class Truncated(io.BytesIO):
+    """A response that promises more bytes than it delivers, as a cut CDN does."""
+
+    def __init__(self, data, status, headers):
+        super().__init__(data)
+        self.status, self.headers = status, headers
+
+
+class LocalDownloadRetryTests(unittest.TestCase):
+    """A dropped connection resumes instead of failing the whole download."""
+
+    DATA = b"GGUF" + struct.pack("<IQQ", 3, 0, 0)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        patcher = patch.object(downloads, "retry_delay", lambda *_: 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _download(self, plan):
+        """Run one download whose responses stop after ``plan`` bytes each."""
+        target = self.root / "m.gguf"
+        dl = downloads.Download(
+            id="x", name="M", repo="o/r", file="m.gguf", target=target
+        )
+        plan, requests = list(plan), []
+
+        def opener(request, timeout=None, context=None):
+            if request.get_method() == "HEAD":
+                return Truncated(b"", 200, {"Content-Length": str(len(self.DATA))})
+            ranged = request.get_header("Range")
+            requests.append(ranged)
+            start = int(ranged[len("bytes=") : -1]) if ranged else 0
+            serve = plan.pop(0) if plan else None
+            headers = {"Content-Length": str(len(self.DATA) - start)}
+            status = 200
+            if start:
+                status = 206
+                headers["Content-Range"] = f"bytes {start}-{len(self.DATA) - 1}/"
+                headers["Content-Range"] += str(len(self.DATA))
+            body = (
+                self.DATA[start:] if serve is None else self.DATA[start : start + serve]
+            )
+            return Truncated(body, status, headers)
+
+        with patch.object(downloads.urllib.request, "urlopen", side_effect=opener):
+            downloads._run(dl)
+        return dl, target, requests
+
+    def test_a_cut_connection_resumes_and_the_download_completes(self):
+        dl, target, requests = self._download([5])
+        self.assertEqual(dl.state, "complete")
+        self.assertEqual(target.read_bytes(), self.DATA)
+        self.assertEqual(requests, [None, "bytes=5-"])
+
+    def test_five_attempts_without_progress_fail_and_keep_the_part_file(self):
+        dl, target, requests = self._download([5, 0, 0, 0, 0, 0])
+        self.assertEqual(dl.state, "error")
+        self.assertIn("ended early after 6 attempts", dl.detail)
+        self.assertIn("5 bytes are kept", dl.detail)
+        part = target.with_suffix(target.suffix + ".part")
+        self.assertEqual(part.read_bytes(), self.DATA[:5])
+        self.assertEqual(len(requests), 6)
+
+
+class TransientErrorTests(unittest.TestCase):
+    """Which transfer failures are worth another ranged request."""
+
+    def test_connection_failures_retry_and_a_missing_file_does_not(self):
+        url = "https://huggingface.co/o/r/resolve/main/m.gguf"
+        headers = email.message.Message()
+        self.assertTrue(downloads.transient(ConnectionResetError()))
+        self.assertTrue(downloads.transient(TimeoutError()))
+        self.assertTrue(downloads.transient(http.client.IncompleteRead(b"")))
+        self.assertTrue(
+            downloads.transient(
+                urllib.error.HTTPError(url, 503, "Unavailable", headers, None)
+            )
+        )
+        for code in (401, 404, 416):
+            error = urllib.error.HTTPError(url, code, "No", headers, None)
+            self.assertFalse(downloads.transient(error))
+        self.assertFalse(downloads.transient(ValueError("unexpected range")))

@@ -1,6 +1,7 @@
 """The Modal provider and app functions, with a fake ``modal`` module."""
 
 import dis
+import email.message
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import sys
 import tarfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -571,7 +573,7 @@ def test_fetch_model_requests_nothing_when_every_file_is_complete(
     )
     assert meta == META
     size = len(GGUF)
-    assert updates == [("m.gguf", size, size), ("mmproj.gguf", size, size)]
+    assert updates == [("m.gguf", size, size, None), ("mmproj.gguf", size, size, None)]
 
 
 def test_serve_call_lifecycle(fake, provider):
@@ -753,26 +755,126 @@ def test_fetch_model_resumes_a_partial_file(tmp_path):
     ]
     assert (directory / "m.gguf").read_bytes() == GGUF
     assert not (directory / "m.gguf.part").exists()
-    assert updates[-1] == ("extra.gguf", len(GGUF), len(GGUF))
+    assert updates[-1] == ("extra.gguf", len(GGUF), len(GGUF), None)
     assert commits and meta["error"] is None
 
 
-def test_fetch_model_keeps_a_short_download_for_resume(tmp_path):
-    def opener(request, timeout, context):
-        return Response(GGUF[:5], 200, {"Content-Length": str(len(GGUF))})
+class FakeSource:
+    """A Hugging Face file whose connection drops on scripted attempts.
 
-    with pytest.raises(RuntimeError, match="ended early"):
-        modal_app.fetch_model(
-            "M/m.gguf",
-            "o/r",
-            ["m.gguf"],
-            "v1",
-            lambda *u: None,
-            lambda: None,
-            root=str(tmp_path),
-            opener=opener,
-        )
+    Every response declares the whole remaining length, as Hugging Face does,
+    and then serves fewer bytes: exactly how a cut connection looks, because
+    ``http.client`` returns an empty read instead of raising.
+    """
+
+    def __init__(self, data, plan):
+        """Serve ``data``, giving each attempt the bytes or error in ``plan``.
+
+        Args:
+            data: The whole file.
+            plan: One entry per attempt: a byte count to truncate at, an
+                exception to raise, or None to serve the rest of the file.
+        """
+        self.data, self.plan, self.requests = data, list(plan), []
+
+    def __call__(self, request, timeout, context):
+        ranged = request.get_header("Range")
+        self.requests.append(ranged)
+        start = int(ranged[len("bytes=") : -1]) if ranged else 0
+        serve = self.plan.pop(0) if self.plan else None
+        if isinstance(serve, Exception):
+            raise serve
+        headers = {"Content-Length": str(len(self.data) - start)}
+        status = 200
+        if start:
+            status = 206
+            headers["Content-Range"] = f"bytes {start}-{len(self.data) - 1}/"
+            headers["Content-Range"] += str(len(self.data))
+        body = self.data[start:] if serve is None else self.data[start : start + serve]
+        return Response(body, status, headers)
+
+
+def _fetch(tmp_path, opener, **options):
+    """Run ``fetch_model`` for one file without waiting for real backoffs."""
+    updates, waits = [], []
+    options.setdefault("sleep", waits.append)
+    meta = modal_app.fetch_model(
+        "M/m.gguf",
+        "o/r",
+        ["m.gguf"],
+        None,
+        lambda *update: updates.append(update),
+        lambda: None,
+        root=str(tmp_path),
+        opener=opener,
+        **options,
+    )
+    return meta, updates, waits
+
+
+def test_fetch_model_retries_a_short_read_from_the_bytes_on_disk(tmp_path):
+    source = FakeSource(GGUF, [5])
+    meta, updates, waits = _fetch(tmp_path, source)
+    assert meta["error"] is None
+    assert (tmp_path / "M" / "m.gguf").read_bytes() == GGUF
+    assert source.requests == [None, "bytes=5-"]
+    assert sum(waits) == 2.0
+    # The retry is reported, so the panel does not show a stalled download.
+    notes = [update[3] for update in updates if update[3]]
+    assert notes and all(note.startswith("retry 1 after") for note in notes)
+    assert updates[-1] == ("m.gguf", len(GGUF), len(GGUF), None)
+
+
+def test_fetch_model_retries_a_reset_connection_and_a_read_timeout(tmp_path):
+    source = FakeSource(GGUF, [ConnectionResetError("reset by peer"), TimeoutError()])
+    meta, updates, waits = _fetch(tmp_path, source)
+    assert meta["error"] is None and source.requests == [None, None, None]
+    assert sum(waits) == 2.0 + 4.0
+    assert any("reset by peer" in update[3] for update in updates if update[3])
+
+
+def test_fetch_model_gives_up_after_five_attempts_that_add_nothing(tmp_path):
+    # Five failures in a row that add nothing, after one that moved the file.
+    source = FakeSource(GGUF, [5, *[0] * 5])
+    with pytest.raises(RuntimeError) as error:
+        _fetch(tmp_path, source)
+    assert "ended early after 6 attempts" in str(error.value)
+    assert "5 bytes are kept" in str(error.value)
     assert (tmp_path / "M" / "m.gguf.part").read_bytes() == GGUF[:5]
+    assert len(source.requests) == 6
+
+
+def test_fetch_model_keeps_going_while_attempts_add_bytes(tmp_path):
+    # Eight failures in a row, each adding a byte: progress resets the count.
+    source = FakeSource(GGUF, [1] * 8)
+    meta, _updates, waits = _fetch(tmp_path, source)
+    assert meta["error"] is None
+    assert (tmp_path / "M" / "m.gguf").read_bytes() == GGUF
+    assert len(source.requests) == 9 and waits.count(0.5) == len(waits)
+
+
+def test_fetch_model_stops_during_a_backoff_when_cancelled(tmp_path):
+    cancel = threading.Event()
+    source = FakeSource(GGUF, [5])
+    with pytest.raises(RuntimeError, match="cancelled"):
+        _fetch(tmp_path, source, cancel=cancel, sleep=lambda _pause: cancel.set())
+    # One slice of the backoff, not the whole two seconds.
+    assert len(source.requests) == 1
+    assert (tmp_path / "M" / "m.gguf.part").read_bytes() == GGUF[:5]
+
+
+def test_fetch_model_does_not_retry_a_missing_file(tmp_path):
+    requests = []
+
+    def opener(request, timeout, context):
+        requests.append(request.full_url)
+        raise urllib.error.HTTPError(
+            request.full_url, 404, "Not Found", email.message.Message(), None
+        )
+
+    with pytest.raises(urllib.error.HTTPError):
+        _fetch(tmp_path, opener)
+    assert len(requests) == 1
 
 
 def test_download_stops_when_the_owner_goes_silent(tmp_path):

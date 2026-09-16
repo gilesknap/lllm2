@@ -207,6 +207,9 @@ class App:
             return out
         entries = stored_entries(self.catalogue.list())
         names = {m.name for m in stored}
+        # A model that is in the store is proof that any earlier download
+        # failure for it is over, whichever route placed it there.
+        self.store_downloads.settle(backend, names)
         out["stored_ids"] = [e["id"] for name, e in entries.items() if name in names]
         out["calls"] = rows
         out["models"] = [

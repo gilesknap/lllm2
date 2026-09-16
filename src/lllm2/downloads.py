@@ -8,8 +8,10 @@ handler that started it.
 
 from __future__ import annotations
 
+import http.client
 import queue
 import shutil
+import ssl
 import threading
 import time
 import urllib.error
@@ -24,6 +26,75 @@ from .tls import download_context
 
 CHUNK = 4 * 1024 * 1024
 USER_AGENT = "lllm2/0.1 (+https://github.com/gilesknap/lllm2)"
+
+#: Consecutive attempts that add no bytes before a file download gives up. An
+#: attempt that adds bytes resets the count, so a long transfer survives any
+#: number of resets as long as it keeps moving.
+RETRY_ATTEMPTS = 5
+#: Seconds to wait before each consecutive failed attempt, last value repeating.
+RETRY_BACKOFF = (2.0, 4.0, 8.0, 16.0, 30.0)
+#: Seconds between cancel and heartbeat checks while backing off.
+RETRY_POLL = 0.5
+
+
+def retry_delay(stalled: int, backoff: tuple[float, ...] = RETRY_BACKOFF) -> float:
+    """Return the backoff before a retry.
+
+    Args:
+        stalled: The number of consecutive attempts that added no bytes, from 1.
+        backoff: The delays, the last one repeating.
+
+    Returns:
+        The seconds to wait.
+    """
+    return backoff[min(max(stalled, 1), len(backoff)) - 1]
+
+
+def transient(error: BaseException) -> bool:
+    """Return whether a transfer error is worth retrying with a Range request.
+
+    A reset connection, a read timeout and a truncated body all leave the bytes
+    already written on disk, so a ranged request continues where it stopped.
+    An HTTP status means the request itself was refused: a 404 or a 401 will
+    not improve with another try, while a 5xx may.
+
+    Args:
+        error: The exception the attempt raised.
+
+    Returns:
+        True when another attempt is worth making.
+    """
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500
+    if isinstance(error, urllib.error.URLError) and isinstance(
+        error.reason, BaseException
+    ):
+        return transient(error.reason)
+    return isinstance(
+        error,
+        http.client.IncompleteRead
+        | ConnectionError
+        | TimeoutError
+        | ssl.SSLError
+        | urllib.error.URLError,
+    )
+
+
+def short_read_message(file: str, tries: int, kept: int) -> str:
+    """Return the message for a file that never finished.
+
+    Args:
+        file: The file name.
+        tries: The attempts made.
+        kept: The bytes left on disk for a later resume.
+
+    Returns:
+        The failure text, which names the attempts and the bytes kept.
+    """
+    return (
+        f"Download of {file} ended early after {tries} attempts; "
+        f"{kept} bytes are kept, so a retry resumes."
+    )
 
 
 @dataclass
@@ -94,13 +165,26 @@ def _size_of(repo: str, file: str, revision: str = "main") -> int:
         return 0
 
 
-def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
-    """One file, resuming a part file if there is one. ``base`` is bytes already
-    finished in this download, so progress runs across the whole job."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_suffix(target.suffix + ".part")
-    part.parent.mkdir(parents=True, exist_ok=True)
-    resume = part.stat().st_size if part.exists() else 0
+def _attempt(
+    dl: Download, file: str, part: Path, base: int, resume: int
+) -> bool | None:
+    """One transfer attempt for a file, appending to its part file.
+
+    A truncated body is not an error here: ``http.client`` returns an empty
+    read when a connection drops mid-body rather than raising, so the caller
+    compares the bytes on disk with the expected length.
+
+    Args:
+        dl: The download being run.
+        file: The repository file.
+        part: The part file to append to.
+        base: Bytes already finished in this job, for whole-job progress.
+        resume: Bytes already in the part file.
+
+    Returns:
+        True when the file is complete, False when the body ended early, or
+        None when the download was cancelled.
+    """
     req = urllib.request.Request(url_for(dl.repo, file, dl.revision))
     req.add_header("User-Agent", USER_AGENT)
     if resume:
@@ -122,15 +206,52 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
                 if dl._cancel.is_set():
                     dl.state = "cancelled"
                     dl.detail = "cancelled; part file kept for resume"
-                    return False
+                    return None
                 chunk = r.read(CHUNK)
                 if not chunk:
                     break
                 f.write(chunk)
                 received += len(chunk)
                 dl.done += len(chunk)
-        if expected and received != expected:
-            raise ValueError("Download incomplete; partial file retained for resume")
+        return not expected or received == expected
+
+
+def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
+    """One file, resuming a part file if there is one. ``base`` is bytes already
+    finished in this download, so progress runs across the whole job.
+
+    A dropped connection retries from the bytes on disk. Only attempts that add
+    no bytes count towards the limit, so a transfer that keeps moving survives
+    any number of resets.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_suffix(target.suffix + ".part")
+    part.parent.mkdir(parents=True, exist_ok=True)
+    stalled = tries = 0
+    while True:
+        resume = part.stat().st_size if part.exists() else 0
+        tries += 1
+        try:
+            complete = _attempt(dl, file, part, base, resume)
+        except Exception as error:
+            if not transient(error):
+                raise
+            complete, reason = False, str(error) or type(error).__name__
+        else:
+            if complete is None:
+                return False
+            if complete:
+                break
+            reason = "the connection closed early"
+        kept = part.stat().st_size if part.exists() else 0
+        stalled = 0 if kept > resume else stalled + 1
+        if stalled >= RETRY_ATTEMPTS:
+            raise ValueError(short_read_message(file, tries, kept))
+        dl.detail = f"retry {tries} after {reason}"
+        if dl._cancel.wait(retry_delay(stalled)):
+            dl.state = "cancelled"
+            dl.detail = "cancelled; part file kept for resume"
+            return False
     from . import gguf
 
     gguf.header(part)

@@ -26,6 +26,7 @@ from lllm2.proxy import Upstream
 from lllm2.remote import (
     DownloadProgress,
     GpuProbe,
+    ProviderError,
     RemoteCall,
     RemoteProvider,
     ServeStatus,
@@ -240,7 +241,14 @@ class FakeProvider(RemoteProvider):
     name = "fake"
     server_host = "127.0.0.1"
 
-    def __init__(self, root, server_env=None, download_seconds=0.0, clock=time.time):
+    def __init__(
+        self,
+        root,
+        server_env=None,
+        download_seconds=0.0,
+        clock=time.time,
+        fail_downloads=0,
+    ):
         """Create a provider that keeps its calls and store under a directory.
 
         Args:
@@ -251,6 +259,8 @@ class FakeProvider(RemoteProvider):
             download_seconds: How long a model download takes.
             clock: The wall clock in Unix seconds that stamps call starts and
                 heartbeats, so a test can age them without waiting.
+            fail_downloads: How many downloads end early before one succeeds,
+                as a cut Hugging Face connection does.
         """
         self.root = Path(root)
         self.clock = clock
@@ -261,6 +271,7 @@ class FakeProvider(RemoteProvider):
         self.server_port = free_port()
         self.server_env = dict(server_env or {})
         self.download_seconds = download_seconds
+        self.fail_downloads = fail_downloads
         self.probes = []
         self.downloads = []
         self.spawned = []
@@ -275,6 +286,11 @@ class FakeProvider(RemoteProvider):
 
     def ensure_model(self, source, progress, cancel):
         target = self.root / "volume" / source.name
+        if not target.exists() and self.fail_downloads:
+            self.fail_downloads -= 1
+            raise ProviderError(
+                f"Download of {source.files[0]} ended early; the partial file is kept."
+            )
         if not target.exists():
             for step in (1, 2, 3):
                 if cancel.wait(self.download_seconds / 3):

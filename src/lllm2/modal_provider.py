@@ -183,7 +183,10 @@ class ModalProvider(RemoteProvider):
                 if update:
                     progress(
                         DownloadProgress(
-                            update["file"], update["done_bytes"], update["total_bytes"]
+                            update["file"],
+                            update["done_bytes"],
+                            update["total_bytes"],
+                            update.get("retry"),
                         )
                     )
         finally:

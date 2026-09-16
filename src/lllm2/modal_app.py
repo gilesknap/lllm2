@@ -40,7 +40,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import __version__, discovery, engine_install, gguf
-from .downloads import CHUNK, USER_AGENT, url_for
+from .downloads import (
+    CHUNK,
+    RETRY_ATTEMPTS,
+    RETRY_POLL,
+    USER_AGENT,
+    retry_delay,
+    short_read_message,
+    transient,
+    url_for,
+)
 from .engine_release import CUDA_TRACKS, LLAMA_CPP_REF
 from .tls import download_context
 
@@ -71,6 +80,7 @@ LOG_BATCH = 200
 
 DEPLOYMENT_KEY = "deployment"
 OWNER_LOST = "the local lllm2 process stopped sending heartbeats"
+DOWNLOAD_CANCELLED = "Download cancelled; the partial file is kept."
 
 INSTALL_MESSAGE = (
     "The Modal backend needs the Modal client. "
@@ -242,9 +252,11 @@ def fetch_model(
     repo: str,
     files: list[str],
     revision: str | None,
-    progress: Callable[[str, int, int | None], None],
+    progress: Callable[[str, int, int | None, str | None], None],
     commit: Callable[[], None],
     root: str = MODEL_ROOT,
+    cancel: Any = None,
+    sleep: Callable[[float], None] = time.sleep,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> dict:
     """Download a model's files into the store, resuming partial files.
@@ -252,16 +264,26 @@ def fetch_model(
     A file downloads to ``<file>.part`` and is renamed once complete and, for
     a GGUF, once its header parses.
 
+    A tens-of-gigabyte transfer over one connection is regularly cut short by
+    the Hugging Face CDN, so a dropped, reset or timed-out connection retries
+    from the bytes on disk with a ranged request. Only attempts that add no
+    bytes count towards ``RETRY_ATTEMPTS``: a transfer that keeps moving
+    survives any number of resets. Every attempt commits first, so the bytes
+    stay in the store even if the container dies.
+
     Args:
         name: The store-relative path of the main file.
         repo: The Hugging Face repository.
         files: The repository files, main file first.
         revision: The repository revision, or None for ``main``.
-        progress: A callable that receives the file, bytes present and total
-            bytes (None when unknown).
+        progress: A callable that receives the file, bytes present, total bytes
+            (None when unknown) and a retry note (None during normal
+            progress). It may raise to stop the download.
         commit: A callable that persists the store, so a cancelled download
             can resume.
         root: The store mount point.
+        cancel: An object with ``is_set()`` that stops the download, or None.
+        sleep: The sleep callable, replaceable in tests.
         opener: The ``urlopen`` callable, replaceable in tests.
 
     Returns:
@@ -269,19 +291,19 @@ def fetch_model(
 
     Raises:
         ValueError: A path is unsafe or the server returned an unexpected range.
-        RuntimeError: A download ended early.
+        RuntimeError: Every retry of a file failed to add a byte, or the
+            download was cancelled. Completed bytes stay for a later resume.
     """
     directory = Path(root) / store_directory(name, files)
     committed = time.monotonic()
-    for file in files:
-        target = directory / file
-        part = target.with_name(target.name + ".part")
-        if target.is_file():
-            size = target.stat().st_size
-            progress(file, size, size)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        resume = part.stat().st_size if part.is_file() else 0
+
+    def check_cancel():
+        if cancel is not None and cancel.is_set():
+            raise RuntimeError(DOWNLOAD_CANCELLED)
+
+    def attempt(file: str, part: Path, resume: int) -> tuple[int, int | None]:
+        """Read a file once. Returns the bytes on disk and the expected total."""
+        nonlocal committed
         request = urllib.request.Request(
             url_for(repo, file, revision or "main"), headers={"User-Agent": USER_AGENT}
         )
@@ -294,38 +316,89 @@ def fetch_model(
             # 416 means the part file already holds the whole file.
             if not (resume and error.code == 416):
                 raise
-            response = None
-        if response is not None:
-            with response:
-                if resume and response.status != 206:
-                    resume = 0
-                if resume and not response.headers.get("Content-Range", "").startswith(
-                    f"bytes {resume}-"
-                ):
-                    raise ValueError("Download server returned an unexpected range")
-                length = response.headers.get("Content-Length") or ""
-                total = resume + int(length) if length.isdecimal() else None
-                done = resume
-                progress(file, done, total)
-                reported = time.monotonic()
-                with part.open("ab" if resume else "wb") as output:
-                    while chunk := response.read(CHUNK):
-                        output.write(chunk)
-                        done += len(chunk)
-                        now = time.monotonic()
-                        if now - reported >= 1:
-                            progress(file, done, total)
-                            reported = now
-                        if now - committed >= COMMIT_SECONDS:
-                            output.flush()
-                            commit()
-                            committed = now
-                progress(file, done, total)
-                if total is not None and done != total:
-                    commit()
-                    raise RuntimeError(
-                        f"Download of {file} ended early; the partial file is kept."
-                    )
+            return resume, resume
+        with response:
+            if resume and response.status != 206:
+                resume = 0
+            if resume and not response.headers.get("Content-Range", "").startswith(
+                f"bytes {resume}-"
+            ):
+                raise ValueError("Download server returned an unexpected range")
+            length = response.headers.get("Content-Length") or ""
+            total = resume + int(length) if length.isdecimal() else None
+            done = resume
+            progress(file, done, total, None)
+            reported = time.monotonic()
+            with part.open("ab" if resume else "wb") as output:
+                while chunk := response.read(CHUNK):
+                    check_cancel()
+                    output.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if now - reported >= 1:
+                        progress(file, done, total, None)
+                        reported = now
+                    if now - committed >= COMMIT_SECONDS:
+                        output.flush()
+                        commit()
+                        committed = now
+            progress(file, done, total, None)
+            return done, total
+
+    def back_off(seconds: float, file: str, done: int, total: int | None, note: str):
+        """Wait before a retry, checking the cancel flag and the owner.
+
+        The wait runs in short slices rather than one sleep, so a cancel or a
+        dead owner ends it promptly instead of after the whole backoff.
+        """
+        left = seconds
+        while True:
+            check_cancel()
+            # The progress callback carries the owner heartbeat check, so a
+            # dead owner ends the wait rather than the backoff outliving it.
+            progress(file, done, total, note)
+            if left <= 0:
+                return
+            pause = min(left, RETRY_POLL)
+            sleep(pause)
+            left -= pause
+
+    for file in files:
+        target = directory / file
+        part = target.with_name(target.name + ".part")
+        if target.is_file():
+            size = target.stat().st_size
+            progress(file, size, size, None)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        stalled = tries = 0
+        known: int | None = None
+        while True:
+            check_cancel()
+            resume = part.stat().st_size if part.is_file() else 0
+            tries += 1
+            try:
+                done, total = attempt(file, part, resume)
+            except Exception as error:
+                if not transient(error):
+                    raise
+                # Keep the size from an earlier attempt, so the bar holds its
+                # place instead of dropping back to nothing.
+                total, reason = known, str(error) or type(error).__name__
+            else:
+                known = total if total is not None else known
+                if total is None or done >= total:
+                    break
+                reason = "the connection closed early"
+            kept = part.stat().st_size if part.is_file() else 0
+            stalled = 0 if kept > resume else stalled + 1
+            commit()
+            committed = time.monotonic()
+            if stalled >= RETRY_ATTEMPTS:
+                raise RuntimeError(short_read_message(file, tries, kept))
+            note = f"retry {tries} after {reason}"
+            print(f"lllm2: {file}: {note}", flush=True)
+            back_off(retry_delay(stalled), file, kept, total, note)
         if file.lower().endswith(".gguf"):
             gguf.header(part)
         part.rename(target)
@@ -540,6 +613,8 @@ def run_download(
     commit: Callable[[], None],
     grace: float = OWNER_GRACE_SECONDS,
     root: str = MODEL_ROOT,
+    cancel: Any = None,
+    sleep: Callable[[float], None] = time.sleep,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> dict:
     """Download a model, publish progress and stop if the owner goes silent.
@@ -554,27 +629,45 @@ def run_download(
         commit: A callable that persists the store.
         grace: Seconds without an owner heartbeat before the download stops.
         root: The store mount point.
+        cancel: An object with ``is_set()`` that stops the download, or None.
+        sleep: The sleep callable, replaceable in tests.
         opener: The ``urlopen`` callable, replaceable in tests.
 
     Returns:
         The main file's metadata in the ``discovery.metadata()`` shape.
 
     Raises:
-        RuntimeError: The owner stopped sending heartbeats, or a download
-            ended early. Completed bytes stay for a later resume.
+        RuntimeError: The owner stopped sending heartbeats, the download was
+            cancelled, or every retry of a file added no bytes. Completed
+            bytes stay for a later resume.
         ValueError: A path is unsafe or the server returned an unexpected range.
     """
     owner = OwnerWatch(state, call_id, grace)
     key = download_key(call_id)
 
-    def progress(file, done, total):
+    def progress(file, done, total, retry=None):
         if owner.lost():
             commit()
             raise RuntimeError(f"Download stopped: {OWNER_LOST}.")
-        state.put(key, {"file": file, "done_bytes": done, "total_bytes": total})
+        record = {"file": file, "done_bytes": done, "total_bytes": total}
+        if retry:
+            # The panel shows this, so a retry does not read as a stalled bar.
+            record["retry"] = retry
+        state.put(key, record)
 
     try:
-        return fetch_model(name, repo, files, revision, progress, commit, root, opener)
+        return fetch_model(
+            name,
+            repo,
+            files,
+            revision,
+            progress,
+            commit,
+            root=root,
+            cancel=cancel,
+            sleep=sleep,
+            opener=opener,
+        )
     finally:
         state.pop(key, None)
 

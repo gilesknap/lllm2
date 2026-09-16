@@ -23,7 +23,7 @@ from lllm2.bench import Bench
 from lllm2.catalogue import Catalogue
 from lllm2.engine import LocalEngine
 from lllm2.modal_provider import ModalProvider
-from lllm2.remote import CallRecords, StoreDownloads
+from lllm2.remote import CallRecords, StoreDownloads, catalogue_source
 from lllm2.settings import Settings
 from lllm2.store import Store
 from test_modal_provider import META, FakeModal
@@ -722,3 +722,60 @@ def local_panel_without_modal(app, local):
     s = Settings.parse({"model": model_path(), "backend": "modal", "gpu_type": "T4"})
     with pytest.raises(remote.ProviderError, match=r"lllm2\[modal\]"):
         app.action("/api/start", {"settings": s.dict()})
+
+
+def states(app):
+    """Map each download row's catalogue id to its state."""
+    return {row["catalogue_id"]: row["state"] for row in app.store_downloads.rows()}
+
+
+def test_a_failed_download_stops_being_reported_once_a_retry_succeeds(app, providers):
+    """A retry that stores the model must clear the earlier failure."""
+    providers["options"] = {"fail_downloads": 1}
+    app.action("/api/remote/download", {"backend": "fake", "id": "example"})
+    assert eventually(lambda: app.store_downloads.rows()[0]["state"] == "error")
+    assert "ended early" in app.store_downloads.rows()[0]["detail"]
+    app.action("/api/remote/download", {"backend": "fake", "id": "example"})
+    assert eventually(lambda: app.store_downloads.rows()[0]["state"] == "complete")
+    rows = app.store_downloads.rows()
+    assert [row["state"] for row in rows] == ["complete"]
+    assert not any("ended early" in (row["detail"] or "") for row in rows)
+    assert app.action("/api/remote", {"backend": "fake"})["stored_ids"] == ["example"]
+
+
+def test_a_failure_clears_when_the_model_arrives_by_another_route(app, providers):
+    """A launch that stores the model settles the Downloads card's failure."""
+    providers["options"] = {"fail_downloads": 1}
+    other = dict(ENTRY, id="other", name="Other", file="other.gguf")
+    provider = app.remote_engine("fake").provider
+    app.action("/api/remote/download", {"backend": "fake", "id": "example"})
+    app.store_downloads.start(provider, other)
+    assert eventually(
+        lambda: states(app) == {"example": "error", "other": "complete"}
+    ), app.store_downloads.rows()
+    # The failed model arrives through a launch instead of the Downloads card.
+    provider.ensure_model(
+        catalogue_source(app.catalogue.get("example")),
+        lambda _update: None,
+        threading.Event(),
+    )
+    view = app.action("/api/remote", {"backend": "fake"})
+    assert sorted(view["stored_ids"]) == ["example"]
+    assert [row["catalogue_id"] for row in app.store_downloads.rows()] == ["other"]
+
+
+def test_a_failure_for_another_model_stays_visible(app, providers):
+    """Settling one model leaves another model's failure alone."""
+    providers["options"] = {"fail_downloads": 2}
+    provider = app.remote_engine("fake").provider
+    other = dict(ENTRY, id="other", name="Other", file="other.gguf")
+    app.action("/api/remote/download", {"backend": "fake", "id": "example"})
+    app.store_downloads.start(provider, other)
+    assert eventually(lambda: states(app) == {"example": "error", "other": "error"})
+    app.action("/api/remote/download", {"backend": "fake", "id": "example"})
+    assert eventually(
+        lambda: states(app) == {"example": "complete", "other": "error"}
+    ), app.store_downloads.rows()
+    # Listing the store settles only the model it holds.
+    app.action("/api/remote", {"backend": "fake"})
+    assert states(app) == {"example": "complete", "other": "error"}

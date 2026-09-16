@@ -109,11 +109,13 @@ class DownloadProgress:
         file: The file being downloaded.
         done_bytes: Bytes present in the store so far.
         total_bytes: The file size, or None when unknown.
+        retry: A note about a retry in progress, or None while bytes flow.
     """
 
     file: str
     done_bytes: int
     total_bytes: int | None
+    retry: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1220,6 +1222,9 @@ class StoreDownloads:
                 "store_name": source.name,
             }
             cancel = threading.Event()
+            # A fresh start of this model ends any earlier failure for it, even
+            # one recorded under another catalogue id.
+            self._forget(provider.name, source.name)
             self._jobs[job_id] = job | {"_cancel": cancel}
         threading.Thread(
             target=self._run, args=(provider, source, job_id, cancel), daemon=True
@@ -1229,6 +1234,34 @@ class StoreDownloads:
     def _update(self, job_id, **values):
         with self._lock:
             self._jobs[job_id].update(values)
+
+    def _forget(self, provider, store_name):
+        """Drop finished failures for one model. Call with the lock held."""
+        for key, job in list(self._jobs.items()):
+            if (
+                job["store"] == provider
+                and job["store_name"] == store_name
+                and job["state"] in ("error", "cancelled")
+            ):
+                del self._jobs[key]
+
+    def settle(self, provider, stored):
+        """Forget failures for models the provider now holds.
+
+        A download that failed and then succeeded by another route -- a launch
+        that placed the model, or a retry under a different catalogue id --
+        otherwise leaves a failed row that the panel keeps reporting. The model
+        being in the store is proof that the failure is over. Failures for
+        models that are still missing stay.
+
+        Args:
+            provider: The provider name.
+            stored: The store-relative names the provider holds.
+        """
+        names = set(stored)
+        with self._lock:
+            for name in names:
+                self._forget(provider, name)
 
     def _run(self, provider, source, job_id, cancel):
         sample = [time.monotonic(), 0]
@@ -1240,10 +1273,15 @@ class StoreDownloads:
                 rate = (update.done_bytes - sample[1]) / (now - sample[0]) / 2**20
             sample[:] = [now, update.done_bytes]
             total = update.total_bytes or 0
+            detail = f"Downloading {update.file} inside {provider.name}"
+            if update.retry:
+                # Say why the bytes stopped moving, so a retry does not read
+                # as a stalled download.
+                detail = f"{detail}: {update.retry}"
             self._update(
                 job_id,
                 file=update.file,
-                detail=f"Downloading {update.file} inside {provider.name}",
+                detail=detail,
                 done_gb=round(update.done_bytes / 1e9, 2),
                 total_gb=round(total / 1e9, 2),
                 percent=round(100 * update.done_bytes / total, 1) if total else 0,
