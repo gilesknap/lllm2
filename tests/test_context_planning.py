@@ -282,6 +282,31 @@ class UncataloguedPlanTests(unittest.TestCase):
         s, _ = self.resolve("/models/Mystery/Mystery-Q6_K.gguf", blind, BIG_CARD)
         self.assertEqual((s.context, s.slots), (8192, 1))
 
+    def test_a_junk_declared_context_is_not_a_limit(self):
+        """A header's context length is whatever the file says it is.
+
+        A malformed or unusual header reads back as a string, a float or an
+        array marker. Comparing one with the catalogue's limit raises, and a
+        float context fails settings validation later, so only positive
+        integers count as declared limits.
+        """
+        entry = next(m for m in defaults.CATALOG if m["id"] == "qwen3.8-27b")
+        for junk in ("<array of 4>", 262144.0, True, 0, -1, None, ""):
+            with self.subTest(context=junk):
+                self.assertEqual(
+                    defaults.planner_ceiling(None, {"context": junk}),
+                    defaults.MAX_CONTEXT,
+                )
+                self.assertEqual(
+                    defaults.planner_ceiling(entry, {"context": junk}), entry["max_ctx"]
+                )
+                # The planner still runs, and still plans a whole integer: the
+                # unusable limit lowers nothing, so the budget is the ceiling.
+                s, result = self.resolve(Q8_PATH, dict(Q8_META, context=junk), BIG_CARD)
+                self.assertIsInstance(s.context, int)
+                self.assertEqual((s.context, s.slots), (defaults.MAX_CONTEXT, 1))
+                self.assertIn("calibrated planner", " ".join(result["notes"]))
+
     def test_no_gpu_is_an_error_not_a_default(self):
         host = {"gpus": [], "error": "No devices were found", "ram": {}}
         with self.assertRaisesRegex(ValueError, "No CUDA GPU is available"):

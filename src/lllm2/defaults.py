@@ -87,9 +87,16 @@ def planner_evidence(entry, meta):
 
 
 def planner_ceiling(entry, meta):
-    """Return the largest context any source allows for this checkpoint."""
-    declared = [(entry or {}).get("max_ctx"), (meta or {}).get("context"), MAX_CONTEXT]
-    return min(v for v in declared if v)
+    """Return the largest context any source allows for this checkpoint.
+
+    A header's context length is whatever the file says: a malformed or unusual
+    one yields a string, a float or an array marker, none of which can be
+    compared with an integer. Only positive integers are limits, and the
+    planner's own ceiling is always one of them, so an unreadable header lowers
+    nothing and an uncatalogued checkpoint still has an answer.
+    """
+    declared = [(entry or {}).get("max_ctx"), (meta or {}).get("context")]
+    return min([v for v in declared if type(v) is int and v > 0] + [MAX_CONTEXT])
 
 
 def context_plan(
