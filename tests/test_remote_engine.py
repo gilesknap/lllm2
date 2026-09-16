@@ -364,10 +364,12 @@ def test_call_that_ends_remotely_is_reported(model, providers, engines):
     engine = engines(provider)
     engine.start(Settings(model=model), threading.Event(), timeout=30)
     provider.cancel(engine.call_id)
-    assert eventually(lambda: not engine.alive())
-    state = engine.state()
-    assert state["phase"] == "exited"
-    assert "Remote engine stopped" in state["error"]
+    # Both facts latch, so wait for them together: a loaded machine must not
+    # read the engine between it stopping and the reason for it appearing.
+    assert eventually(
+        lambda: not engine.alive() and engine.state()["phase"] == "exited"
+    )
+    assert "Remote engine stopped" in engine.state()["error"]
 
 
 def monitor_rounds():
@@ -384,9 +386,10 @@ def test_idle_engine_stops_its_call(model, providers, engines, clock):
     monitor_rounds()
     assert engine.alive() and engine.status()["idle_remaining_seconds"] == 1
     clock.advance(1)
-    assert eventually(lambda: not engine.alive())
-    state = engine.state()
-    assert state["phase"] == "idle stopped" and state["call_id"] is None
+    assert eventually(
+        lambda: not engine.alive() and engine.state()["phase"] == "idle stopped"
+    )
+    assert engine.state()["call_id"] is None
     assert any("No requests for 60 seconds" in line for line in engine.logs())
     assert provider.calls() == []
 

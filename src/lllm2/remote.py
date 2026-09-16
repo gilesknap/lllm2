@@ -2120,10 +2120,12 @@ class RemoteEngine(Engine):
         with self.guard:
             if self._call is not call:
                 return
-            self._call = None
             self.ready = False
             self._phase = "exited"
             self._error = f"Remote engine stopped: {error or 'the serve call ended'}. See the engine log, then retry."
+            # Clear the call last. ``alive()`` reads it without the guard, so a
+            # reader that polls until the engine stops must already see why.
+            self._call = None
             call.done.set()
             call.proxy.close()
             self._records.remove(self.provider.name, call.id)
@@ -2141,9 +2143,10 @@ class RemoteEngine(Engine):
             except RuntimeError as e:
                 self._error = str(e)
             finally:
-                self._call = None
                 self.settings = None
                 self._phase = "idle stopped"
+                # Clear the call last, for the reason given in ``_ended``.
+                self._call = None
 
     def _cancel(self, call):
         call.done.set()
