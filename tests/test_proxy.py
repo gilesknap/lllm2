@@ -278,6 +278,32 @@ def test_unconnected_proxy_answers_service_unavailable():
         engine_proxy.close()
 
 
+def test_head_of_an_unready_proxy_carries_no_body():
+    """A HEAD reply must carry no body, or it desynchronises the connection.
+
+    HTTP/1.1 keeps the connection open, and a client that follows the spec
+    reads no body after a HEAD. Bytes written anyway are read as the start of
+    the next reply.
+    """
+    engine_proxy = EngineProxy(0)
+    engine_proxy.start()
+    connection = http.client.HTTPConnection("127.0.0.1", engine_proxy.port, timeout=5)
+    try:
+        connection.request("HEAD", "/health")
+        response = connection.getresponse()
+        assert (response.status, response.read()) == (503, b"")
+        # The headers still describe the body a GET would carry.
+        assert int(response.getheader("Content-Length")) > 0
+        # The next reply on the same connection parses, so nothing leaked.
+        connection.request("GET", "/health")
+        second = connection.getresponse()
+        assert second.status == 503
+        assert json.loads(second.read())["error"]["code"] == 503
+    finally:
+        connection.close()
+        engine_proxy.close()
+
+
 def test_unreachable_remote_answers_bad_gateway():
     messages = []
     engine_proxy = EngineProxy(0, messages.append)

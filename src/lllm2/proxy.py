@@ -221,7 +221,12 @@ class EngineProxy:
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                # A HEAD reply carries the headers the GET reply would have
+                # and none of its body, as ``relay`` already observes. A body
+                # here would be read as the start of the next reply on a
+                # kept-alive HTTP/1.1 connection.
+                if self.command != "HEAD":
+                    self.wfile.write(data)
 
             def forward(self):
                 length = self.headers.get("Content-Length")
