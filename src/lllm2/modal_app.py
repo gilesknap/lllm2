@@ -46,6 +46,8 @@ from .downloads import (
     RETRY_ATTEMPTS,
     RETRY_POLL,
     USER_AGENT,
+    StalePartError,
+    complete_length,
     retry_delay,
     short_read_message,
     transient,
@@ -251,39 +253,6 @@ def probe_container(binary: str | None = None) -> dict:
         if key.startswith(("GGML_", "CUDA_", "NVIDIA_")) or key == "LD_LIBRARY_PATH"
     }
     return {"name": name, "total_mib": int(total), "engine": engine}
-
-
-class StalePartError(Exception):
-    """A part file the server's file is shorter than, so it cannot resume."""
-
-    def __init__(self, total: int | None):
-        """Report the discarded part.
-
-        Args:
-            total: The complete length the server gave, or None when the
-                range header did not carry one.
-        """
-        super().__init__("the part file did not match the file on the server")
-        self.total = total
-
-
-def complete_length(header: str | None) -> int | None:
-    """Return the complete length a ``Content-Range`` header states.
-
-    A 416 answer carries ``bytes */N``, while a 206 carries
-    ``bytes FIRST-LAST/N``. Both end in the length, or in ``*`` when the
-    server does not know it.
-
-    Args:
-        header: The header value, or None when the response had none.
-
-    Returns:
-        The complete length in bytes, or None when it is absent or unusable.
-    """
-    if not header or not header.strip().startswith("bytes"):
-        return None
-    _, _, total = header.partition("/")
-    return int(total) if total.strip().isdecimal() else None
 
 
 def fetch_model(

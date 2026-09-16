@@ -97,6 +97,39 @@ def short_read_message(file: str, tries: int, kept: int) -> str:
     )
 
 
+class StalePartError(Exception):
+    """A part file the server's file is shorter than, so it cannot resume."""
+
+    def __init__(self, total: int | None):
+        """Report the discarded part.
+
+        Args:
+            total: The complete length the server gave, or None when the
+                range header did not carry one.
+        """
+        super().__init__("the part file did not match the file on the server")
+        self.total = total
+
+
+def complete_length(header: str | None) -> int | None:
+    """Return the complete length a ``Content-Range`` header states.
+
+    A 416 answer carries ``bytes */N``, while a 206 carries
+    ``bytes FIRST-LAST/N``. Both end in the length, or in ``*`` when the
+    server does not know it.
+
+    Args:
+        header: The header value, or None when the response had none.
+
+    Returns:
+        The complete length in bytes, or None when it is absent or unusable.
+    """
+    if not header or not header.strip().startswith("bytes"):
+        return None
+    _, _, total = header.partition("/")
+    return int(total) if total.strip().isdecimal() else None
+
+
 @dataclass
 class Download:
     """State of one in-flight or finished download."""
@@ -187,12 +220,33 @@ def _attempt(
     Returns:
         True when the file is complete, False when the body ended early, or
         None when the download was cancelled.
+
+    Raises:
+        StalePartError: The part file is not the file the server holds. It has
+            been discarded, so the next attempt reads from zero.
     """
     req = urllib.request.Request(url_for(dl.repo, file, dl.revision))
     req.add_header("User-Agent", USER_AGENT)
     if resume:
         req.add_header("Range", f"bytes={resume}-")
-    with urllib.request.urlopen(req, timeout=60, context=download_context()) as r:
+    try:
+        response = urllib.request.urlopen(req, timeout=60, context=download_context())
+    except urllib.error.HTTPError as error:
+        if not (resume and error.code == 416):
+            raise
+        headers = error.headers
+        complete = complete_length(headers.get("Content-Range") if headers else None)
+        error.close()
+        # 416 says the range starts past the end of the file, as it does when
+        # a run stopped between writing the last byte and renaming the part.
+        # That is the whole file only when the server's length matches it; a
+        # part left by a longer, stale revision is past the end too.
+        if complete is not None and complete == resume:
+            dl.done = base + resume
+            return True
+        part.unlink(missing_ok=True)
+        raise StalePartError(complete) from error
+    with response as r:
         # Servers may ignore Range; never append a full response to a partial.
         if resume and r.status != 206:
             resume = 0
@@ -236,6 +290,10 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
         tries += 1
         try:
             complete = _attempt(dl, file, part, base, resume)
+        except StalePartError as error:
+            # The part file is gone, so the next attempt asks for the whole
+            # file. It added nothing, so it counts towards the stall limit.
+            complete, reason = False, str(error)
         except Exception as error:
             if not transient(error):
                 raise
