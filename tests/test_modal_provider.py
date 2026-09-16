@@ -789,6 +789,68 @@ def test_fetch_model_resumes_a_partial_file(tmp_path):
     assert commits and meta["error"] is None
 
 
+def range_error(url, complete):
+    """Return the 416 a server gives for a range that starts past the end.
+
+    Args:
+        url: The requested URL.
+        complete: The file's complete length, or None to leave the
+            ``Content-Range`` header off.
+
+    Returns:
+        The ``HTTPError`` the opener raises.
+    """
+    headers = email.message.Message()
+    if complete is not None:
+        headers["Content-Range"] = f"bytes */{complete}"
+    return urllib.error.HTTPError(url, 416, "Range Not Satisfiable", headers, None)
+
+
+def test_fetch_model_keeps_a_part_the_server_calls_complete(tmp_path):
+    requests = []
+
+    def opener(request, timeout, context):
+        requests.append(request.get_header("Range"))
+        raise range_error(request.full_url, len(GGUF))
+
+    (tmp_path / "M").mkdir()
+    (tmp_path / "M" / "m.gguf.part").write_bytes(GGUF)
+    meta, _updates, waits = _fetch(tmp_path, opener)
+    # One request, no retry: the part file is the file.
+    assert requests == [f"bytes={len(GGUF)}-"] and waits == []
+    assert (tmp_path / "M" / "m.gguf").read_bytes() == GGUF
+    assert meta["error"] is None
+
+
+@pytest.mark.parametrize("complete", [len(GGUF), None])
+def test_fetch_model_discards_a_part_the_server_does_not_confirm(tmp_path, complete):
+    """A 416 renames the part only when the lengths agree.
+
+    A part left by a longer revision, or one the server describes without a
+    length, is stale: renaming it would store a file the repository never
+    held, so it goes and the file is read again from zero.
+    """
+    requests = []
+
+    def opener(request, timeout, context):
+        ranged = request.get_header("Range")
+        requests.append(ranged)
+        if ranged:
+            raise range_error(request.full_url, complete)
+        return Response(GGUF, 200, {"Content-Length": str(len(GGUF))})
+
+    (tmp_path / "M").mkdir()
+    (tmp_path / "M" / "m.gguf.part").write_bytes(GGUF + b"stale")
+    meta, updates, waits = _fetch(tmp_path, opener)
+    assert requests == [f"bytes={len(GGUF) + 5}-", None]
+    assert (tmp_path / "M" / "m.gguf").read_bytes() == GGUF
+    assert meta["error"] is None
+    # The fruitless attempt counts as a stall and the retry says why.
+    assert sum(waits) == 2.0
+    notes = [update[3] for update in updates if update[3]]
+    assert notes and all("did not match the file on the server" in n for n in notes)
+
+
 class FakeSource:
     """A Hugging Face file whose connection drops on scripted attempts.
 

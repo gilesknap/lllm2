@@ -253,6 +253,39 @@ def probe_container(binary: str | None = None) -> dict:
     return {"name": name, "total_mib": int(total), "engine": engine}
 
 
+class StalePart(Exception):
+    """A part file the server's file is shorter than, so it cannot resume."""
+
+    def __init__(self, total: int | None):
+        """Report the discarded part.
+
+        Args:
+            total: The complete length the server gave, or None when the
+                range header did not carry one.
+        """
+        super().__init__("the part file did not match the file on the server")
+        self.total = total
+
+
+def complete_length(header: str | None) -> int | None:
+    """Return the complete length a ``Content-Range`` header states.
+
+    A 416 answer carries ``bytes */N``, while a 206 carries
+    ``bytes FIRST-LAST/N``. Both end in the length, or in ``*`` when the
+    server does not know it.
+
+    Args:
+        header: The header value, or None when the response had none.
+
+    Returns:
+        The complete length in bytes, or None when it is absent or unusable.
+    """
+    if not header or not header.strip().startswith("bytes"):
+        return None
+    _, _, total = header.partition("/")
+    return int(total) if total.strip().isdecimal() else None
+
+
 def fetch_model(
     name: str,
     repo: str,
@@ -269,7 +302,10 @@ def fetch_model(
     """Download a model's files into the store, resuming partial files.
 
     A file downloads to ``<file>.part`` and is renamed once complete and, for
-    a GGUF, once its header parses.
+    a GGUF, once its header parses. A part file at least as long as the file
+    the repository now holds draws a 416, which is the whole file only when
+    the server's length matches it. Anything else is stale, so it is
+    discarded and the file is read again from zero.
 
     A tens-of-gigabyte transfer over one connection is regularly cut short by
     the Hugging Face CDN, so a dropped, reset or timed-out connection retries
@@ -378,7 +414,12 @@ def fetch_model(
         persisted = part.stat().st_size if part.is_file() else 0
 
     def attempt(file: str, part: Path, resume: int) -> tuple[int, int | None]:
-        """Read a file once. Returns the bytes on disk and the expected total."""
+        """Read a file once. Returns the bytes on disk and the expected total.
+
+        Raises:
+            StalePart: The part file is not the file the server holds. It has
+                been discarded, so the next attempt reads from zero.
+        """
         nonlocal persisted
         request = urllib.request.Request(
             url_for(repo, file, revision or "main"), headers={"User-Agent": USER_AGENT}
@@ -388,11 +429,21 @@ def fetch_model(
         try:
             response = opener(request, timeout=60, context=download_context())
         except urllib.error.HTTPError as error:
+            complete = complete_length((error.headers or {}).get("Content-Range"))
             error.close()
-            # 416 means the part file already holds the whole file.
             if not (resume and error.code == 416):
                 raise
-            return resume, resume
+            # 416 says the range starts past the end of the file. That is the
+            # whole file on disk only when the server's length matches it; a
+            # part file left by a longer, stale revision is past the end too,
+            # and renaming that would store a file the repository never had.
+            if complete is not None and complete == resume:
+                return resume, resume
+            part.unlink(missing_ok=True)
+            # Commit the removal, so the retry below and any other worker
+            # request the file from zero rather than resume a stale part.
+            persist(part)
+            raise StalePart(complete)
         with response:
             if resume and response.status != 206:
                 resume = 0
@@ -473,6 +524,12 @@ def fetch_model(
             tries += 1
             try:
                 done, total = attempt(file, part, resume)
+            except StalePart as error:
+                # The part file is gone, so the next attempt asks for the
+                # whole file. It added nothing, so it counts towards the
+                # stall limit like any other fruitless attempt.
+                known = error.total if error.total is not None else known
+                total, reason = known, str(error)
             except Exception as error:
                 if not transient(error):
                     raise
