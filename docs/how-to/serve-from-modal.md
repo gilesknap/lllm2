@@ -119,7 +119,8 @@ Press Ctrl-C to stop the container. Billing stops when Modal ends the call.
 ## In the panel
 
 Start the panel with `lllm2` as usual. You can switch between a local and a
-Modal backend without restarting it.
+Modal backend without restarting it. For the short path, follow
+[Run a model on a Modal GPU](../tutorials/modal.md).
 
 1. Open **Launch → Customize settings** and choose the Modal backend in
    **Backend**. The engine and device fields are hidden, because every Modal

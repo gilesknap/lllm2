@@ -4,7 +4,10 @@ Tutorials for installation and typical usage. New users start here.
 
 ```{toctree}
 :maxdepth: 1
-:glob:
 
-tutorials/*
+tutorials/service
+tutorials/installation
+tutorials/modal
+tutorials/upgrade
+tutorials/headless
 ```
