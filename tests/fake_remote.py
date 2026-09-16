@@ -342,7 +342,7 @@ class FakeProvider(RemoteProvider):
             "started": self.clock(),
             "heartbeat": self.clock(),
         }
-        (self.root / "calls" / f"{call_id}.json").write_text(json.dumps(record))
+        self._write_record(call_id, record)
         with self._lock:
             self._processes[call_id] = process
         self.spawned.append(
@@ -390,8 +390,8 @@ class FakeProvider(RemoteProvider):
     def calls(self):
         found = []
         for path in sorted((self.root / "calls").glob("*.json")):
-            record = json.loads(path.read_text())
-            if self._alive(path.stem, record):
+            record = self._record(path.stem)
+            if record is not None and self._alive(path.stem, record):
                 beat = record.get("heartbeat")
                 found.append(
                     RemoteCall(
@@ -434,11 +434,27 @@ class FakeProvider(RemoteProvider):
         self._edit(call_id, heartbeat=None)
 
     def _edit(self, call_id, **values):
-        path = self.root / "calls" / f"{call_id}.json"
         with self._lock:
             record = self._record(call_id)
             if record is not None:
-                path.write_text(json.dumps(record | values))
+                self._write_record(call_id, record | values)
+
+    def _write_record(self, call_id, record):
+        """Replace a call's record in one step.
+
+        The session driving a call heartbeats from its own thread while the
+        test thread reads the same record, and a plain write truncates the
+        file before it fills it, so a reader can catch it empty. Write beside
+        it and rename, as a real provider's state store updates atomically.
+
+        Args:
+            call_id: The call identifier.
+            record: The record to store.
+        """
+        path = self.root / "calls" / f"{call_id}.json"
+        temp = path.with_name(f"{call_id}.{uuid.uuid4().hex}.tmp")
+        temp.write_text(json.dumps(record))
+        os.replace(temp, path)
 
     def close(self):
         """Stop every call in the provider directory and reap owned processes."""
