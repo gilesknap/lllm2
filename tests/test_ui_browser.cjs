@@ -175,6 +175,13 @@ const assert=require('node:assert/strict');
  assert.match(await run("$('ram').textContent"),/18.0 \/ 62.0 GiB/);
  await run("document.querySelector('[data-agent=claude]').click();Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw Error('Denied')}}});$('copy-agent').click();new Promise(r=>setTimeout(r,30))");
  assert.equal(await run("$('copy-dialog').open"),true);assert.equal(await run("$('copy-text').value"),'lllm2 claude');await run("$('copy-close').click()");
+ // Pi leads as the sandboxed option, and its install and launch commands copy together.
+ await run("document.querySelector('[data-agent=pi]').click()");
+ assert.match(await run("document.querySelector('[data-agent=pi]').textContent"),/recommended/i);
+ assert.equal(await run("$('agent-command').textContent"),'uv tool install claude-sandbox; claude-sandbox pi');
+ await run("$('copy-agent').click();new Promise(r=>setTimeout(r,30))");
+ assert.equal(await run("$('copy-text').value"),'uv tool install claude-sandbox; claude-sandbox pi');
+ await run("$('copy-close').click()");
  await run("fixture.disconnected=true;poll()");assert.equal(await run("$('start').disabled"),true);assert.equal(await run("$('connect-agent').hidden"),true);assert.match(await run("$('resources-scope').textContent"),/last known/);
  await run("fixture.disconnected=false;poll()");assert.equal(await run("$('connect-agent').hidden"),false);
  await run("fixture.engine={running:false,ready:false,error:'CUDA out of memory (exact diagnostic)'};poll()");assert.match(await run("$('launch-error').textContent"),/Not enough memory/);assert.match(await run("$('error-raw').textContent"),/exact diagnostic/);

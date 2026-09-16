@@ -97,15 +97,17 @@ model automatically in either case, so there is nothing to configure.
 
 ### Quick: the claude-sandbox launcher
 
-For sandboxed interaction with your model without a devcontainer, install
-claude-sandbox's `claude-container` launcher following its
+For sandboxed interaction with your model without a devcontainer, use
+claude-sandbox's launcher, described in its
 [Use Pi](https://diamondlightsource.github.io/claude-sandbox/how-to/use-pi.html)
-guide. Then open another terminal on the same machine, change to the project
+guide. Open another terminal on the same machine, change to the project
 directory you want Pi to work in, and run:
 
 ```bash
-claude-container --host-net --agent pi
+uv tool install claude-sandbox; claude-sandbox pi
 ```
+
+The first command installs the launcher and is needed only once.
 
 The first run pulls the sandbox image. Your project is available to Pi at
 `/workspaces`, and your Pi settings live in `~/.pi` as usual. See

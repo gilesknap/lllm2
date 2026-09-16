@@ -25,7 +25,7 @@ For Pi, use claude-sandbox's launcher, which runs it in the same sandbox and
 discovers the running lllm2 model on each launch:
 
 ```bash
-claude-container --host-net --agent pi
+uv tool install claude-sandbox; claude-sandbox pi
 ```
 
 See [Run Pi in a container](pi-container.md).

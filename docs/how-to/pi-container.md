@@ -5,10 +5,11 @@ which runs Pi in the same sandbox it gives Claude Code and Codex, and already
 discovers the lllm2 model:
 
 ```bash
-claude-container --host-net --agent pi
+uv tool install claude-sandbox; claude-sandbox pi
 ```
 
-`--host-net` shares the model server's network namespace so Pi can reach
+The first command installs the launcher and is needed only once. The launcher
+shares the model server's network namespace, so Pi reaches
 `http://127.0.0.1:1920` on the host. Inside Pi, choose the lllm2 model with
 `--provider lllm2` or from `/model`; discovery refreshes at each launch, so a
 model change in lllm2 only needs a Pi restart.

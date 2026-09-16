@@ -176,7 +176,7 @@ A Modal model serves on the same local port as a local one, so
 on the host while the model serves, and start the client as usual, for example:
 
 ```bash
-claude-container --host-net --agent pi
+uv tool install claude-sandbox; claude-sandbox pi
 ```
 
 The client never sees the tunnel or the API key. If the idle stop ends the
