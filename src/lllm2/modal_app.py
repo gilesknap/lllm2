@@ -30,6 +30,7 @@ of engine tarballs download again only when a pin changes.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import threading
 import time
@@ -76,6 +77,11 @@ SERVE_TIMEOUT = 12 * 60 * 60
 HEARTBEAT_SECONDS = 10.0
 OWNER_GRACE_SECONDS = 180.0
 COMMIT_SECONDS = 60.0
+#: Bytes appended to a part file before the download commits the store. A fast
+#: link writes gigabytes between two one-minute commits, and every uncommitted
+#: byte dies with the worker, so the byte rule bounds the loss on any link. It
+#: also bounds the work: a commit costs the Volume the bytes it has to store.
+COMMIT_BYTES = 2 * 1024**3
 LOG_BATCH = 200
 
 DEPLOYMENT_KEY = "deployment"
@@ -258,6 +264,7 @@ def fetch_model(
     cancel: Any = None,
     sleep: Callable[[float], None] = time.sleep,
     opener: Callable[..., Any] = urllib.request.urlopen,
+    reload: Callable[[], None] | None = None,
 ) -> dict:
     """Download a model's files into the store, resuming partial files.
 
@@ -268,23 +275,45 @@ def fetch_model(
     the Hugging Face CDN, so a dropped, reset or timed-out connection retries
     from the bytes on disk with a ranged request. Only attempts that add no
     bytes count towards ``RETRY_ATTEMPTS``: a transfer that keeps moving
-    survives any number of resets. Every attempt commits first, so the bytes
-    stay in the store even if the container dies.
+    survives any number of resets.
+
+    A Modal Volume is not a local disk. Committing while the part file is open
+    stores almost nothing of it: measured against a live 30 GB download, each
+    commit taken with the file open grew the stored file by a single chunk
+    while gigabytes sat in the container, and the stored file only caught up
+    at the next commit taken with the file closed. The Volume's own rule points
+    the same way, since a commit reloads the Volume and a reload fails while
+    the container holds a file open. So the part file is closed before every
+    commit and reopened for appending afterwards, every ``COMMIT_BYTES`` or
+    ``COMMIT_SECONDS``, whichever comes first. A worker that disappears then
+    costs one interval of bytes rather than everything since the last retry.
+
+    A container also mounts the Volume as it stood when the container started
+    and sees no later commit until it calls ``reload``, while a Volume file is
+    last-write-wins. A download that resumes on another worker therefore
+    reloads before it measures the part file: resuming from a stale, shorter
+    file would commit that short file over the longer one the Volume holds.
+
+    ``progress`` reports the committed size rather than the bytes written, so
+    it never claims bytes a re-scheduled worker would not find. The count
+    steps at each commit instead of climbing continuously.
 
     Args:
         name: The store-relative path of the main file.
         repo: The Hugging Face repository.
         files: The repository files, main file first.
         revision: The repository revision, or None for ``main``.
-        progress: A callable that receives the file, bytes present, total bytes
-            (None when unknown) and a retry note (None during normal
+        progress: A callable that receives the file, committed bytes, total
+            bytes (None when unknown) and a retry note (None during normal
             progress). It may raise to stop the download.
-        commit: A callable that persists the store, so a cancelled download
-            can resume.
+        commit: A callable that persists the store, so a cancelled download or
+            a lost worker can resume.
         root: The store mount point.
         cancel: An object with ``is_set()`` that stops the download, or None.
         sleep: The sleep callable, replaceable in tests.
         opener: The ``urlopen`` callable, replaceable in tests.
+        reload: A callable that brings the store's committed state into this
+            container, or None when the store needs no refresh.
 
     Returns:
         The main file's metadata in the ``discovery.metadata()`` shape.
@@ -296,14 +325,61 @@ def fetch_model(
     """
     directory = Path(root) / store_directory(name, files)
     committed = time.monotonic()
+    persisted = 0
 
     def check_cancel():
         if cancel is not None and cancel.is_set():
             raise RuntimeError(DOWNLOAD_CANCELLED)
 
+    def close_part(output) -> None:
+        """Flush a part file out of every buffer and close it for a commit."""
+        if not output.closed:
+            output.flush()
+            os.fsync(output.fileno())
+            output.close()
+
+    def persist(part: Path) -> None:
+        """Commit the store and record the size the Volume then holds.
+
+        The part file must be closed first, or the store keeps next to nothing
+        of it. The size on disk is then the stored size, because this
+        container wrote every byte of it. A failed commit is reported and
+        leaves the recorded size where it was, so progress never claims bytes
+        that did not reach the store.
+
+        Args:
+            part: The part file whose committed size to read.
+        """
+        nonlocal committed, persisted
+        committed = time.monotonic()
+        try:
+            commit()
+        except Exception as error:
+            print(f"lllm2: could not commit the model store: {error}", flush=True)
+            return
+        persisted = part.stat().st_size if part.is_file() else 0
+
+    def refresh(part: Path) -> None:
+        """Take the store's committed state and measure the part file.
+
+        Reload before the first byte of a file and never afterwards: every
+        file is committed as it completes, so a reload here drops nothing,
+        while a reload during a transfer would drop the bytes since the last
+        commit. A failed reload stops the download rather than resuming from a
+        stale size, because appending to a short file and committing it would
+        replace the longer file the store holds.
+
+        Args:
+            part: The part file whose committed size to record.
+        """
+        nonlocal persisted
+        if reload is not None:
+            reload()
+        persisted = part.stat().st_size if part.is_file() else 0
+
     def attempt(file: str, part: Path, resume: int) -> tuple[int, int | None]:
         """Read a file once. Returns the bytes on disk and the expected total."""
-        nonlocal committed
+        nonlocal persisted
         request = urllib.request.Request(
             url_for(repo, file, revision or "main"), headers={"User-Agent": USER_AGENT}
         )
@@ -327,22 +403,37 @@ def fetch_model(
             length = response.headers.get("Content-Length") or ""
             total = resume + int(length) if length.isdecimal() else None
             done = resume
-            progress(file, done, total, None)
+            if not resume:
+                # The open below discards the part file, so the bytes the
+                # Volume holds for it no longer count as progress.
+                persisted = 0
+            progress(file, persisted, total, None)
             reported = time.monotonic()
-            with part.open("ab" if resume else "wb") as output:
+            written = 0
+            output = part.open("ab" if resume else "wb")
+            try:
                 while chunk := response.read(CHUNK):
                     check_cancel()
                     output.write(chunk)
                     done += len(chunk)
+                    written += len(chunk)
                     now = time.monotonic()
-                    if now - reported >= 1:
-                        progress(file, done, total, None)
+                    if written >= COMMIT_BYTES or now - committed >= COMMIT_SECONDS:
+                        close_part(output)
+                        persist(part)
+                        written = 0
+                        output = part.open("ab")
+                        progress(file, persisted, total, None)
+                        reported = time.monotonic()
+                    elif now - reported >= 1:
+                        progress(file, persisted, total, None)
                         reported = now
-                    if now - committed >= COMMIT_SECONDS:
-                        output.flush()
-                        commit()
-                        committed = now
-            progress(file, done, total, None)
+            finally:
+                # However this attempt ends, the bytes it read belong in the
+                # Volume, and they get there only once the file is closed.
+                close_part(output)
+                persist(part)
+            progress(file, persisted, total, None)
             return done, total
 
     def back_off(seconds: float, file: str, done: int, total: int | None, note: str):
@@ -366,6 +457,9 @@ def fetch_model(
     for file in files:
         target = directory / file
         part = target.with_name(target.name + ".part")
+        # Another worker may have downloaded more of this model, or all of it,
+        # since this container started.
+        refresh(part)
         if target.is_file():
             size = target.stat().st_size
             progress(file, size, size, None)
@@ -390,10 +484,10 @@ def fetch_model(
                 if total is None or done >= total:
                     break
                 reason = "the connection closed early"
-            kept = part.stat().st_size if part.is_file() else 0
+            # The attempt closed the part file and committed it as it ended,
+            # so the committed size is what another worker would resume from.
+            kept = persisted
             stalled = 0 if kept > resume else stalled + 1
-            commit()
-            committed = time.monotonic()
             if stalled >= RETRY_ATTEMPTS:
                 raise RuntimeError(short_read_message(file, tries, kept))
             note = f"retry {tries} after {reason}"
@@ -402,7 +496,12 @@ def fetch_model(
         if file.lower().endswith(".gguf"):
             gguf.header(part)
         part.rename(target)
-    commit()
+        # Store the finished file before the next one reloads the store, and
+        # fail loudly rather than reload a rename the Volume never took: the
+        # reload would drop the whole file and the download would repeat it.
+        commit()
+        committed = time.monotonic()
+        persisted = 0
     return discovery.metadata(str(directory / files[0]))
 
 
@@ -616,6 +715,7 @@ def run_download(
     cancel: Any = None,
     sleep: Callable[[float], None] = time.sleep,
     opener: Callable[..., Any] = urllib.request.urlopen,
+    reload: Callable[[], None] | None = None,
 ) -> dict:
     """Download a model, publish progress and stop if the owner goes silent.
 
@@ -632,6 +732,8 @@ def run_download(
         cancel: An object with ``is_set()`` that stops the download, or None.
         sleep: The sleep callable, replaceable in tests.
         opener: The ``urlopen`` callable, replaceable in tests.
+        reload: A callable that brings the store's committed state into this
+            container, or None when the store needs no refresh.
 
     Returns:
         The main file's metadata in the ``discovery.metadata()`` shape.
@@ -647,7 +749,8 @@ def run_download(
 
     def progress(file, done, total, retry=None):
         if owner.lost():
-            commit()
+            # Do not commit here: the part file is open. ``fetch_model``
+            # closes it and commits it as this error unwinds the download.
             raise RuntimeError(f"Download stopped: {OWNER_LOST}.")
         record = {"file": file, "done_bytes": done, "total_bytes": total}
         if retry:
@@ -667,6 +770,7 @@ def run_download(
             cancel=cancel,
             sleep=sleep,
             opener=opener,
+            reload=reload,
         )
     finally:
         state.pop(key, None)
@@ -723,6 +827,7 @@ if modal is not None:
             call_id=modal.current_function_call_id() or "unknown",
             state=_state(),
             commit=volume.commit,
+            reload=volume.reload,
         )
 
     @app.function(

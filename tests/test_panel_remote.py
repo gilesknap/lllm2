@@ -510,6 +510,41 @@ def test_volume_download_reports_progress_and_cancels(app, providers):
     assert eventually(lambda: app.store_downloads.rows()[0]["state"] == "cancelled")
 
 
+def test_download_speed_is_measured_again_for_each_file(tmp_path):
+    """A stepping byte count reports each file's own speed, not the last one's.
+
+    A provider reports the bytes its store holds, so the count steps and drops
+    back to nothing when the next file starts. The rate has to take a fresh
+    baseline there, or the panel shows the previous file's speed for as long
+    as the new file stays smaller than the old one.
+    """
+    downloads, rates = StoreDownloads(), []
+
+    class TwoFiles:
+        """A provider that moves the first file fast and the second barely."""
+
+        name = "fake"
+
+        def ensure_model(self, source, progress, cancel):
+            def step(file, done):
+                progress(remote.DownloadProgress(file, done, 4 * 2**20))
+                rates.append(downloads.rows()[0]["rate_mib_s"])
+
+            step("a.gguf", 0)
+            time.sleep(0.05)
+            step("a.gguf", 2 * 2**20)
+            step("b.gguf", 0)
+            time.sleep(0.05)
+            step("b.gguf", 1024)
+            return dict(META)
+
+    downloads.start(TwoFiles(), ENTRY)
+    assert eventually(lambda: downloads.rows()[0]["state"] == "complete")
+    assert rates[0] == 0 and rates[1] > 1
+    # The second file starts again from nothing and crawls, and says so.
+    assert rates[2:] == [0, 0]
+
+
 def test_a_served_model_cannot_be_removed(app):
     use_free_port(app)
     start(app)

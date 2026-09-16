@@ -3,6 +3,7 @@
 import dis
 import email.message
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -15,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -822,17 +824,84 @@ class FakeSource:
         return Response(body, status, headers)
 
 
+class CommittedStore:
+    """A Modal Volume and the mount one container has of it.
+
+    ``commit`` copies the mount into the Volume, leaving out any file the
+    container still holds open: a Volume cannot promise to store a file that
+    is open for writing. ``reload`` copies the Volume back over the mount,
+    which is also the state a starting container mounts. Freezing the store
+    models a worker that disappears: nothing more reaches the Volume.
+    """
+
+    def __init__(self, mount):
+        """Hold the Volume behind ``mount``, a directory that starts empty."""
+        self.mount = Path(mount)
+        self.files: dict[str, bytes] = {}
+        self.history: list[dict[str, int]] = []
+        self.frozen = False
+
+    @staticmethod
+    def _held():
+        """Return the paths this process has open, as far as it can tell."""
+        try:
+            links = list(Path("/proc/self/fd").iterdir())
+        except OSError:
+            return set()
+        held = set()
+        for link in links:
+            try:
+                held.add(os.readlink(link))
+            except OSError:
+                pass
+        return held
+
+    def commit(self):
+        """Store every closed file of the mount, as ``Volume.commit`` does."""
+        if self.frozen:
+            return
+        held = self._held()
+        kept = {
+            name: data
+            for name, data in self.files.items()
+            if str(self.mount / name) in held
+        }
+        stored = {
+            str(path.relative_to(self.mount)): path.read_bytes()
+            for path in sorted(self.mount.rglob("*"))
+            if path.is_file() and str(path) not in held
+        }
+        self.files = {**kept, **stored}
+        self.history.append({name: len(data) for name, data in self.files.items()})
+
+    def reload(self):
+        """Replace the mount with the Volume's committed state."""
+        for path in sorted(self.mount.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+        for name, data in self.files.items():
+            path = self.mount / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+    def size(self, name):
+        """Return the bytes the Volume holds for a store-relative name."""
+        return len(self.files.get(name, b""))
+
+
 def _fetch(tmp_path, opener, **options):
     """Run ``fetch_model`` for one file without waiting for real backoffs."""
     updates, waits = [], []
     options.setdefault("sleep", waits.append)
+    commit = options.pop("commit", lambda: None)
+    progress = options.pop("progress", lambda *update: updates.append(update))
     meta = modal_app.fetch_model(
         "M/m.gguf",
         "o/r",
         ["m.gguf"],
         None,
-        lambda *update: updates.append(update),
-        lambda: None,
+        progress,
+        commit,
         root=str(tmp_path),
         opener=opener,
         **options,
@@ -905,6 +974,169 @@ def test_fetch_model_does_not_retry_a_missing_file(tmp_path):
     assert len(requests) == 1
 
 
+#: A file long enough to commit several times with the limits below.
+BIG = GGUF + bytes(range(251)) * 100
+
+
+def _small_commits(monkeypatch):
+    """Read and commit in small steps, so a short file commits many times."""
+    monkeypatch.setattr(modal_app, "CHUNK", 1024)
+    monkeypatch.setattr(modal_app, "COMMIT_BYTES", 4096)
+
+
+def test_a_commit_stores_a_part_file_the_download_is_still_writing(
+    tmp_path, monkeypatch
+):
+    """The bytes of an open part file reach the Volume before the file ends."""
+    _small_commits(monkeypatch)
+    store = CommittedStore(tmp_path)
+    meta, _updates, _waits = _fetch(
+        tmp_path, FakeSource(BIG, []), commit=store.commit, reload=store.reload
+    )
+    parts = [
+        snapshot["M/m.gguf.part"]
+        for snapshot in store.history
+        if "M/m.gguf.part" in snapshot
+    ]
+    assert len([size for size in parts if size < len(BIG)]) >= 3
+    # Every commit stores at most one interval of bytes, so that is all a lost
+    # worker can cost.
+    steps = [after - before for before, after in zip(parts, parts[1:], strict=False)]
+    assert steps and max(steps) <= modal_app.COMMIT_BYTES + modal_app.CHUNK
+    assert store.files["M/m.gguf"] == BIG and meta["error"] is None
+
+
+def test_a_lost_worker_resumes_from_the_size_the_volume_holds(tmp_path, monkeypatch):
+    """A re-scheduled download continues from the last commit, once."""
+    _small_commits(monkeypatch)
+    first, second = tmp_path / "worker-1", tmp_path / "worker-2"
+    first.mkdir()
+    second.mkdir()
+    store = CommittedStore(first)
+    beyond = []
+
+    class WorkerGoneError(Exception):
+        """The container stops without another commit."""
+
+    def progress(file, done, total, retry=None):
+        if len(store.history) >= 2:
+            # From here the worker writes bytes that never reach the Volume.
+            store.frozen = True
+            beyond.append(done)
+            if len(beyond) > 4:
+                raise WorkerGoneError()
+
+    with pytest.raises(WorkerGoneError):
+        _fetch(
+            first,
+            FakeSource(BIG, []),
+            commit=store.commit,
+            reload=store.reload,
+            progress=progress,
+        )
+    committed = store.size("M/m.gguf.part")
+    assert 0 < committed < (first / "M" / "m.gguf.part").stat().st_size
+
+    store.frozen = False
+    store.mount = second
+    store.reload()
+    source = FakeSource(BIG, [])
+    meta, updates, _waits = _fetch(
+        second, source, commit=store.commit, reload=store.reload
+    )
+    assert source.requests[0] == f"bytes={committed}-"
+    assert (second / "M" / "m.gguf").read_bytes() == BIG
+    assert store.files["M/m.gguf"] == BIG and meta["error"] is None
+    assert updates[0][1] == committed
+
+
+def test_a_stale_mount_never_replaces_a_longer_committed_file(tmp_path, monkeypatch):
+    """A container sees no other commit until it reloads, so it reloads."""
+    _small_commits(monkeypatch)
+    mount = tmp_path / "M"
+    mount.mkdir()
+    # What the container mounted when it started, and what the Volume holds
+    # now that the worker it replaces committed much more of the file.
+    (mount / "m.gguf.part").write_bytes(BIG[:5000])
+    store = CommittedStore(tmp_path)
+    store.files["M/m.gguf.part"] = BIG[:20000]
+    source = FakeSource(BIG, [])
+    _meta, updates, _waits = _fetch(
+        tmp_path, source, commit=store.commit, reload=store.reload
+    )
+    assert source.requests == ["bytes=20000-"]
+    assert updates[0][1] == 20000
+    assert store.files["M/m.gguf"] == BIG
+
+
+def test_a_finished_file_the_store_refused_stops_the_download(tmp_path, monkeypatch):
+    """A rename the Volume never took is not reloaded away in silence."""
+    _small_commits(monkeypatch)
+    store = CommittedStore(tmp_path)
+    reloads = []
+
+    def commit():
+        if (tmp_path / "M" / "m.gguf").is_file():
+            raise RuntimeError("volume busy")
+        store.commit()
+
+    def reload():
+        reloads.append(store.size("M/m.gguf"))
+        store.reload()
+
+    with pytest.raises(RuntimeError, match="volume busy"):
+        modal_app.fetch_model(
+            "M/m.gguf",
+            "o/r",
+            ["m.gguf", "extra.gguf"],
+            None,
+            lambda *update: None,
+            commit,
+            root=str(tmp_path),
+            opener=FakeSource(BIG, []),
+            sleep=lambda seconds: None,
+            reload=reload,
+        )
+    # It stopped at the refused commit rather than reloading the second file's
+    # empty start over the first file this container had just finished.
+    assert reloads == [0] and store.size("M/m.gguf") == 0
+    assert (tmp_path / "M" / "m.gguf").read_bytes() == BIG
+
+
+def test_download_progress_never_claims_more_than_the_volume_holds(
+    tmp_path, monkeypatch
+):
+    """The record the panel reads counts stored bytes, not bytes in flight."""
+    _small_commits(monkeypatch)
+    store = CommittedStore(tmp_path)
+    seen = []
+
+    class Watched(FakeDict):
+        def put(self, key, value, *, skip_if_exists=False):
+            if key.startswith("download:"):
+                held = store.size("M/m.gguf.part") + store.size("M/m.gguf")
+                seen.append((value["done_bytes"], held))
+            return super().put(key, value, skip_if_exists=skip_if_exists)
+
+    state = Watched()
+    state.put(modal_app.heartbeat_key("fc-1"), 1)
+    meta = modal_app.run_download(
+        "M/m.gguf",
+        "o/r",
+        ["m.gguf"],
+        None,
+        call_id="fc-1",
+        state=state,
+        commit=store.commit,
+        reload=store.reload,
+        root=str(tmp_path),
+        opener=FakeSource(BIG, []),
+    )
+    assert meta["error"] is None
+    assert seen and all(done <= held for done, held in seen)
+    assert seen[-1] == (len(BIG), len(BIG))
+
+
 def test_download_stops_when_the_owner_goes_silent(tmp_path):
     def opener(request, timeout, context):
         return Response(GGUF, 200, {"Content-Length": str(len(GGUF))})
@@ -920,7 +1152,8 @@ def test_download_stops_when_the_owner_goes_silent(tmp_path):
             opener=opener,
             **options,
         )
-    assert commits and not (tmp_path / "M" / "m.gguf").exists()
+    # It stopped before the first byte, so there is nothing to commit.
+    assert not commits and not (tmp_path / "M" / "m.gguf").exists()
     state.put(modal_app.heartbeat_key("fc-1"), 1)
     meta = modal_app.run_download(
         *arguments, commit=lambda: None, opener=opener, **options
@@ -1044,7 +1277,8 @@ def test_engine_layer_installs_each_pinned_track_without_a_gpu(monkeypatch, tmp_
 
 
 def test_opener_default_is_urlopen():
-    assert modal_app.fetch_model.__defaults__[-1] is urllib.request.urlopen
+    opener = inspect.signature(modal_app.fetch_model).parameters["opener"]
+    assert opener.default is urllib.request.urlopen
 
 
 def test_only_a_bare_not_ready_timeout_keeps_a_download_polling(fake, provider):

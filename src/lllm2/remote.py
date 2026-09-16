@@ -107,7 +107,7 @@ class DownloadProgress:
 
     Attributes:
         file: The file being downloaded.
-        done_bytes: Bytes present in the store so far.
+        done_bytes: Bytes the store holds, never bytes still in flight.
         total_bytes: The file size, or None when unknown.
         retry: A note about a retry in progress, or None while bytes flow.
     """
@@ -1264,14 +1264,24 @@ class StoreDownloads:
                 self._forget(provider, name)
 
     def _run(self, provider, source, job_id, cancel):
-        sample = [time.monotonic(), 0]
+        # A provider may report the bytes its store holds rather than the bytes
+        # in flight, so the count steps. Measure the rate between two steps and
+        # hold it in between, instead of reading zero until the next one. The
+        # next file, or one that starts again, takes a fresh baseline: holding
+        # the last rate until the count passes the previous file would report
+        # a speed nothing is moving at.
+        marked, counted, rate, measured = time.monotonic(), 0, 0.0, ""
 
         def progress(update):
+            nonlocal marked, counted, rate, measured
             now = time.monotonic()
-            rate = 0.0
-            if now > sample[0] and update.done_bytes >= sample[1]:
-                rate = (update.done_bytes - sample[1]) / (now - sample[0]) / 2**20
-            sample[:] = [now, update.done_bytes]
+            if update.file != measured or update.done_bytes < counted:
+                rate, measured = 0.0, update.file
+                marked, counted = now, update.done_bytes
+            elif update.done_bytes > counted:
+                if now > marked:
+                    rate = (update.done_bytes - counted) / (now - marked) / 2**20
+                marked, counted = now, update.done_bytes
             total = update.total_bytes or 0
             detail = f"Downloading {update.file} inside {provider.name}"
             if update.retry:
