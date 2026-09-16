@@ -884,9 +884,10 @@ $('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if
 let findLoaded=false,findBusy=false,findEntries=[],removingId=null;
 // The selection whose hardware scored the current rows, as JSON, or null.
 let findSelection=null;
-let findSort={key:null,direction:0};
+let findSort={key:null,direction:0},findShowIssues=false;
 const findColumns=[['display_name','Model'],['repo','Publisher / repository'],['quant','Quantisation'],['size_gb','Size GB','number'],['fit','Suitability'],['task','Task'],['downloads','Downloads','number'],['likes','Likes','number'],['updated','Updated'],['license','Licence']];
-$('find-table').querySelector('thead').innerHTML='<tr>'+findColumns.map(([key,label])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}"><span>${label}</span><span aria-hidden="true">↕</span></button></th>`).join('')+'<th scope="col">Catalogue</th></tr><tr class="find-filter-row">'+findColumns.map(([key,label,type])=>`<td>${type==='number'?`<div class="find-number-filter"><input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max"></div>`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" aria-describedby="find-filter-help" title="Space-separated terms must all match. Prefix ! to exclude; use quotes for phrases." placeholder="Filter ${label.toLowerCase()}">`}</td>`).join('')+'<td></td></tr>';
+// The catalogue action leads, so adding a model needs no sideways scrolling.
+$('find-table').querySelector('thead').innerHTML='<tr><th scope="col">Catalogue</th>'+findColumns.map(([key,label])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}"><span>${label}</span><span aria-hidden="true">↕</span></button></th>`).join('')+'</tr><tr class="find-filter-row"><td></td>'+findColumns.map(([key,label,type])=>`<td>${type==='number'?`<div class="find-number-filter"><input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max"></div>`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" aria-describedby="find-filter-help" title="Space-separated terms must all match. Prefix ! to exclude; use quotes for phrases." placeholder="Filter ${label.toLowerCase()}">`}</td>`).join('')+'</tr>';
 
 function findTextTerms(query){
  // An unfinished quoted phrase remains usable while typing; a lone ! is ignored.
@@ -919,10 +920,13 @@ function filteredFindEntries(ignoreSuitable=false){
  });
 }
 function renderFind(){
- const rows=filteredFindEntries();
+ const matched=filteredFindEntries();
+ // A variant with an issue cannot be added at all, so it stays out of the way
+ // until the reader asks to see why.
+ const blocked=matched.filter(e=>e.issue),rows=findShowIssues?matched:matched.filter(e=>!e.issue);
  // Name the suitability filter only when clearing it would show rows.
- const unsuitable=!rows.length&&$('find-suitable').checked&&filteredFindEntries(true).length>0;
- const empty=unsuitable?'No variants are likely to fit this workstation’s GPU or RAM. Clear “Likely suitable only” to see them all.':'No matching variants. Try a different search or relax the filters.';
+ const unsuitable=!matched.length&&$('find-suitable').checked&&filteredFindEntries(true).length>0;
+ const empty=unsuitable?'No variants are likely to fit this workstation’s GPU or RAM. Clear “Likely suitable only” to see them all.':blocked.length?'Every matching variant has something that stops it being added. Choose “Show them” to see why.':'No matching variants. Try a different search or relax the filters.';
  for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
   const key=button.dataset.findSort,active=key===findSort.key;
   button.parentElement.setAttribute('aria-sort',active?(findSort.direction===1?'ascending':'descending'):'none');
@@ -932,9 +936,14 @@ function renderFind(){
  }
  $('find-table').querySelector('tbody').innerHTML=rows.map(e=>{
   const saved=(discovered.catalog||[]).some(c=>c.repo===e.repo&&c.file===e.file);
-  return `<tr${saved?' class="find-in-catalogue"':''}>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+`<td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td></tr>`;
+  return `<tr${saved?' class="find-in-catalogue"':''}><td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+'</tr>';
  }).join('')||`<tr><td colspan="11">${esc(empty)}</td></tr>`;
  $('find-count').textContent=`${rows.length} of ${findEntries.length} variants shown.`;
+ const reasons=new Map();
+ for(const e of blocked)reasons.set(e.issue,(reasons.get(e.issue)||0)+1);
+ $('find-hidden').hidden=!blocked.length;
+ $('find-hidden-summary').textContent=blocked.length?`${blocked.length} result${blocked.length===1?'':'s'} cannot be added: ${[...reasons].map(([issue,n])=>`${issue.replace(/\.$/,'')} (${n})`).join(', ')}.`:'';
+ $('find-hidden-toggle').textContent=findShowIssues?'Hide them':'Show them';
 }
 async function searchHF(refresh=false){
  if(findBusy)return;findBusy=true;$('find-search').disabled=$('find-refresh').disabled=true;
@@ -958,10 +967,11 @@ function renderCatalogue(){
   const job=(statusState.downloads||[]).find(d=>d.id===e.id),active=job&&['queued','downloading'].includes(job.state);
   const installed=e.installed===true||(e.installed===undefined&&job?.state==='complete');
   return `<div class="model-choice"><div><b>${esc(e.display_name||e.name)}</b><small>${esc(e.repo)} · ${esc(e.quant||e.file)} · ${esc(e.size_gb??'Unknown')} GB</small><small>${esc(e.fit||'')} ${installed?' · Downloaded':''}</small></div><div class="row">${installed&&!active?'<span class="pill">Downloaded</span>':`<button id="catalog-download-${esc(e.id)}" data-download="${esc(e.id)}" data-active="${!!active}">${active?'Cancel download':'Queue download'}</button>`}<button data-catalogue-remove="${esc(e.id)}" ${active?'disabled':''}>Remove…</button></div></div>`;
- }).join('')||'<p>Your catalogue is empty. Add a variant from the results above.</p>');
+ }).join('')||'<p>Your catalogue is empty. Add a variant from <a href="#find">Find models</a>.</p>');
 }
 $('find-form').onsubmit=e=>{e.preventDefault();searchHF();};
 $('find-refresh').onclick=()=>searchHF(true);
+$('find-hidden-toggle').onclick=()=>{findShowIssues=!findShowIssues;renderFind();};
 $('find-clear').onclick=()=>{for(const input of $('find-table').querySelectorAll('thead input'))input.value='';renderFind();};
 for(const id of ['find-suitable','find-instruct','find-quants'])$(id).onchange=renderFind;
 $('find-table').querySelector('thead').oninput=renderFind;

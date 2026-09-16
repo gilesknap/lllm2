@@ -98,8 +98,12 @@ const assert=require('node:assert/strict');
  await run("const input=$('find-table').querySelector('[data-find-max=size_gb]');input.value='5';input.dispatchEvent(new Event('input',{bubbles:true}))");
  assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),1);
  assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Small/);
+ // The catalogue action leads the row, so it needs no sideways scrolling.
+ assert.equal(await run("$('find-table').querySelector('thead th').textContent"),'Catalogue');
+ assert.equal(await run("$('find-table').querySelector('tbody tr td button').dataset.findAdd"),'hf-a');
  await run("$('find-table').querySelector('[data-find-add]').click();new Promise(r=>setTimeout(r,40))");
  assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),true);
+ assert.equal(await run("$('find-table').querySelector('tbody tr td button').textContent"),'In catalogue');
  await run("$('catalog').querySelector('[data-catalogue-remove=hf-a]').click();new Promise(r=>setTimeout(r,40))");
  assert.equal(await run("$('remove-model-weights').checked"),false);
  await run("$('remove-model-cancel').click()");
@@ -108,6 +112,27 @@ const assert=require('node:assert/strict');
  assert.equal(await run("fixture.posts.find(p=>p.path==='/api/catalogue/remove').data.delete_weights"),true);
  assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),false);
  await run("$('find-clear').click()");
+ // Variants that cannot be added stay out of the table until asked for.
+ await run("window.beforeIssues=findEntries;findEntries=[...beforeIssues,{...beforeIssues[0],id:'hf-c',display_name:'Split',file:'split-00001-of-00002.gguf',issue:'Incomplete split GGUF metadata.'},{...beforeIssues[0],id:'hf-d',display_name:'Vision',file:'vision.gguf',issue:'Cannot identify a unique vision projector from HF metadata.'},{...beforeIssues[0],id:'hf-e',display_name:'Vision two',file:'vision-two.gguf',issue:'Cannot identify a unique vision projector from HF metadata.'}];renderFind()");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),2);
+ assert.equal(await run("$('find-hidden').hidden"),false);
+ assert.match(await run("$('find-hidden-summary').textContent"),/^3 results cannot be added: /);
+ assert.match(await run("$('find-hidden-summary').textContent"),/Cannot identify a unique vision projector from HF metadata \(2\)/);
+ assert.match(await run("$('find-hidden-summary').textContent"),/Incomplete split GGUF metadata \(1\)/);
+ await run("$('find-hidden-toggle').click()");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),5);
+ assert.equal(await run("$('find-hidden-toggle').textContent"),'Hide them');
+ assert.match(await run("$('find-table').textContent"),/vision projector/);
+ await run("$('find-hidden-toggle').click()");
+ // With every match hidden, the empty table explains why rather than looking broken.
+ await run("findEntries=findEntries.filter(e=>e.issue);renderFind()");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),1);
+ assert.match(await run("$('find-table').querySelector('tbody').textContent"),/Show them/);
+ await run("findEntries=beforeIssues;renderFind()");
+ // The catalogue and downloads panes belong to Launch, not to Find.
+ assert.equal(await run("$('find-view').contains($('catalog'))||$('find-view').contains($('download-section'))"),false);
+ assert.equal(await run("$('launch-view').contains($('catalog'))&&$('launch-view').contains($('download-section'))"),true);
+ assert.equal(await run("!!$('find-view').querySelector('a[href=\"#launch\"]')"),true);
  for(const width of [1440,390]){
   await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
   assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true);
@@ -119,7 +144,7 @@ const assert=require('node:assert/strict');
  await run("switchView('experiments')");assert.equal(await run('settings().context'),8192);await run("switchView('launch')");
 
  // An intervening poll must not re-enable a download whose POST is pending.
- await run("await switchView('find');fixture.delay=100;$('catalog-download-moe').click();await poll();$('catalog-download-moe').click();await new Promise(r=>setTimeout(r,200));fixture.delay=0");
+ await run("await switchView('launch');await loadCatalogue();fixture.delay=100;$('catalog-download-moe').click();await poll();$('catalog-download-moe').click();await new Promise(r=>setTimeout(r,200));fixture.delay=0");
  assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/download').length"),1);
  // A slow rescan can finish after navigation or an edit without replacing the draft.
  await run("fixture.delay=100;scan();switchView('experiments');await new Promise(r=>setTimeout(r,400));fixture.delay=0");
@@ -128,9 +153,10 @@ const assert=require('node:assert/strict');
  await run("fixture.delay=100;loadDefaults('built-in');$('context').value=49152;edited('context');new Promise(r=>setTimeout(r,500))");
  assert.equal(await run('settings().context'),49152);await run('fixture.delay=0');
  await run("fixture.downloads=[{id:'dense',name:'Qwen3.8-27B',state:'downloading',percent:40,done_gb:6,total_gb:15.36,rate_mib_s:23,target:'/models/new/dense.gguf',detail:'Downloading'}];poll()");
- await run("setModelFilter('catalog');$('download-action-dense').focus();fixture.downloads[0].percent=50;poll()");
+ // Downloads live on Launch, so a poll must not steal focus from the row there.
+ await run("$('download-action-dense').focus();fixture.downloads[0].percent=50;poll()");
  assert.equal(await run('document.activeElement.id'),'download-action-dense');
- await run("setModelFilter('installed')");assert.equal(await run("$('download-section').hidden"),false);
+ assert.equal(await run("$('download-section').hidden"),false);
  // A failure names its reason in the row, and kept bytes resume rather than restart.
  await run("fixture.downloads[0]={...fixture.downloads[0],state:'error',detail:'Download of dense.gguf ended early after 6 attempts; 7400000000 bytes are kept, so a retry resumes.'};poll()");
  assert.equal(await run("$('download-dense').querySelector('[data-download-reason]').hidden"),false);
