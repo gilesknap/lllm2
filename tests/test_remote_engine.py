@@ -377,12 +377,36 @@ def monitor_rounds():
     time.sleep(0.3)
 
 
+def counted_down_to(engine, clock, remaining):
+    """Move the fake clock until the idle countdown reads ``remaining``.
+
+    The proxy books a finished request from its own thread, so a request the
+    client has already read can still be in flight, or be booked just after
+    the clock moves. Either leaves the countdown at the whole timeout however
+    far the clock has gone, so advance by what is left rather than once by a
+    fixed amount. Pass this to ``eventually``.
+
+    Args:
+        engine: The engine whose countdown to move.
+        clock: The fake clock the engine reads.
+        remaining: The countdown value to stop at, in seconds.
+
+    Returns:
+        True when the countdown reads ``remaining``.
+    """
+    left = engine.status()["idle_remaining_seconds"]
+    if left is None or left < remaining:
+        return False
+    clock.advance(left - remaining)
+    return engine.status()["idle_remaining_seconds"] == remaining
+
+
 def test_idle_engine_stops_its_call(model, providers, engines, clock):
     provider = providers()
     engine = engines(provider, idle_timeout=60, clock=clock)
     engine.start(Settings(model=model), threading.Event(), timeout=30)
     assert engine.status()["idle_remaining_seconds"] == 60
-    clock.advance(59)
+    assert eventually(lambda: counted_down_to(engine, clock, 1))
     monitor_rounds()
     assert engine.alive() and engine.status()["idle_remaining_seconds"] == 1
     clock.advance(1)
@@ -405,7 +429,10 @@ def test_requests_reset_the_idle_timer(model, providers, engines, clock):
         assert engine.status()["idle_remaining_seconds"] == 60
         monitor_rounds()
         assert engine.alive()
-    clock.advance(60)
+    # Settle the last request before the final advance, or a late booking
+    # restarts the countdown and the call never reaches its idle stop.
+    assert eventually(lambda: counted_down_to(engine, clock, 1))
+    clock.advance(1)
     assert eventually(lambda: not engine.alive())
 
 
