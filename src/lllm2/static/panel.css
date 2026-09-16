@@ -969,6 +969,11 @@ p {
   accent-color: var(--accent);
 }
 
+.download-row .download-reason {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
 .download-row details {
   font-size: 12px;
   overflow-wrap: anywhere;

@@ -131,6 +131,14 @@ const assert=require('node:assert/strict');
  await run("setModelFilter('catalog');$('download-action-dense').focus();fixture.downloads[0].percent=50;poll()");
  assert.equal(await run('document.activeElement.id'),'download-action-dense');
  await run("setModelFilter('installed')");assert.equal(await run("$('download-section').hidden"),false);
+ // A failure names its reason in the row, and kept bytes resume rather than restart.
+ await run("fixture.downloads[0]={...fixture.downloads[0],state:'error',detail:'Download of dense.gguf ended early after 6 attempts; 7400000000 bytes are kept, so a retry resumes.'};poll()");
+ assert.equal(await run("$('download-dense').querySelector('[data-download-reason]').hidden"),false);
+ assert.match(await run("$('download-dense').querySelector('[data-download-reason]').textContent"),/ended early after 6 attempts/);
+ assert.equal(await run("$('download-action-dense').textContent"),'Resume download');
+ assert.match(await run("$('download-notice').textContent"),/^A download failed\./);
+ await run("fixture.downloads[0]={...fixture.downloads[0],state:'downloading'};poll()");
+ assert.equal(await run("$('download-dense').querySelector('[data-download-reason]').hidden"),true);
  await run("fixture.models.push({path:'/models/new/dense.gguf',catalog_id:'dense',identity_verified:true,metadata:{context:262144}});fixture.downloads[0].state='complete';poll()");
  assert.equal(await run('settings().context'),49152);assert.equal(await run('settings().model'),'/models/Qwen3-8B/model.gguf');
  assert.equal(await run("$('download-action-dense').hidden"),true);await run("switchView('launch')");

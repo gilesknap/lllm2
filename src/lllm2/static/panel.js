@@ -592,21 +592,26 @@ function renderDownloads(){
  if(!discovered.catalog)return;
  const ds=statusState.downloads||[];
  $('download-section').hidden=!ds.length;
- renderMarkup('active-downloads',ds.map(d=>`<div class="download-row" id="download-${esc(d.id)}"><div class="row"><div><h3>${esc(d.name)}</h3><small data-download-status></small></div><button id="download-action-${esc(d.id)}"></button></div><progress aria-label="${esc(d.name)} download progress"></progress><details id="download-detail-${esc(d.id)}"><summary id="download-summary-${esc(d.id)}">Download details</summary><small data-download-detail></small></details></div>`).join(''));
+ renderMarkup('active-downloads',ds.map(d=>`<div class="download-row" id="download-${esc(d.id)}"><div class="row"><div><h3>${esc(d.name)}</h3><small data-download-status></small></div><button id="download-action-${esc(d.id)}"></button></div><p class="error download-reason" data-download-reason hidden></p><progress aria-label="${esc(d.name)} download progress"></progress><details id="download-detail-${esc(d.id)}"><summary id="download-summary-${esc(d.id)}">Download details</summary><small data-download-detail></small></details></div>`).join(''));
  for(const d of ds){
   const row=$('download-'+d.id),active=['queued','downloading'].includes(d.state),button=$('download-action-'+d.id);
   row.querySelector('[data-download-status]').textContent=`${d.store?(backendInfo(d.store)?.label||d.store)+' storage · ':''}${d.state==='complete'?'Downloaded':d.state} · ${d.done_gb??0} / ${d.total_gb||'unknown'} GB${active?` · ${d.rate_mib_s??0} MiB/s`:''}`;
   row.querySelector('[data-download-detail]').textContent=[d.target,d.file,d.detail].filter(Boolean).join(' · ');
+  // The reason belongs with the download, not only inside its details.
+  const reason=row.querySelector('[data-download-reason]'),failed=d.state==='error';
+  reason.hidden=!failed;reason.textContent=failed?(d.detail||'The download failed.'):'';
   const progress=row.querySelector('progress');progress.max=100;if(d.total_gb)progress.value=Math.min(100,Math.max(0,d.percent||0));else progress.removeAttribute('value');progress.hidden=!active;
   delete button.dataset.selectModel;delete button.dataset.download;delete button.dataset.active;delete button.dataset.remoteDownload;delete button.dataset.store;
+  // Kept bytes resume, so say so rather than implying a fresh download.
+  const label=active?'Cancel download':d.done_gb?'Resume download':'Retry download';
   if(d.state==='complete'){
    button.hidden=true;delete button.dataset.verify;
-  }else if(d.store){button.hidden=false;delete button.dataset.verify;button.textContent=active?'Cancel download':'Retry download';button.dataset.remoteDownload=d.catalogue_id;button.dataset.store=d.store;button.dataset.active=String(active);}
-  else{button.hidden=false;delete button.dataset.verify;button.textContent=active?'Cancel download':'Retry download';button.dataset.download=d.id;button.dataset.active=String(active);}
+  }else if(d.store){button.hidden=false;delete button.dataset.verify;button.textContent=label;button.dataset.remoteDownload=d.catalogue_id;button.dataset.store=d.store;button.dataset.active=String(active);}
+  else{button.hidden=false;delete button.dataset.verify;button.textContent=label;button.dataset.download=d.id;button.dataset.active=String(active);}
   button.setAttribute('aria-label',button.textContent+' · '+d.name);
   button.disabled=!connected||resolving||scanPending||pendingAction;
  }
- const notice=ds.some(d=>d.state==='complete')?'Download complete. Open Launch or Experiments to use the model.':ds.some(d=>d.state==='error')?'A download failed. Open its details, then retry.':ds.some(d=>['queued','downloading'].includes(d.state))?'Downloading to the model workstation. You can continue using the panel.':'';
+ const notice=ds.some(d=>d.state==='complete')?'Download complete. Open Launch or Experiments to use the model.':ds.some(d=>d.state==='error')?'A download failed. Its reason is shown with it.':ds.some(d=>['queued','downloading'].includes(d.state))?'Downloading to the model workstation. You can continue using the panel.':'';
  if($('download-notice').textContent!==notice)$('download-notice').textContent=notice;
  renderRecommendations();
 }
