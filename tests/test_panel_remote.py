@@ -306,6 +306,9 @@ def spawn_orphan(tmp_path, owner):
     # Another provider instance sees the call only once its server listens.
     observer = FakeProvider(tmp_path / "remote")
     assert eventually(lambda: any(c.id == call_id for c in observer.calls()))
+    # The crashed session stopped writing its record and its heartbeat to the
+    # provider at the same moment.
+    provider.beat(call_id, at=owner["heartbeat"])
     CallRecords(config.STATE_DIR / "remote-calls.json").put(
         "fake",
         call_id,
@@ -319,6 +322,17 @@ def spawn_orphan(tmp_path, owner):
             "owner": owner,
         },
     )
+    return provider, call_id
+
+
+def spawn_elsewhere(tmp_path):
+    """Start a call as a session with its own state directory would have."""
+    provider = FakeProvider(tmp_path / "remote")
+    call_id = provider.spawn(
+        "FAKE-24", ["llama-server", "--port", str(free_port())], "key", {}, {}
+    )
+    observer = FakeProvider(tmp_path / "remote")
+    assert eventually(lambda: any(c.id == call_id for c in observer.calls()))
     return provider, call_id
 
 
@@ -348,6 +362,25 @@ def test_orphan_banner_lists_and_stops_an_orphan(app, tmp_path):
         assert app.action("/api/remote/orphans", {})["orphans"] == []
         with pytest.raises(ValueError, match="no longer running"):
             app.action("/api/remote/stop-call", {"backend": "fake", "call_id": call_id})
+    finally:
+        spawner.close()
+
+
+def test_orphan_banner_ignores_a_call_a_live_session_serves(app, tmp_path):
+    """Another session's live call bills that session, not this one, to stop."""
+    spawner, call_id = spawn_elsewhere(tmp_path)
+    try:
+        assert app.action("/api/remote/orphans", {"backend": "fake"})["orphans"] == []
+        (row,) = app.action("/api/remote", {"backend": "fake"})["calls"]
+        assert row["status"] == "active" and not row["adoptable"]
+        with pytest.raises(ValueError, match="another machine"):
+            app.action("/api/remote/stop-call", {"backend": "fake", "call_id": call_id})
+        # The banner offers the call only once its owner stops heartbeating.
+        spawner.silence(call_id)
+        (row,) = app.action("/api/remote/orphans", {"backend": "fake"})["orphans"]
+        assert row["id"] == call_id and row["status"] == "orphan"
+        app.action("/api/remote/stop-call", {"backend": "fake", "call_id": call_id})
+        assert spawner.calls() == []
     finally:
         spawner.close()
 
@@ -419,6 +452,13 @@ def test_heartbeat_decides_ownership_across_pid_namespaces():
     assert not remote.owner_alive(other_namespace, now + remote.OWNER_STALE_SECONDS + 1)
     same_namespace = dict(other_namespace, pid_ns=remote.pid_namespace())
     assert not remote.owner_alive(same_namespace, now)
+    # Only a pid from this host and namespace may be read as gone: a pid from a
+    # container means nothing in this process table, whoever holds it here.
+    assert remote.owner_process_gone(same_namespace)
+    assert not remote.owner_process_gone(other_namespace)
+    assert not remote.owner_process_gone(dict(same_namespace, pid_ns=None))
+    assert not remote.owner_process_gone(dict(same_namespace, host="elsewhere"))
+    assert not remote.owner_process_gone(dict(same_namespace, pid=os.getpid()))
 
 
 def test_volume_models_download_and_remove(app, providers):

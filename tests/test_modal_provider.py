@@ -34,6 +34,7 @@ from lllm2.remote import (
     RemoteEngine,
     StoredModel,
     catalogue_source,
+    heartbeat_fresh,
     remote_provider,
 )
 from lllm2.settings import Settings
@@ -322,12 +323,18 @@ def test_probe_hashes_the_binary_that_a_local_install_hashes(tmp_path, monkeypat
     smi.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
 
-    probed = modal_app.probe_container(modal_app.engine_binary(str(image)))
+    binary = modal_app.engine_binary(str(image))
+    # The probe reads the build the container installed, whatever track a
+    # driver would pick now, so the reported build follows the binary.
+    monkeypatch.setattr(engine_install, "cuda_track", lambda: "12")
+    probed = modal_app.probe_container(binary)
 
     expected = hashlib.sha256(server).hexdigest()
     assert discovery.probe(local)["sha256"] == expected
     assert probed["engine"]["sha256"] == expected
     assert (probed["name"], probed["total_mib"]) == ("NVIDIA L4", 23034)
+    assert probed["engine"]["cuda_track"] == CUDA_TRACKS["13"]
+    assert probed["engine"]["requested_ref"] == LLAMA_CPP_REF
 
 
 def test_a_deleted_app_is_redeployed(fake, provider, deploys):
@@ -415,10 +422,25 @@ def test_polling_keeps_a_call_alive_and_silence_ends_it(fake):
         now[0] += 50
         provider.poll(call_id)
         assert not watch.lost()
-    # Listing calls, as `lllm2 modal list` does, is not a heartbeat.
-    provider.calls()
+    # Listing calls, as `lllm2 modal list` does, is not a heartbeat. It
+    # reports the silence the container's own watch measures, on the same
+    # grace, so both sides end a call at the same moment.
+    assert provider.heartbeat_grace == modal_app.OWNER_GRACE_SECONDS
+    (listed,) = provider.calls()
+    assert listed.heartbeat_age is not None and listed.heartbeat_age < 60
+    assert heartbeat_fresh(listed, provider.heartbeat_grace)
     now[0] += 61
     assert watch.lost()
+
+    silent = time.time() - provider.heartbeat_grace - 60
+    fake.state.put(modal_app.heartbeat_key(call_id), (silent, 7))
+    (listed,) = provider.calls()
+    assert listed.heartbeat_age > provider.heartbeat_grace
+    assert not heartbeat_fresh(listed, provider.heartbeat_grace)
+
+    # A heartbeat this provider cannot read is not a fresh one.
+    fake.state.put(modal_app.heartbeat_key(call_id), "unreadable")
+    assert provider.calls()[0].heartbeat_age is None
 
 
 def test_a_connection_failure_does_not_forget_a_running_call(

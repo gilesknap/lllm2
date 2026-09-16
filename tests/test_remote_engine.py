@@ -17,6 +17,7 @@ from fake_remote import ENGINE, FakeProvider, free_port
 from lllm2 import config
 from lllm2.engine import Cancelled, ResourceConflict
 from lllm2.remote import (
+    CALL_STALE_SECONDS,
     DEFAULT_IDLE_TIMEOUT,
     OWNER_HEARTBEAT_SECONDS,
     OWNER_STALE_SECONDS,
@@ -24,6 +25,7 @@ from lllm2.remote import (
     CallRecords,
     RemoteEngine,
     model_source,
+    pid_namespace,
     stop_owned_calls,
 )
 from lllm2.settings import Settings
@@ -558,7 +560,7 @@ def test_owner_heartbeat_refreshes_the_call_record(
 def test_stale_owner_heartbeat_turns_a_call_into_an_orphan(
     model, providers, engines, wall, tmp_path
 ):
-    provider = providers()
+    provider = providers(clock=wall)
     port = free_port()
     argv = ["llama-server", "--port", str(port)]
     call_id = provider.spawn("FAKE-24", argv, "key", {}, {})
@@ -586,7 +588,7 @@ def test_stale_owner_heartbeat_turns_a_call_into_an_orphan(
     # A recent record survives a provider list that does not show its call.
     assert records.get("fake", "ended") is not None
 
-    wall.advance(max(OWNER_STALE_SECONDS, RECORD_GRACE_SECONDS) + 1)
+    wall.advance(max(OWNER_STALE_SECONDS, RECORD_GRACE_SECONDS, CALL_STALE_SECONDS) + 1)
     assert [o["id"] for o in engine.orphans()] == [call_id]
     assert records.get("fake", "ended") is None
 
@@ -596,12 +598,140 @@ def test_stale_owner_heartbeat_turns_a_call_into_an_orphan(
     assert engine.orphans() == []
 
 
+def test_a_call_another_live_session_serves_is_never_an_orphan(
+    model, providers, engines, wall, tmp_path
+):
+    """The provider's heartbeat decides, not this workstation's records.
+
+    The owning session here is a panel in another container: it writes its
+    heartbeats to the provider, but its call records live in a state directory
+    this session cannot see, and its local record here is an old one.
+    """
+    provider = providers(clock=wall)
+    argv = ["llama-server", "--port", str(free_port())]
+    call_id = provider.spawn("FAKE-24", argv, "key", {}, {})
+    assert eventually(lambda: provider.calls() != [])
+    records = CallRecords(tmp_path / "calls.json")
+    records.put(
+        "fake",
+        call_id,
+        {
+            "api_key": "key",
+            "gpu": "FAKE-24",
+            "settings": Settings(model=model).dict(),
+            "argv": argv,
+            "started": wall.now,
+            "saved": wall.now,
+            "owner": {
+                "pid": 1,
+                "host": "elsewhere",
+                "pid_ns": "pid:[1]",
+                "heartbeat": wall.now - 10 * OWNER_STALE_SECONDS,
+            },
+        },
+    )
+    engine = engines(provider, wall_clock=wall)
+
+    (row,) = engine.remote_calls()
+    assert (row["id"], row["status"], row["heartbeat_age"]) == (call_id, "active", 0)
+    # The key is here, but taking the call would pull it from a live session.
+    assert not row["adoptable"]
+    assert engine.orphans() == []
+    with pytest.raises(ValueError, match="Another lllm2 session"):
+        engine.adopt(call_id)
+
+    # The other session keeps serving, so its heartbeat stays fresh.
+    wall.advance(CALL_STALE_SECONDS - 1)
+    provider.beat(call_id)
+    wall.advance(CALL_STALE_SECONDS - 1)
+    assert engine.orphans() == []
+
+    # It goes away: only silence past the grace makes the call an orphan.
+    wall.advance(2)
+    (orphan,) = engine.orphans()
+    assert (orphan["id"], orphan["adoptable"]) == (call_id, True)
+    engine.adopt(call_id, timeout=30)
+    assert engine.state()["ready"] and engine.call_id == call_id
+
+
+def test_a_dead_owner_here_frees_a_call_unless_another_session_took_it_over(
+    model, providers, engines, wall, tmp_path
+):
+    """A record naming a dead process is only evidence while it fits the beats.
+
+    A session that crashed on this workstation stopped writing both its record
+    and its heartbeat at once, so its call is an orphan straight away. Once the
+    provider's heartbeat moves on without that record, a later session has
+    taken the call over and the dead process here says nothing about it.
+    """
+    provider = providers(clock=wall)
+    argv = ["llama-server", "--port", str(free_port())]
+    call_id = provider.spawn("FAKE-24", argv, "key", {}, {})
+    assert eventually(lambda: provider.calls() != [])
+    CallRecords(tmp_path / "calls.json").put(
+        "fake",
+        call_id,
+        {
+            "api_key": "key",
+            "gpu": "FAKE-24",
+            "settings": Settings(model=model).dict(),
+            "argv": argv,
+            "started": wall.now,
+            "saved": wall.now,
+            "owner": {
+                # A pid above pid_max, so this namespace cannot hold it.
+                "pid": 2**22 + 7,
+                "host": socket.gethostname(),
+                "pid_ns": pid_namespace(),
+                "heartbeat": wall.now,
+            },
+        },
+    )
+    engine = engines(provider, wall_clock=wall)
+
+    # Both heartbeats stopped together, so the crash frees the call at once.
+    wall.advance(OWNER_HEARTBEAT_SECONDS + 1)
+    (row,) = engine.remote_calls()
+    assert (row["status"], row["adoptable"]) == ("orphan", True)
+
+    # A session elsewhere adopted it and keeps the provider's heartbeat fresh,
+    # while the record here still names the process that died.
+    wall.advance(CALL_STALE_SECONDS + 1)
+    provider.beat(call_id)
+    (row,) = engine.remote_calls()
+    assert (row["status"], row["adoptable"]) == ("active", False)
+    assert engine.orphans() == []
+    with pytest.raises(ValueError, match="Another lllm2 session"):
+        engine.adopt(call_id)
+
+
+def test_a_call_the_provider_reports_no_heartbeat_for_ages_into_an_orphan(
+    providers, engines, wall
+):
+    """No heartbeat to read neither pins a call nor makes it stoppable on sight."""
+    provider = providers(clock=wall)
+    argv = ["llama-server", "--port", str(free_port())]
+    call_id = provider.spawn("FAKE-24", argv, "key", {}, {})
+    assert eventually(lambda: provider.calls() != [])
+    provider.untracked(call_id)
+    engine = engines(provider, wall_clock=wall)
+
+    # A call another session has just started is not an orphan to stop.
+    (row,) = engine.remote_calls()
+    assert (row["status"], row["heartbeat_age"]) == ("active", None)
+
+    wall.advance(CALL_STALE_SECONDS + 1)
+    (row,) = engine.remote_calls()
+    assert (row["status"], row["heartbeat_age"]) == ("orphan", None)
+
+
 def test_orphan_without_a_saved_key_can_only_be_cancelled(model, providers, engines):
     provider = providers()
     engine = engines(provider)
     port = str(free_port())
     call_id = provider.spawn("FAKE-24", ["llama-server", "--port", port], "k", {}, {})
     assert eventually(lambda: provider.calls() != [])
+    provider.silence(call_id)
     orphans = engine.orphans()
     assert [(o["id"], o["adoptable"]) for o in orphans] == [(call_id, False)]
     with pytest.raises(ValueError, match="cannot be adopted"):

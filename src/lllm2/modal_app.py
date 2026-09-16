@@ -195,7 +195,8 @@ def probe_container(binary: str | None = None) -> dict:
     Returns:
         A dict with ``name`` and ``total_mib`` of the first GPU and ``engine``,
         the engine record in the ``discovery.probe()`` shape plus the
-        ``cuda_graph``, ``cache_kernel`` and ``environment`` keys.
+        ``cuda_track``, ``requested_ref``, ``cuda_graph``, ``cache_kernel`` and
+        ``environment`` keys.
 
     Raises:
         RuntimeError: nvidia-smi failed.
@@ -219,6 +220,11 @@ def probe_container(binary: str | None = None) -> dict:
         raise RuntimeError(f"nvidia-smi could not describe the GPU: {error}") from error
     binary = binary or engine_binary()
     engine = dict(discovery.probe(binary))
+    # Name the build the container really ran. The compiler version in the
+    # engine's own version text reads like a CUDA version otherwise.
+    record = engine_install.provenance(Path(binary))
+    engine["cuda_track"] = record.get("cuda_track")
+    engine["requested_ref"] = record.get("requested_ref")
     engine["cuda_graph"] = discovery.cuda_graph_support(binary)
     engine["cache_kernel"] = discovery.cache_kernel_support(binary, "CUDA")
     environment = discovery.engine_environment(binary)

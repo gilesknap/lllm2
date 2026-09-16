@@ -44,6 +44,9 @@ OWNER_HEARTBEAT_SECONDS = 30
 OWNER_STALE_SECONDS = 120
 # A record this recent survives a provider list that does not show its call yet.
 RECORD_GRACE_SECONDS = 120
+# A call whose remote heartbeat is older than this has no live owner anywhere.
+# Providers that stop a silent call sooner or later override it.
+CALL_STALE_SECONDS = 180
 
 
 @dataclass(frozen=True)
@@ -152,11 +155,17 @@ class RemoteCall:
         id: The provider's call identifier.
         gpu: The GPU type, or None when the provider cannot tell.
         started: The start time as Unix seconds, or None when unknown.
+        heartbeat_age: Seconds since the lllm2 session driving this call last
+            reported to the provider, or None when the provider cannot tell.
+            The owning session writes that heartbeat wherever it runs, so a
+            fresh age means some live session owns the call, whatever this
+            workstation's local records say.
     """
 
     id: str
     gpu: str | None = None
     started: float | None = None
+    heartbeat_age: float | None = None
 
 
 class ProviderError(RuntimeError):
@@ -182,12 +191,16 @@ class RemoteProvider(abc.ABC):
         server_port: The port llama-server listens on inside the container.
         engine_path: The llama-server path that an unprobed GPU's static
             engine record reports. A probe replaces it with the real path.
+        heartbeat_grace: Seconds of owner silence after which a call counts as
+            abandoned. Providers that stop a silent call themselves set this to
+            the grace their server side allows.
     """
 
     name: str = ""
     server_host: str = "0.0.0.0"
     server_port: int = 8080
     engine_path: str = "llama-server"
+    heartbeat_grace: float = CALL_STALE_SECONDS
 
     def setup(self) -> Deployment:
         """Check the credentials and prepare the provider account for lllm2.
@@ -341,6 +354,10 @@ class RemoteProvider(abc.ABC):
     @abc.abstractmethod
     def calls(self) -> list[RemoteCall]:
         """List the running lllm2 serve calls in the provider account.
+
+        Providers that track owner heartbeats fill in each call's
+        ``heartbeat_age``, so callers can tell a call some live lllm2 session
+        drives from an abandoned one without consulting local records.
 
         Returns:
             The running calls, including ones this process did not start.
@@ -715,6 +732,126 @@ def owner_record(now=None):
     }
 
 
+def heartbeat_fresh(call, grace=CALL_STALE_SECONDS, now=None):
+    """Return whether a live lllm2 session drives a remote call.
+
+    The owning session writes the heartbeat into the provider's own state from
+    whatever machine it runs on, so this is the evidence that survives a
+    different state directory, container or user account.
+
+    A call the provider reports no heartbeat for falls back to its age: a call
+    that has just started is one some session is still bringing up, so it is
+    not stoppable on sight, and it stops counting as fresh once the grace
+    passes. A provider that tracks no heartbeats at all therefore still ends up
+    listing its old calls as orphans.
+
+    Args:
+        call: A ``RemoteCall``.
+        grace: Seconds of silence after which the call counts as abandoned.
+        now: The current Unix time, or None to read the clock.
+
+    Returns:
+        True when the provider reports a heartbeat within the grace, or reports
+        none and the call itself started within the grace.
+    """
+    age = call.heartbeat_age
+    if isinstance(age, int | float):
+        return age <= grace
+    started = call.started
+    if not isinstance(started, int | float):
+        return False
+    # A start time from another machine may sit slightly ahead of this clock,
+    # so measure the distance rather than the difference.
+    return abs((time.time() if now is None else now) - started) <= grace
+
+
+def heartbeat_after_owner(call, owner, now=None):
+    """Return whether a call's remote heartbeat outlives a local owner record.
+
+    One session writes both heartbeats, so their ages track each other while
+    that session runs, and both stop when it dies. A remote heartbeat much
+    newer than the record's means another session took the call over after this
+    record's owner left: that session is the one that would lose its model, so
+    the dead process named here says nothing about the call any more.
+
+    Args:
+        call: A ``RemoteCall``.
+        owner: The record's ``owner`` dict, or None.
+        now: The current Unix time, or None to read the clock.
+
+    Returns:
+        True when the provider's heartbeat is newer than the record's by more
+        than the record staleness bound.
+    """
+    age = call.heartbeat_age
+    beat = owner.get("heartbeat") if isinstance(owner, dict) else None
+    if not isinstance(age, int | float) or not isinstance(beat, int | float):
+        return False
+    now = time.time() if now is None else now
+    return (now - beat) - age > OWNER_STALE_SECONDS
+
+
+def call_abandoned(call, owner, grace=CALL_STALE_SECONDS, now=None):
+    """Return whether no live lllm2 session drives a remote call.
+
+    The remote heartbeat is the primary evidence, because the owning session
+    writes it wherever it runs. A local record adds the one fact the heartbeat
+    cannot show: an owner process on this host and PID namespace that has since
+    died, whose call is abandoned at once rather than after the grace, unless
+    the heartbeat shows that another session has taken the call over.
+
+    Args:
+        call: A ``RemoteCall``.
+        owner: The local record's ``owner`` dict, or None.
+        grace: Seconds of remote silence after which the call is abandoned.
+        now: The current Unix time, or None to read the clock.
+
+    Returns:
+        True when the call may be stopped or adopted without taking a model
+        from a session that still serves it.
+    """
+    now = time.time() if now is None else now
+    if owner_process_gone(owner) and not heartbeat_after_owner(call, owner, now):
+        return True
+    return not (heartbeat_fresh(call, grace, now) or owner_alive(owner, now))
+
+
+def owner_process_gone(owner):
+    """Return whether a call record's owner process provably no longer exists.
+
+    A process ID means something only in the PID namespace that recorded it,
+    so this answers True only for an owner that shares this host and PID
+    namespace and whose process has since gone. That is stronger evidence than
+    a heartbeat timestamp, so a session that crashed on this workstation leaves
+    a call this workstation can adopt straight away.
+
+    Args:
+        owner: The record's ``owner`` dict, or None.
+
+    Returns:
+        True when the owner process is known to have gone.
+    """
+    if not isinstance(owner, dict):
+        return False
+    namespace = owner.get("pid_ns")
+    if (
+        owner.get("host") != socket.gethostname()
+        or namespace is None
+        or namespace != pid_namespace()
+    ):
+        return False
+    pid = owner.get("pid")
+    if type(pid) is not int or pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
 def owner_alive(owner, now=None):
     """Return whether a call record's owner is a running lllm2 session.
 
@@ -961,6 +1098,16 @@ def model_users(rows, name):
 def describe_calls(provider, records=None, owned=(), now=None):
     """List the provider's running lllm2 serve calls with their ownership.
 
+    The remote heartbeat is the primary evidence. A session that owns a call
+    reports to the provider from wherever it runs, so a fresh heartbeat means
+    the call is live under some session even when this workstation has no
+    record of it: local records differ between a systemd panel, a CLI in a
+    container and a CLI on the host. Local records only add what this
+    workstation can do about a call, namely adopt it when it holds the key, and
+    the one fact the heartbeat cannot show: an owner process on this host and
+    PID namespace that has since died, whose call is an orphan at once unless
+    the heartbeat has moved on without it.
+
     Also deletes saved records of calls that have ended, after a grace period.
 
     Args:
@@ -973,10 +1120,11 @@ def describe_calls(provider, records=None, owned=(), now=None):
         A list of dicts, oldest first, with ``id``, ``gpu``, ``started`` (Unix
         seconds or None), ``elapsed_seconds``, ``usd_per_hour``,
         ``estimated_cost_usd``, ``model`` (the settings model path or None),
-        ``adoptable`` (True when a saved key allows adoption), ``owner`` (the
-        owner's ``pid``, ``host`` and ``heartbeat``, or None) and ``status``:
-        ``"owned"`` for this process, ``"active"`` for another running lllm2
-        session, or ``"orphan"``.
+        ``heartbeat_age`` (seconds since the owner reported to the provider, or
+        None), ``adoptable`` (True when this workstation holds the key and the
+        call is an orphan), ``owner`` (the local record's ``pid``, ``host`` and
+        ``heartbeat``, or None) and ``status``: ``"owned"`` for this process,
+        ``"active"`` for another live lllm2 session, or ``"orphan"``.
     """
     if records is None:
         records = CallRecords(config.STATE_DIR / "remote-calls.json")
@@ -989,10 +1137,10 @@ def describe_calls(provider, records=None, owned=(), now=None):
         owner = record.get("owner") if isinstance(record.get("owner"), dict) else None
         if call.id in owned:
             status = "owned"
-        elif owner_alive(owner, now):
-            status = "active"
-        else:
+        elif call_abandoned(call, owner, provider.heartbeat_grace, now):
             status = "orphan"
+        else:
+            status = "active"
         gpu = call.gpu or record.get("gpu")
         started = call.started if call.started is not None else record.get("started")
         elapsed = max(0.0, now - started) if started is not None else None
@@ -1011,7 +1159,8 @@ def describe_calls(provider, records=None, owned=(), now=None):
                 if elapsed is not None and price is not None
                 else None,
                 "model": (record.get("settings") or {}).get("model"),
-                "adoptable": "api_key" in record,
+                "heartbeat_age": call.heartbeat_age,
+                "adoptable": "api_key" in record and status == "orphan",
                 "owner": {k: owner.get(k) for k in ("pid", "host", "heartbeat")}
                 if owner
                 else None,
@@ -1614,15 +1763,16 @@ class RemoteEngine(Engine):
             timeout: The readiness bound in seconds.
 
         Raises:
-            ValueError: The call is not running, or this machine has no record
-                of its API key.
+            ValueError: The call is not running, a live lllm2 session already
+                serves it, or this machine has no record of its API key.
             Cancelled: The cancel event was set.
             ResourceConflict: The engine port is in use.
             TimeoutError: The server did not become ready in time.
             RuntimeError: The call ended while adopting it.
         """
         cancel = cancel or threading.Event()
-        if all(c.id != call_id for c in self.provider.calls()):
+        listed = next((c for c in self.provider.calls() if c.id == call_id), None)
+        if listed is None:
             self._records.remove(self.provider.name, call_id)
             raise ValueError("That remote call is no longer running.")
         record = self._records.get(self.provider.name, call_id)
@@ -1631,9 +1781,13 @@ class RemoteEngine(Engine):
                 "No saved key for this remote call, so it cannot be adopted. Stop it instead."
             )
         owner = record.get("owner")
-        if call_id != self.call_id and owner_alive(owner, self.wall_clock()):
+        if call_id != self.call_id and not call_abandoned(
+            listed, owner, self.provider.heartbeat_grace, self.wall_clock()
+        ):
+            where = f" (pid {owner.get('pid')} on {owner.get('host')})" if owner else ""
             raise ValueError(
-                f"Another lllm2 session (pid {owner.get('pid')} on {owner.get('host')}) serves that call. Stop it there."
+                f"Another lllm2 session{where} serves that call and keeps its "
+                "heartbeat fresh. Stop it there, or stop the call by id."
             )
         s = Settings.parse(record["settings"])
         self.stop()
@@ -1706,11 +1860,11 @@ class RemoteEngine(Engine):
             )
 
     def orphans(self):
-        """List running serve calls that no running lllm2 session owns.
+        """List running serve calls that no live lllm2 session owns.
 
-        Calls that an engine in this process owns, and calls that another
-        running session keeps refreshing, are left out. Also deletes saved
-        records of calls that have ended, after a grace period.
+        Calls that an engine in this process owns, and calls whose owner still
+        heartbeats to the provider from anywhere, are left out. Also deletes
+        saved records of calls that have ended, after a grace period.
 
         Returns:
             The ``describe_calls`` rows whose ``status`` is ``"orphan"``.

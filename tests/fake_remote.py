@@ -57,8 +57,11 @@ FLAGS = [
     "--spec-draft-n-max",
 ]
 ENGINE = {
-    "path": "/opt/fake/llama-server",
-    "version": "fake",
+    "path": "/opt/fake/llama-b10850-cuda12.9.1/llama-server",
+    # llama-server prints its build, then the compiler that built it.
+    "version": "version: 10850 (deadbee)\nbuilt with GNU 13.3.1 for x86_64",
+    "cuda_track": "12.9.1",
+    "requested_ref": "b10850",
     "flags": FLAGS,
     "help": "--spec-type none, draft-mtp, ngram-simple",
     "devices": ["CUDA0"],
@@ -222,16 +225,22 @@ def free_port():
 class FakeProvider(RemoteProvider):
     """A provider whose serve calls are fake llama-server processes.
 
+    Like a real provider it keeps each call's owner heartbeat in its own state,
+    so any machine reading the provider can tell a call a live session drives
+    from an abandoned one. ``spawn`` and ``poll`` heartbeat; ``silence`` and a
+    fake clock let a test abandon a call.
+
     Attributes:
         probes: The GPU types probed, in order.
         downloads: The store names downloaded, in order.
         spawned: One dict per spawn with ``gpu``, ``argv``, ``env`` and ``files``.
+        clock: The wall clock that stamps call starts and heartbeats.
     """
 
     name = "fake"
     server_host = "127.0.0.1"
 
-    def __init__(self, root, server_env=None, download_seconds=0.0):
+    def __init__(self, root, server_env=None, download_seconds=0.0, clock=time.time):
         """Create a provider that keeps its calls and store under a directory.
 
         Args:
@@ -240,8 +249,11 @@ class FakeProvider(RemoteProvider):
             server_env: Extra environment variables for the fake server, such
                 as ``FAKE_LOAD_SECONDS`` or ``FAKE_EXIT``.
             download_seconds: How long a model download takes.
+            clock: The wall clock in Unix seconds that stamps call starts and
+                heartbeats, so a test can age them without waiting.
         """
         self.root = Path(root)
+        self.clock = clock
         for name in ("calls", "volume", "files"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.script = self.root / "fake_llama_server.py"
@@ -307,7 +319,13 @@ class FakeProvider(RemoteProvider):
                 env={**os.environ, **self.server_env, **env, "LLAMA_API_KEY": api_key},
                 start_new_session=True,
             )
-        record = {"pid": process.pid, "port": port, "gpu": gpu, "started": time.time()}
+        record = {
+            "pid": process.pid,
+            "port": port,
+            "gpu": gpu,
+            "started": self.clock(),
+            "heartbeat": self.clock(),
+        }
         (self.root / "calls" / f"{call_id}.json").write_text(json.dumps(record))
         with self._lock:
             self._processes[call_id] = process
@@ -320,6 +338,7 @@ class FakeProvider(RemoteProvider):
         record = self._record(call_id)
         if record is None:
             return ServeStatus(running=False, error="unknown call")
+        self.beat(call_id)
         lines = self._new_lines(call_id)
         if any("listening" in line for line in lines):
             self._listening.add(call_id)
@@ -349,15 +368,61 @@ class FakeProvider(RemoteProvider):
             deadline = time.monotonic() + 10
             while self._alive(call_id, record) and time.monotonic() < deadline:
                 time.sleep(0.02)
-        (self.root / "calls" / f"{call_id}.json").unlink(missing_ok=True)
+        with self._lock:
+            (self.root / "calls" / f"{call_id}.json").unlink(missing_ok=True)
 
     def calls(self):
         found = []
         for path in sorted((self.root / "calls").glob("*.json")):
             record = json.loads(path.read_text())
             if self._alive(path.stem, record):
-                found.append(RemoteCall(path.stem, record["gpu"], record["started"]))
+                beat = record.get("heartbeat")
+                found.append(
+                    RemoteCall(
+                        path.stem,
+                        record["gpu"],
+                        record["started"],
+                        None if beat is None else max(0.0, self.clock() - beat),
+                    )
+                )
         return found
+
+    def beat(self, call_id, at=None):
+        """Record that the session driving a call is still alive.
+
+        A real provider writes the heartbeat into its own state, where every
+        machine sees it. This fake keeps it in the call file for the same
+        reason. Driving a call through ``poll`` heartbeats, as the Modal
+        provider does.
+
+        Args:
+            call_id: The call identifier.
+            at: The heartbeat time in the provider's clock, or None for now.
+        """
+        self._edit(call_id, heartbeat=self.clock() if at is None else at)
+
+    def silence(self, call_id):
+        """Stop a call's heartbeats long enough for it to count as abandoned.
+
+        Args:
+            call_id: The call identifier.
+        """
+        self.beat(call_id, self.clock() - self.heartbeat_grace - 1)
+
+    def untracked(self, call_id):
+        """Drop a call's heartbeat, as a provider that keeps none reports it.
+
+        Args:
+            call_id: The call identifier.
+        """
+        self._edit(call_id, heartbeat=None)
+
+    def _edit(self, call_id, **values):
+        path = self.root / "calls" / f"{call_id}.json"
+        with self._lock:
+            record = self._record(call_id)
+            if record is not None:
+                path.write_text(json.dumps(record | values))
 
     def close(self):
         """Stop every call in the provider directory and reap owned processes."""

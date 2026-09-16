@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from fake_engine import BATCH_LOG, LOAD_FAILURE_LOG, SAMPLER_LOG, FakeEngine
+from fake_remote import ENGINE
 from lllm2 import config
 from lllm2.app import App
 from lllm2.bench import Bench
@@ -73,7 +74,7 @@ def app(tmp_path, monkeypatch, no_local_gpu):
 
 def settings():
     model = str(config.MODELS_DIR / "example" / "model.gguf")
-    return Settings.parse({"model": model, "engine": "/opt/fake/llama-server"}).dict()
+    return Settings.parse({"model": model, "engine": ENGINE["path"]}).dict()
 
 
 def benchmark(app, **values):
@@ -103,7 +104,7 @@ def test_fake_engine_drives_a_panel_launch_and_measurement(app):
     state = app.engine.state()
     assert app.engine is engine
     assert state["ready"] and state["pid"] is None and state["settings"] == s
-    assert state["argv"][:3] == ["/opt/fake/llama-server", "--model", s["model"]]
+    assert state["argv"][:3] == [ENGINE["path"], "--model", s["model"]]
     assert engine.request("/health") == {"status": "ok"}
 
     result = benchmark(app, replace_running=True, expected_pid=state["pid"])
@@ -137,7 +138,7 @@ def test_failed_fake_launch_records_logs_and_environment(app):
     result = benchmark(app)
     assert result["status"] == "failed"
     assert "exited during load" in result["error"]
-    assert result["logs"][0].startswith("Launching: /opt/fake/llama-server ")
+    assert result["logs"][0].startswith(f"Launching: {ENGINE['path']} ")
     assert LOAD_FAILURE_LOG in result["logs"]
     assert (
         result["execution_settings"]["child_environment"]["CUDA_VISIBLE_DEVICES"] == "0"

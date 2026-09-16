@@ -10,7 +10,9 @@ Queue partition per call.
 While it drives a call through ``poll`` or ``ensure_model``, the provider writes
 heartbeats to the Dict. A container whose owner stays silent for
 ``modal_app.OWNER_GRACE_SECONDS`` stops itself, so a crashed or powered-off
-machine does not leave a GPU billing. Listing calls sends no heartbeat.
+machine does not leave a GPU billing. Listing calls sends no heartbeat; it
+reports how old each call's heartbeat is instead, which tells a call a live
+session still drives from an abandoned one, whichever machine owns it.
 """
 
 import functools
@@ -82,6 +84,7 @@ class ModalProvider(RemoteProvider):
     name = "modal"
     server_host = "0.0.0.0"
     server_port = modal_app.SERVER_PORT
+    heartbeat_grace = modal_app.OWNER_GRACE_SECONDS
 
     def __init__(
         self,
@@ -288,11 +291,33 @@ class ModalProvider(RemoteProvider):
             running, _ = self._status(call_id)
             if running:
                 found.append(
-                    RemoteCall(call_id, record.get("gpu"), record.get("started"))
+                    RemoteCall(
+                        call_id,
+                        record.get("gpu"),
+                        record.get("started"),
+                        self._heartbeat_age(call_id),
+                    )
                 )
             else:
                 self._forget(call_id)
         return sorted(found, key=lambda call: call.started or 0)
+
+    def _heartbeat_age(self, call_id):
+        """Return seconds since the owning session last heartbeated, or None.
+
+        The owner stamps its own wall clock, so machines whose clocks differ
+        widely read the age imprecisely. The grace is minutes, which is far
+        more than the skew between clocks that any lllm2 machine keeps.
+
+        Args:
+            call_id: The call identifier.
+
+        Returns:
+            The age in seconds, or None when no heartbeat is recorded.
+        """
+        beat = self._state.get(modal_app.heartbeat_key(call_id))
+        stamp = beat[0] if isinstance(beat, list | tuple) and beat else None
+        return max(0.0, time.time() - stamp) if isinstance(stamp, int | float) else None
 
     def _ensure_deployed(self, verify=False):
         """Deploy the app unless the workspace already runs this version.

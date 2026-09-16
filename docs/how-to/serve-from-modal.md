@@ -52,8 +52,10 @@ that names it.
    ```
 
    A short, billed container prints the GPU name, its memory, the engine's
-   device list and the engine sha256. lllm2 saves the result, and later
-   launches and validation use it. Add `--json` to print the record as JSON.
+   device list, the engine build it ran and the engine sha256. The build line
+   names three different versions: the llama.cpp release, the CUDA track and
+   the compiler. lllm2 saves the result, and later launches and validation use
+   it. Add `--json` to print the record as JSON.
    The container installs the same engine release as
    `lllm2 engines install cuda` for the same lllm2 version.
 
@@ -155,9 +157,11 @@ call serves. **Refresh storage and calls** reads the account again.
 The panel checks for calls from earlier sessions when it loads, after
 **Refresh storage and calls**, and after you adopt or stop a call. It asks a
 provider only when that provider is the selected backend, the panel already
-runs its engine, or the call records in the state directory name it. If a call
-from an earlier session is still running, a banner at the top of the panel
-shows its GPU type, model, elapsed time and estimated cost:
+runs its engine, or the call records in the state directory name it. The banner
+lists only calls with no live owner: a call another session still heartbeats to
+never appears there, however this workstation's records look. If a call from an
+earlier session is still running, a banner at the top of the panel shows its
+GPU type, model, elapsed time and estimated cost:
 
 - **Adopt and serve** takes over the call and serves it on the usual engine
   port. If a model is already running, the button reads
@@ -237,8 +241,10 @@ powered-off machine therefore stops billing within a few minutes. The same
 rule applies when the owner exits cleanly without cancelling. As a hard limit,
 Modal ends a serve call after 12 hours and a download call after 2 hours.
 
-A container you start from one lllm2 process belongs to that process. Another
-lllm2 session sees it as an orphan once the owner stops refreshing its record.
+Those heartbeats also say who owns a call. A container belongs to the session
+that keeps heartbeating to it, on whichever machine or container that session
+runs. Another lllm2 session sees the call as in use until the heartbeat goes
+silent, and only then as an orphan it may adopt or stop.
 
 ## Clean up
 
@@ -249,17 +255,21 @@ cost:
 lllm2 modal list
 ```
 
-Each call is **owned by this process**, **in use** by another running lllm2
-session, or an **orphan** that no session owns. Stop calls:
+Each call is **owned by this process**, **in use** by another live lllm2
+session, or an **orphan** that no live session owns. A call counts as in use
+while its owner still heartbeats, even when this workstation has no record of
+it, so a CLI in a container never mistakes the panel's call for an orphan.
+Stop calls:
 
 ```bash
 lllm2 modal stop CALL_ID
 lllm2 modal stop --all
 ```
 
-`--all` stops every orphan. Without `--force`, `stop` skips a call that a
-running session owns, whether you name it or use `--all`. Add `--force` to stop
-it too.
+`--all` stops every orphan and never touches a call in use. `stop CALL_ID`
+skips a call in use and tells you where it runs; adding `--force` stops it
+anyway, which leaves that session without its model, so stop it from that
+session where you can. `--force` works on one call id, not with `--all`.
 
 Stored models incur Modal storage charges. List and remove them:
 

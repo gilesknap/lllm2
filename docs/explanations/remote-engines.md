@@ -94,9 +94,21 @@ Several mechanisms stop a call:
   itself.
 - Modal ends a serve call after 12 hours and a download call after 2 hours.
 
-The owning process also refreshes its local call record. A call whose record
-is stale, or that has no record, is an orphan. `lllm2 modal list` shows orphans,
-and a new session can adopt or cancel them.
+That heartbeat also decides who owns a call. The provider reports how long ago
+each call's owner reported, and a call whose heartbeat is fresh belongs to a
+live session wherever that session runs. Only a call whose heartbeat has gone
+stale is an orphan. This matters because local records are per-workstation: a
+panel run by systemd, a CLI in a container and a CLI on the host each have
+their own state directory, so a local record proves nothing about calls started
+elsewhere. Records still decide what this workstation can do about a call,
+namely adopt it when it holds the key, and they report the one thing the
+heartbeat cannot: an owner process on this host that has since died, whose call
+is an orphan straight away, unless the heartbeat has moved on without that
+record because a later session took the call over.
+
+`lllm2 modal list` shows orphans, and a new session can adopt or cancel them.
+A live call belongs to its own session: bulk stops skip it, no session may
+adopt it, and only `lllm2 modal stop CALL_ID --force` takes it away.
 
 See [ADR 3](decisions/0003-tunnel-transport-and-local-proxy.md) for why lllm2
 uses a tunnel and a local proxy.

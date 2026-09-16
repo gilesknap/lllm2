@@ -414,6 +414,7 @@ class TestOwnership:
         records.put("fake", active, record(other_session, time.time()))
         stale = spawn_call(provider)
         records.put("fake", stale, record(other_session, time.time() - 600))
+        provider.silence(stale)
         engine = make_engine(provider, engines)
 
         rows = {row["id"]: row for row in engine.remote_calls()}
@@ -473,6 +474,7 @@ def modal_cli(state, other_session):
     made = SetupProvider(state / "remote")
     records = CallRecords(config.STATE_DIR / "remote-calls.json")
     orphan = spawn_call(made)
+    made.silence(orphan)
     active = spawn_call(made)
     records.put("fake", active, record(other_session, time.time()))
     (made.root / "volume" / "example").mkdir(parents=True)
@@ -535,6 +537,62 @@ def test_modal_stop_leaves_calls_a_running_session_owns(modal_cli):
     assert provider.calls() == []
     assert invoke("stop").exit_code == 2
     assert "No lllm2 serve calls" in invoke("list").output
+
+
+def test_modal_stop_leaves_a_call_no_local_record_names(modal_cli):
+    """A live call from a session with its own state directory is not an orphan."""
+    provider, orphan, active = modal_cli
+    elsewhere = spawn_call(provider)
+
+    listed = invoke("list")
+    assert any(
+        elsewhere in line and "in use by lllm2 on another machine" in line
+        for line in listed.output.splitlines()
+    )
+    rows = {r["id"]: r for r in json.loads(invoke("list", "--json").output)}
+    assert rows[elsewhere]["status"] == "active" and rows[elsewhere]["owner"] is None
+    assert not rows[elsewhere]["adoptable"]
+
+    result = invoke("stop", "--all")
+    assert result.exit_code == 0, result.output
+    assert f"Stopped {orphan}" in result.output
+    assert sorted(c.id for c in provider.calls()) == sorted([active, elsewhere])
+
+    assert invoke("stop", "--all", "--force").exit_code == 2
+    forced = invoke("stop", elsewhere, "--force")
+    assert forced.exit_code == 0, forced.output
+    assert "Warning" in forced.output and f"Stopped {elsewhere}" in forced.output
+    assert [c.id for c in provider.calls()] == [active]
+
+
+def probe_build(gpu="FAKE-24"):
+    """Run the probe command and return its engine build line."""
+    result = CliRunner().invoke(
+        cli.provider_app("fake", "Fake"), ["probe", "--gpu", gpu]
+    )
+    assert result.exit_code == 0, result.output
+    (build,) = [
+        line for line in result.output.splitlines() if line.startswith("Engine build:")
+    ]
+    return build, result.output
+
+
+def test_modal_probe_names_the_engine_build_it_found(provider, no_local_gpu):
+    build, output = probe_build()
+    assert "llama.cpp b10850" in build and "CUDA track 12.9.1" in build
+    # The compiler version alone reads like a CUDA version.
+    assert "compiler GNU 13.3.1" in build and "built with" not in build
+    assert f"Engine sha256: {ENGINE['sha256']}" in output
+
+
+def test_modal_probe_names_the_track_the_container_installed(
+    provider, no_local_gpu, monkeypatch
+):
+    """A container that picks the other CUDA track reports that track."""
+    monkeypatch.setitem(ENGINE, "cuda_track", "12.4.1")
+    build, _ = probe_build()
+    # The engine record wins over the path and the version text of the build.
+    assert "CUDA track 12.4.1" in build and "12.9.1" not in build
 
 
 def test_modal_models_and_remove(modal_cli, tmp_path):

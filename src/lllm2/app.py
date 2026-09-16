@@ -665,8 +665,13 @@ class App:
                 raise ValueError("This panel serves that call. Use Stop model instead.")
             if row["status"] == "active":
                 owner = row["owner"] or {}
+                where = (
+                    f" (pid {owner.get('pid')} on {owner.get('host')})"
+                    if owner
+                    else " on another machine or in another container"
+                )
                 raise ValueError(
-                    f"Another lllm2 session (pid {owner.get('pid')} on {owner.get('host')}) serves that call. Stop it there."
+                    f"Another lllm2 session{where} serves that call and keeps its heartbeat fresh. Stop it there."
                 )
             engine.cancel_orphan(row["id"])
             return {"ok": True}

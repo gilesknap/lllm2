@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import json
+import re
 import signal
 import threading
 import time
@@ -555,13 +556,50 @@ def _elapsed(seconds: float | None) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}"
 
 
+def _engine_build(engine: dict) -> str:
+    """Describe which engine build a probe found, in one line.
+
+    The compiler version alone reads like a CUDA version, so name every part.
+    The llama.cpp release and CUDA track come from the engine record the
+    provider probed, not from parsing help or version text.
+
+    Args:
+        engine: A probe's engine record.
+
+    Returns:
+        A comma-separated description of the build.
+    """
+    path = engine.get("path") or ""
+    ref = engine.get("requested_ref") or _match(r"llama-(.+?)-cuda", path)
+    track = engine.get("cuda_track") or _match(r"-cuda([\d.]+)", path)
+    lines = (engine.get("version") or "").strip().splitlines()
+    last = lines[-1].strip() if lines else ""
+    compiler = _match(r"(?i)^built with (.+)", last)
+    parts = [
+        f"llama.cpp {ref}" if ref else "",
+        f"CUDA track {track}" if track else "",
+        f"compiler {compiler}" if compiler else f"version {last}" if last else "",
+    ]
+    return ", ".join(p for p in parts if p) or "unknown"
+
+
+def _match(pattern: str, text: str) -> str | None:
+    found = re.search(pattern, text)
+    return found[1] if found else None
+
+
 def _ownership(row: dict, command: str) -> str:
     owner = row["owner"] or {}
     if row["status"] == "owned":
         return "owned by this process"
     if row["status"] == "active":
-        return f"in use by lllm2 pid {owner.get('pid')} on {owner.get('host')}"
-    return f"orphan: no running lllm2 session owns it; stop it with `{command} stop {row['id']}`"
+        where = (
+            f" pid {owner.get('pid')} on {owner.get('host')}"
+            if owner
+            else " on another machine or in another container"
+        )
+        return f"in use by lllm2{where}; its heartbeat is fresh"
+    return f"orphan: no live lllm2 session owns it; stop it with `{command} stop {row['id']}`"
 
 
 def provider_app(name: str, label: str) -> typer.Typer:
@@ -642,10 +680,8 @@ def provider_app(name: str, label: str) -> typer.Typer:
         typer.echo(
             f"Engine devices: {', '.join(engine.get('devices') or []) or 'none'}"
         )
+        typer.echo(f"Engine build: {_engine_build(engine)}")
         typer.echo(f"Engine sha256: {engine.get('sha256') or 'unknown'}")
-        version = (engine.get("version") or "").strip().splitlines()
-        if version:
-            typer.echo(f"Engine version: {version[-1]}")
         if engine.get("error"):
             typer.echo(f"Engine error: {engine['error']}", err=True)
         typer.echo(f"Estimated cost: ${entry.usd_per_hour:.2f} per hour. {caveat}")
@@ -653,7 +689,8 @@ def provider_app(name: str, label: str) -> typer.Typer:
     @group.command(
         "list",
         help="List running lllm2 serve calls with owner, elapsed time and cost.\n\n"
-        "A call that no running lllm2 session owns is an orphan that bills until "
+        "A call whose owning session still heartbeats is in use, wherever that "
+        "session runs. A call with no live owner is an orphan that bills until "
         f"you stop it. {caveat}",
     )
     def list_calls(json_output: JsonOutput = False) -> None:
@@ -683,18 +720,30 @@ def provider_app(name: str, label: str) -> typer.Typer:
             str, typer.Argument(help="The call ID that `list` prints.")
         ] = "",
         all_calls: Annotated[
-            bool, typer.Option("--all", help="Stop every orphaned call.")
+            bool,
+            typer.Option(
+                "--all",
+                help="Stop every orphaned call. Calls a live session still "
+                "serves are left alone, even with --force.",
+            ),
         ] = False,
         force: Annotated[
             bool,
             typer.Option(
-                "--force", help="Also stop calls that a running lllm2 session owns."
+                "--force",
+                help="Stop one call by ID even though a live lllm2 session "
+                "serves it. That session loses its model and its work.",
             ),
         ] = False,
     ) -> None:
         """Stop a serve call, or every orphaned call with --all."""
         if bool(call_id) == all_calls:
             raise typer.BadParameter("Give a call ID or --all.")
+        if force and all_calls:
+            raise typer.BadParameter(
+                "Use --force with a call ID, so a live session's call is never "
+                "stopped in bulk."
+            )
         provider = remote_provider(name)
         records = CallRecords(config.STATE_DIR / "remote-calls.json")
         rows = describe_calls(provider, records)
@@ -713,6 +762,12 @@ def provider_app(name: str, label: str) -> typer.Typer:
                     err=True,
                 )
                 continue
+            if row["status"] != "orphan":
+                typer.echo(
+                    f"Warning: {row['id']} is {_ownership(row, command)}. "
+                    "Forcing it to stop leaves that session without a model.",
+                    err=True,
+                )
             provider.cancel(row["id"])
             records.remove(provider.name, row["id"])
             typer.echo(f"Stopped {row['id']}")
