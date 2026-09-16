@@ -26,10 +26,15 @@ that names it.
 1. Create a Modal account and sign in from the terminal:
 
    ```bash
+   uv tool install modal
    modal token new
    ```
 
-   The Modal client also reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
+   The extra puts the Modal client inside lllm2, but it does not put the
+   `modal` command on your path, so install the command line as its own tool.
+   `modal token new` writes `~/.modal.toml`, which lllm2 reads. The Modal
+   client also reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, and
+   `MODAL_CONFIG_PATH` for a credentials file elsewhere.
 
 2. Add a payment method in the Modal dashboard. Modal refuses to run GPU
    functions for a workspace without one.

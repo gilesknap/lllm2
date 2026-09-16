@@ -11,8 +11,12 @@ In a terminal on the machine that runs the panel:
 
 ```bash
 uv tool install --upgrade 'lllm2[modal]'
+uv tool install modal
 modal token new && lllm2 modal setup
 ```
+
+The second line installs the Modal command line. The extra puts the Modal
+client inside lllm2, but it does not put the `modal` command on your path.
 
 `modal token new` opens the Modal sign-in; the workspace needs a payment method
 before it will run GPU functions. `lllm2 modal setup` deploys the lllm2 app once.
