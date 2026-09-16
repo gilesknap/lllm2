@@ -930,7 +930,7 @@ function renderFind(){
  const blocked=matched.filter(e=>e.issue),rows=findShowIssues?matched:matched.filter(e=>!e.issue);
  // Name the suitability filter only when clearing it would show rows.
  const unsuitable=!matched.length&&$('find-suitable').checked&&filteredFindEntries(true).length>0;
- const empty=unsuitable?'No variants are likely to fit this workstation’s GPU or RAM. Clear “Likely suitable only” to see them all.':blocked.length?'Every matching variant has something that stops it being added. Choose “Show them” to see why.':'No matching variants. Try a different search or relax the filters.';
+ const empty=unsuitable?'No variants are likely to fit the selected hardware. Clear “Likely suitable only” to see them all.':blocked.length?'Every matching variant has something that stops it being added. Choose “Show them” to see why.':'No matching variants. Try a different search or relax the filters.';
  for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
   const key=button.dataset.findSort,active=key===findSort.key;
   button.parentElement.setAttribute('aria-sort',active?(findSort.direction===1?'ascending':'descending'):'none');
