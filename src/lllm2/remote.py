@@ -2096,8 +2096,7 @@ class RemoteEngine(Engine):
                 if failures in (1, 30) or failures % 300 == 0:
                     self.log(f"Remote status check failed: {e}")
                 # Failed status checks must not keep an idle call running.
-                if self._idle_remaining(call) == 0:
-                    self._idle_stop(call)
+                if self._idle_remaining(call) == 0 and self._idle_stop(call):
                     return
                 call.done.wait(self.poll_interval)
                 continue
@@ -2111,8 +2110,7 @@ class RemoteEngine(Engine):
             if not state.running:
                 self._ended(call, state.error)
                 return
-            if self._idle_remaining(call) == 0:
-                self._idle_stop(call)
+            if self._idle_remaining(call) == 0 and self._idle_stop(call):
                 return
             call.done.wait(self.poll_interval)
 
@@ -2141,11 +2139,27 @@ class RemoteEngine(Engine):
             self._records.remove(self.provider.name, call.id)
 
     def _idle_stop(self, call):
+        """Stop an idle call. Returns whether the call was stopped.
+
+        Args:
+            call: The call whose countdown reached zero.
+
+        Returns:
+            True when the call was stopped, False when the timeout changed
+            first and the monitor should keep polling.
+        """
         with self.guard:
             if self._call is not call:
-                return
+                return True
+            # Read the timeout under the guard and check the countdown again.
+            # ``set_idle_timeout`` may have disabled or lengthened the timer
+            # while this thread waited for the guard, and formatting None
+            # would raise in the monitor thread, which has no handler.
+            timeout = self.idle_timeout
+            if not timeout or self._idle_remaining(call) != 0:
+                return False
             self.log(
-                f"No requests for {self.idle_timeout:g} seconds; stopping the remote engine."
+                f"No requests for {timeout:g} seconds; stopping the remote engine."
             )
             self.ready = False
             try:
@@ -2157,6 +2171,7 @@ class RemoteEngine(Engine):
                 self._phase = "idle stopped"
                 # Clear the call last, for the reason given in ``_ended``.
                 self._call = None
+        return True
 
     def _cancel(self, call):
         call.done.set()

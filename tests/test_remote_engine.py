@@ -418,6 +418,34 @@ def test_idle_engine_stops_its_call(model, providers, engines, clock):
     assert provider.calls() == []
 
 
+def test_disabling_the_timeout_as_it_expires_leaves_the_monitor_running(
+    model, providers, engines, clock
+):
+    """A disable that lands during an idle stop must not kill the monitor.
+
+    Holding the guard puts the monitor's idle stop behind the disable, the
+    order that used to format a None timeout and end the monitor thread with
+    an unhandled TypeError, stopping the heartbeats and the reaping with it.
+    """
+    provider = providers()
+    engine = engines(provider, idle_timeout=60, clock=clock)
+    engine.start(Settings(model=model), threading.Event(), timeout=30)
+    assert eventually(lambda: counted_down_to(engine, clock, 1))
+    with engine.guard:
+        clock.advance(1)
+        # Let the monitor read the countdown and queue behind the guard.
+        monitor_rounds()
+        engine.set_idle_timeout(None)
+    monitor_rounds()
+    assert engine.alive() and engine.status()["idle_remaining_seconds"] is None
+    # The monitor survived, so a fresh timeout still stops the call.
+    engine.set_idle_timeout(1)
+    assert eventually(
+        lambda: not engine.alive() and engine.state()["phase"] == "idle stopped"
+    )
+    assert provider.calls() == []
+
+
 def test_requests_reset_the_idle_timer(model, providers, engines, clock):
     provider = providers()
     engine = engines(provider, idle_timeout=60, clock=clock)
