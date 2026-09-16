@@ -200,14 +200,20 @@ def identity(path):
 def _metadata(path, size, mtime_ns):
     try:
         meta, tensors = gguf.header(path)
+        mtp = any(m in n.lower() for n in tensors for m in gguf.MTP_MARKERS)
         return {
             "architecture": meta.get("general.architecture"),
             "name": meta.get("general.name"),
             "context": next(
                 (v for k, v in meta.items() if k.endswith(".context_length")), None
             ),
-            "mtp": any(m in n.lower() for n in tensors for m in gguf.MTP_MARKERS),
+            "mtp": mtp,
             "template": meta.get("tokenizer.chat_template", ""),
+            # What the context planner needs to budget VRAM for a checkpoint
+            # the catalogue does not list. None where the header does not say.
+            "size": size,
+            "kv_kib_per_token": gguf.kv_kib_per_token(meta, mtp),
+            "full_attention_layers": gguf.cache_layers(meta, mtp),
             "error": None,
         }
     except Exception as e:
@@ -216,6 +222,9 @@ def _metadata(path, size, mtime_ns):
             "context": None,
             "mtp": None,
             "template": "",
+            "size": size,
+            "kv_kib_per_token": None,
+            "full_attention_layers": None,
             "error": str(e),
         }
 
