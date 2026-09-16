@@ -413,6 +413,13 @@ const assert=require('node:assert/strict');
  assert.match(await run("$('recommended-list').textContent"),/In Modal storage · starts without a download/);
  await run("$('gpu_type').value='L40S';$('gpu_type').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200))");
  assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/default/resolve').at(-1).data.settings.gpu_type"),'L40S');
+ // Find models scores suitability for the selected GPU, so a changed selection searches again.
+ await run("window.findPosts=()=>fixture.posts.filter(p=>p.path==='/api/models/find').length;window.findBefore=findPosts();await switchView('find')");
+ assert.equal(await run('findPosts()-findBefore'),1);
+ assert.deepEqual(await run("(({backend,gpu_type})=>({backend,gpu_type}))(fixture.posts.filter(p=>p.path==='/api/models/find').at(-1).data)"),{backend:'modal',gpu_type:'L40S'});
+ // An unchanged selection keeps the rows it already scored.
+ await run("await switchView('launch');await switchView('find');await switchView('launch')");
+ assert.equal(await run('findPosts()-findBefore'),1);
  await run("await poll()");
  assert.match(await run("$('gpu').textContent"),/L40S/);
  await run("fixture.engine={running:false,ready:false,provider:'modal',gpu:'L40S',phase:'starting container',elapsed_seconds:null};fixture.job={kind:'launch',status:'starting',active:true,started_at:Date.now()/1000};await poll()");

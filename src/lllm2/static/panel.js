@@ -374,7 +374,7 @@ async function switchView(next){
   $('launch-view').hidden=true;$('experiments-view').hidden=true;$('find-view').hidden=false;
   for(const name of ['launch','experiments','find'])$('nav-'+name).setAttribute('aria-current',name===next?'page':'false');
   $('skip-content').href='#find-view';
-  await loadCatalogue();if(!findLoaded)await searchHF();return;
+  await loadCatalogue();if(!findLoaded||findSelection!==JSON.stringify(selection()))await searchHF();return;
  }
  if(resolving||scanPending){queuedView=next;return;}
  $('find-view').hidden=true;
@@ -877,6 +877,8 @@ $('experiment-picker').addEventListener('cancel',()=>pickerSequence++);
 $('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if(!b||b.disabled)return;$('experiment-picker').close();attempt(()=>previewResult(b.dataset.result,b.dataset.hasContext==='true'&&contextChoice!=='original'));};
 // Find models keeps discovery and catalogue actions separate from launch drafts.
 let findLoaded=false,findBusy=false,findEntries=[],removingId=null;
+// The selection whose hardware scored the current rows, as JSON, or null.
+let findSelection=null;
 let findSort={key:null,direction:0};
 const findColumns=[['display_name','Model'],['repo','Publisher / repository'],['quant','Quantisation'],['size_gb','Size GB','number'],['fit','Suitability'],['task','Task'],['downloads','Downloads','number'],['likes','Likes','number'],['updated','Updated'],['license','Licence']];
 $('find-table').querySelector('thead').innerHTML='<tr>'+findColumns.map(([key,label])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}"><span>${label}</span><span aria-hidden="true">↕</span></button></th>`).join('')+'<th scope="col">Catalogue</th></tr><tr class="find-filter-row">'+findColumns.map(([key,label,type])=>`<td>${type==='number'?`<div class="find-number-filter"><input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max"></div>`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" aria-describedby="find-filter-help" title="Space-separated terms must all match. Prefix ! to exclude; use quotes for phrases." placeholder="Filter ${label.toLowerCase()}">`}</td>`).join('')+'<td></td></tr>';
@@ -932,9 +934,12 @@ function renderFind(){
 async function searchHF(refresh=false){
  if(findBusy)return;findBusy=true;$('find-search').disabled=$('find-refresh').disabled=true;
  $('find-status').textContent='Reading Hugging Face metadata…';
+ // The server scores suitability against the selected backend and GPU type,
+ // so keep the selection these rows describe and search again when it changes.
+ const chosen=selection();
  try{
-  const result=await api('/api/models/find',{query:$('find-query').value,refresh,...selection()});
-  findEntries=result.entries.sort((a,b)=>a.fit_rank-b.fit_rank||b.downloads-a.downloads||b.updated.localeCompare(a.updated)||a.repo.localeCompare(b.repo));findLoaded=true;renderFind();
+  const result=await api('/api/models/find',{query:$('find-query').value,refresh,...chosen});
+  findEntries=result.entries.sort((a,b)=>a.fit_rank-b.fit_rank||b.downloads-a.downloads||b.updated.localeCompare(a.updated)||a.repo.localeCompare(b.repo));findLoaded=true;findSelection=JSON.stringify(chosen);renderFind();
   $('find-status').textContent=`${result.repositories} repositories inspected · metadata fetched ${new Date(result.fetched_at*1000).toLocaleString()}. ${result.warning||''}`;
  }catch(e){$('find-status').textContent=e.message;}
  finally{findBusy=false;$('find-search').disabled=$('find-refresh').disabled=false;}
