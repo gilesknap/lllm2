@@ -33,21 +33,21 @@ Open <http://127.0.0.1:8082>. Keep the panel running.
 
 ## 1. Download a model
 
-Click **Find models** in the navigation bar near the top of the panel.
-Scroll to **My catalogue** and click **Queue download** beside a model.
-To find another model, enter its name in **Search Hugging Face**, click
+Scroll to **My catalogue** on **Launch model** and click **Queue download**
+beside a model. To find another model, click **Find models** in the navigation
+bar near the top of the panel, enter its name in **Search Hugging Face**, click
 **Find models**, then **Add to catalogue** on the variant you want.
 
 ```{figure} ../images/tutorial-find-models.png
-:alt: My catalogue card in Find models, with Queue download beside a saved model.
+:alt: My catalogue card, with Queue download beside a saved model.
 :width: 760px
 
 Queue a download from My catalogue.
 ```
 
-Once the download finishes, click **Launch model** in the top navigation and
-select the model under **Choose a model** (**Find more models →** takes you back
-to the catalogue). Already downloaded one? Start here.
+Once the download finishes, select the model under **Choose a model** on the
+same page (**Find more models →** opens the Hugging Face search). Already
+downloaded one? Start here.
 
 ## 2. Find its context window
 
@@ -97,15 +97,17 @@ model automatically in either case, so there is nothing to configure.
 
 ### Quick: the claude-sandbox launcher
 
-For sandboxed interaction with your model without a devcontainer, install
-claude-sandbox's `claude-container` launcher following its
+For sandboxed interaction with your model without a devcontainer, use
+claude-sandbox's launcher, described in its
 [Use Pi](https://diamondlightsource.github.io/claude-sandbox/how-to/use-pi.html)
-guide. Then open another terminal on the same machine, change to the project
+guide. Open another terminal on the same machine, change to the project
 directory you want Pi to work in, and run:
 
 ```bash
-claude-container --host-net --agent pi
+uv tool install claude-sandbox && claude-sandbox pi
 ```
+
+The first command installs the launcher and is needed only once.
 
 The first run pulls the sandbox image. Your project is available to Pi at
 `/workspaces`, and your Pi settings live in `~/.pi` as usual. See

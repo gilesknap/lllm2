@@ -286,6 +286,87 @@ def _full_attention_layers(meta: dict[str, Any]) -> int | None:
     return (blocks - 1) // interval
 
 
+def _integer(meta: dict[str, Any], suffix: str) -> int | None:
+    """One integer metadata value, found by key suffix, or None.
+
+    Architectures name their keys after themselves -- ``qwen3next.block_count``
+    -- so the suffix is the only stable part. A per-layer value is written as an
+    array, which the parse steps over rather than decodes, so it arrives here as
+    a placeholder string and is rejected like any other non-integer.
+    """
+    value = next((v for k, v in meta.items() if k.endswith(suffix)), None)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def cache_layers(meta: dict[str, Any], mtp: bool = False) -> int | None:
+    """How many of a header's layers keep a KV cache, or None.
+
+    A hybrid keeps a cache on one layer in every ``full_attention_interval``;
+    the rest are SSM, whose state costs nothing as context grows. Anything else
+    caches every block. Either way the multi-token prediction head is left out
+    when the tensors show one, because ``block_count`` includes it and the
+    planner prices that head separately as a draft cache.
+
+    :func:`full_attention_layers` divides by the interval after subtracting the
+    head unconditionally, which is right for the hybrids that carry one and
+    undercounts by a layer for one that does not -- an undercount that would
+    price the cache too cheaply and plan a context that does not fit. Here the
+    subtraction follows the tensors instead.
+
+    Args:
+        meta: A parsed GGUF metadata mapping.
+        mtp: Whether the tensors carry a multi-token prediction head.
+
+    Returns:
+        The number of caching layers, or None where the header does not say.
+    """
+    blocks = _integer(meta, ".block_count")
+    if blocks is None or blocks <= 1:
+        return None
+    layers = blocks - 1 if mtp else blocks
+    interval = _integer(meta, ".full_attention_interval")
+    if interval is None:
+        return layers
+    if interval <= 0:
+        return None
+    return (layers // interval) or None
+
+
+def kv_kib_per_token(meta: dict[str, Any], mtp: bool = False) -> float | None:
+    """KiB of f16 KV cache one token of context costs, or None.
+
+    This is the catalogue's hand-entered ``kv_kib_per_token`` derived from the
+    file instead: ``kv_heads x (key_length + value_length) x 2 bytes`` for every
+    caching layer. It is what lets the context planner budget a checkpoint the
+    catalogue has never seen -- any quantisation of any model, local or remote.
+
+    Args:
+        meta: A parsed GGUF metadata mapping.
+        mtp: Whether the tensors carry a multi-token prediction head.
+
+    Returns:
+        The per-token cost in KiB, or None where the header lacks a shape to
+        compute it from. None is not a failure: the caller falls back to the
+        catalogue, and says so when neither can answer.
+    """
+    layers = cache_layers(meta, mtp)
+    heads = _integer(meta, ".attention.head_count_kv")
+    if heads is None:
+        heads = _integer(meta, ".attention.head_count")
+    key = _integer(meta, ".attention.key_length")
+    value = _integer(meta, ".attention.value_length")
+    if key is None or value is None:
+        # Older conversions leave both out; the heads then split the embedding.
+        embedding = _integer(meta, ".embedding_length")
+        attention_heads = _integer(meta, ".attention.head_count")
+        if embedding and attention_heads and embedding % attention_heads == 0:
+            key = embedding // attention_heads if key is None else key
+            value = embedding // attention_heads if value is None else value
+    if not layers or not heads or not key or not value:
+        return None
+    return heads * (key + value) * 2 * layers / 1024
+
+
 def full_attention_layers(path: Path | str) -> int | None:
     """How many of this checkpoint's layers keep a KV cache, or None.
 

@@ -7,6 +7,7 @@ Commands, configuration and packaged resources.
 
 reference/commands
 reference/paths-and-ports
+reference/modal-gpus
 reference/packaged-data
 Historical plans and research <archive/index>
 Release notes <https://github.com/gilesknap/lllm2/releases>

@@ -53,7 +53,7 @@ const assert=require('node:assert/strict');
  await run("window.draftBeforeChecks=settings();window.noteBeforeChecks=selectionNote");
  for(const [context,slots] of [['-5','0'],['8192','']]){
   await run(`$('context').value='${context}';$('slots').value='${slots}';slotNote()`);
-  assert.match(await run("$('slot-note').textContent"),/^Enter a positive total context/);
+  assert.match(await run("$('slot-note').textContent"),/^Enter a positive context per conversation/);
  }
  // Without an engine, the server's selection reason replaces the generic engine hint.
  await run("selectionNote='No NVIDIA GPU detected. Check GPU availability before starting.';$('engine').value='';await inspect()");
@@ -98,8 +98,12 @@ const assert=require('node:assert/strict');
  await run("const input=$('find-table').querySelector('[data-find-max=size_gb]');input.value='5';input.dispatchEvent(new Event('input',{bubbles:true}))");
  assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),1);
  assert.match(await run("$('find-table').querySelector('tbody tr').textContent"),/Small/);
+ // The catalogue action leads the row, so it needs no sideways scrolling.
+ assert.equal(await run("$('find-table').querySelector('thead th').textContent"),'Catalogue');
+ assert.equal(await run("$('find-table').querySelector('tbody tr td button').dataset.findAdd"),'hf-a');
  await run("$('find-table').querySelector('[data-find-add]').click();new Promise(r=>setTimeout(r,40))");
  assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),true);
+ assert.equal(await run("$('find-table').querySelector('tbody tr td button').textContent"),'In catalogue');
  await run("$('catalog').querySelector('[data-catalogue-remove=hf-a]').click();new Promise(r=>setTimeout(r,40))");
  assert.equal(await run("$('remove-model-weights').checked"),false);
  await run("$('remove-model-cancel').click()");
@@ -108,6 +112,27 @@ const assert=require('node:assert/strict');
  assert.equal(await run("fixture.posts.find(p=>p.path==='/api/catalogue/remove').data.delete_weights"),true);
  assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),false);
  await run("$('find-clear').click()");
+ // Variants that cannot be added stay out of the table until asked for.
+ await run("window.beforeIssues=findEntries;findEntries=[...beforeIssues,{...beforeIssues[0],id:'hf-c',display_name:'Split',file:'split-00001-of-00002.gguf',issue:'Incomplete split GGUF metadata.'},{...beforeIssues[0],id:'hf-d',display_name:'Vision',file:'vision.gguf',issue:'Cannot identify a unique vision projector from HF metadata.'},{...beforeIssues[0],id:'hf-e',display_name:'Vision two',file:'vision-two.gguf',issue:'Cannot identify a unique vision projector from HF metadata.'}];renderFind()");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),2);
+ assert.equal(await run("$('find-hidden').hidden"),false);
+ assert.match(await run("$('find-hidden-summary').textContent"),/^3 results cannot be added: /);
+ assert.match(await run("$('find-hidden-summary').textContent"),/Cannot identify a unique vision projector from HF metadata \(2\)/);
+ assert.match(await run("$('find-hidden-summary').textContent"),/Incomplete split GGUF metadata \(1\)/);
+ await run("$('find-hidden-toggle').click()");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),5);
+ assert.equal(await run("$('find-hidden-toggle').textContent"),'Hide them');
+ assert.match(await run("$('find-table').textContent"),/vision projector/);
+ await run("$('find-hidden-toggle').click()");
+ // With every match hidden, the empty table explains why rather than looking broken.
+ await run("findEntries=findEntries.filter(e=>e.issue);renderFind()");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),1);
+ assert.match(await run("$('find-table').querySelector('tbody').textContent"),/Show them/);
+ await run("findEntries=beforeIssues;renderFind()");
+ // The catalogue and downloads panes belong to Launch, not to Find.
+ assert.equal(await run("$('find-view').contains($('catalog'))||$('find-view').contains($('download-section'))"),false);
+ assert.equal(await run("$('launch-view').contains($('catalog'))&&$('launch-view').contains($('download-section'))"),true);
+ assert.equal(await run("!!$('find-view').querySelector('a[href=\"#launch\"]')"),true);
  for(const width of [1440,390]){
   await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
   assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true);
@@ -119,7 +144,7 @@ const assert=require('node:assert/strict');
  await run("switchView('experiments')");assert.equal(await run('settings().context'),8192);await run("switchView('launch')");
 
  // An intervening poll must not re-enable a download whose POST is pending.
- await run("await switchView('find');fixture.delay=100;$('catalog-download-moe').click();await poll();$('catalog-download-moe').click();await new Promise(r=>setTimeout(r,200));fixture.delay=0");
+ await run("await switchView('launch');await loadCatalogue();fixture.delay=100;$('catalog-download-moe').click();await poll();$('catalog-download-moe').click();await new Promise(r=>setTimeout(r,200));fixture.delay=0");
  assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/download').length"),1);
  // A slow rescan can finish after navigation or an edit without replacing the draft.
  await run("fixture.delay=100;scan();switchView('experiments');await new Promise(r=>setTimeout(r,400));fixture.delay=0");
@@ -128,9 +153,18 @@ const assert=require('node:assert/strict');
  await run("fixture.delay=100;loadDefaults('built-in');$('context').value=49152;edited('context');new Promise(r=>setTimeout(r,500))");
  assert.equal(await run('settings().context'),49152);await run('fixture.delay=0');
  await run("fixture.downloads=[{id:'dense',name:'Qwen3.8-27B',state:'downloading',percent:40,done_gb:6,total_gb:15.36,rate_mib_s:23,target:'/models/new/dense.gguf',detail:'Downloading'}];poll()");
- await run("setModelFilter('catalog');$('download-action-dense').focus();fixture.downloads[0].percent=50;poll()");
+ // Downloads live on Launch, so a poll must not steal focus from the row there.
+ await run("$('download-action-dense').focus();fixture.downloads[0].percent=50;poll()");
  assert.equal(await run('document.activeElement.id'),'download-action-dense');
- await run("setModelFilter('installed')");assert.equal(await run("$('download-section').hidden"),false);
+ assert.equal(await run("$('download-section').hidden"),false);
+ // A failure names its reason in the row, and kept bytes resume rather than restart.
+ await run("fixture.downloads[0]={...fixture.downloads[0],state:'error',detail:'Download of dense.gguf ended early after 6 attempts; 7400000000 bytes are kept, so a retry resumes.'};poll()");
+ assert.equal(await run("$('download-dense').querySelector('[data-download-reason]').hidden"),false);
+ assert.match(await run("$('download-dense').querySelector('[data-download-reason]').textContent"),/ended early after 6 attempts/);
+ assert.equal(await run("$('download-action-dense').textContent"),'Resume download');
+ assert.match(await run("$('download-notice').textContent"),/^A download failed\./);
+ await run("fixture.downloads[0]={...fixture.downloads[0],state:'downloading'};poll()");
+ assert.equal(await run("$('download-dense').querySelector('[data-download-reason]').hidden"),true);
  await run("fixture.models.push({path:'/models/new/dense.gguf',catalog_id:'dense',identity_verified:true,metadata:{context:262144}});fixture.downloads[0].state='complete';poll()");
  assert.equal(await run('settings().context'),49152);assert.equal(await run('settings().model'),'/models/Qwen3-8B/model.gguf');
  assert.equal(await run("$('download-action-dense').hidden"),true);await run("switchView('launch')");
@@ -141,6 +175,13 @@ const assert=require('node:assert/strict');
  assert.match(await run("$('ram').textContent"),/18.0 \/ 62.0 GiB/);
  await run("document.querySelector('[data-agent=claude]').click();Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw Error('Denied')}}});$('copy-agent').click();new Promise(r=>setTimeout(r,30))");
  assert.equal(await run("$('copy-dialog').open"),true);assert.equal(await run("$('copy-text').value"),'lllm2 claude');await run("$('copy-close').click()");
+ // Pi leads as the sandboxed option, and its install and launch commands copy together.
+ await run("document.querySelector('[data-agent=pi]').click()");
+ assert.match(await run("document.querySelector('[data-agent=pi]').textContent"),/recommended/i);
+ assert.equal(await run("$('agent-command').textContent"),'uv tool install claude-sandbox && claude-sandbox pi');
+ await run("$('copy-agent').click();new Promise(r=>setTimeout(r,30))");
+ assert.equal(await run("$('copy-text').value"),'uv tool install claude-sandbox && claude-sandbox pi');
+ await run("$('copy-close').click()");
  await run("fixture.disconnected=true;poll()");assert.equal(await run("$('start').disabled"),true);assert.equal(await run("$('connect-agent').hidden"),true);assert.match(await run("$('resources-scope').textContent"),/last known/);
  await run("fixture.disconnected=false;poll()");assert.equal(await run("$('connect-agent').hidden"),false);
  await run("fixture.engine={running:false,ready:false,error:'CUDA out of memory (exact diagnostic)'};poll()");assert.match(await run("$('launch-error').textContent"),/Not enough memory/);assert.match(await run("$('error-raw').textContent"),/exact diagnostic/);
@@ -402,6 +443,83 @@ const assert=require('node:assert/strict');
  assert.equal(await run("document.querySelectorAll('[data-context-choice=headroom]:checked').length"),0);
  await run("document.querySelector('#experiment-options [data-result=cold]').click();await new Promise(r=>setTimeout(r,60))");
  assert.equal(await run('settings().context'),8192);
+ // The editor holds the context per conversation; Settings.context is the total.
+ await run("window.draftBeforeSlots=settings();$('slots').value='4';$('slots').dispatchEvent(new Event('input'));await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run("$('context').value"),'8192');
+ assert.equal(await run('settings().context'),32768);
+ assert.match(await run("$('slot-note').textContent"),/Total allocation is 32,768 tokens across 4 slot\(s\)\./);
+ // The total caps at 1,048,576, so the per-conversation ceiling falls as slots rise.
+ assert.equal(await run("$('context').max"),'262144');
+ await run("$('context').value='999999';$('context').dispatchEvent(new Event('input'));await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run("$('context').value"),'262144');
+ // A stored total divides back into the field it came from.
+ await run("fill(draftBeforeSlots);await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run("$('context').value"),'8192');
+ assert.equal(await run('settings().context'),8192);
+ // Remote backend: selector, GPU type defaults, Volume presence, cold-start status and orphan banner.
+ await run("await switchView('launch');customize(true);$('backend').value='modal';$('backend').dispatchEvent(new Event('input'));$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200))");
+ assert.equal(await run('settings().backend'),'modal');
+ assert.equal(await run('settings().gpu_type'),'T4');
+ assert.equal(await run('settings().context'),16384);
+ assert.equal(await run('settings().engine'),'');
+ assert.deepEqual(await run("[...$('gpu_type').options].map(o=>o.value)"),['T4','L40S']);
+ assert.equal(await run("$('engine').closest('.field-control').hidden"),true);
+ assert.match(await run("$('recommended-list').textContent"),/In Modal storage · starts without a download/);
+ await run("$('gpu_type').value='L40S';$('gpu_type').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200))");
+ assert.equal(await run("fixture.posts.filter(p=>p.path==='/api/default/resolve').at(-1).data.settings.gpu_type"),'L40S');
+ // Find models scores suitability for the selected GPU, so a changed selection searches again.
+ await run("window.findPosts=()=>fixture.posts.filter(p=>p.path==='/api/models/find').length;window.findBefore=findPosts();await switchView('find')");
+ assert.equal(await run('findPosts()-findBefore'),1);
+ assert.deepEqual(await run("(({backend,gpu_type})=>({backend,gpu_type}))(fixture.posts.filter(p=>p.path==='/api/models/find').at(-1).data)"),{backend:'modal',gpu_type:'L40S'});
+ // An unchanged selection keeps the rows it already scored.
+ await run("await switchView('launch');await switchView('find');await switchView('launch')");
+ assert.equal(await run('findPosts()-findBefore'),1);
+ await run("await poll()");
+ assert.match(await run("$('gpu').textContent"),/L40S/);
+ await run("fixture.engine={running:false,ready:false,provider:'modal',gpu:'L40S',phase:'starting container',elapsed_seconds:null};fixture.job={kind:'launch',status:'starting',active:true,started_at:Date.now()/1000};await poll()");
+ assert.match(await run("$('remote-phase').textContent"),/Starting the GPU container/);
+ await run("fixture.engine={running:true,ready:true,pid:null,provider:'modal',gpu:'L40S',phase:'ready',elapsed_seconds:125,usd_per_hour:1.951,estimated_cost_usd:0.07,idle_timeout_seconds:1800,idle_remaining_seconds:1700,settings:settings()};fixture.job={kind:'launch',status:'serving',active:false};await poll()");
+ assert.match(await run("$('remote-cost').textContent"),/Running 2:05 · about \$0\.07 .* idle stop in 28:20/);
+ assert.match(await run("$('remote-cost').textContent"),/at ~\$1\.95\/hour/);
+ assert.match(await run("$('remote-caveat').textContent"),/Check current Modal pricing/);
+ // An unknown rate must read as unknown: $0.00/hour understates the bill.
+ await run("fixture.engine={...fixture.engine,usd_per_hour:null,estimated_cost_usd:null};await poll()");
+ assert.match(await run("$('remote-cost').textContent"),/at an unknown hourly rate/);
+ // A remote download is held under `${backend}:${id}`, so a rerender while it
+ // runs must not enable its button again.
+ await run("fixture.downloads=[{id:'modal:dense',name:'Qwen3.8-27B',store:'modal',catalogue_id:'dense',state:'downloading',percent:10,done_gb:1,total_gb:10,rate_mib_s:50,target:'modal store'}];await poll()");
+ assert.equal(await run("$('download-action-modal:dense').dataset.remoteDownload"),'dense');
+ await run("fixture.delay=200;$('download-action-modal:dense').click();await new Promise(r=>setTimeout(r,50));await poll()");
+ assert.equal(await run("$('download-action-modal:dense').disabled"),true);
+ await run("await new Promise(r=>setTimeout(r,400));fixture.delay=0;fixture.downloads=[];await poll()");
+ // Up but still loading, with no start job: it must not read as running.
+ await run("fixture.engine={running:true,ready:false,pid:null,provider:'modal',gpu:'L40S',phase:'loading model',elapsed_seconds:185,usd_per_hour:1.951,settings:settings()};fixture.job={status:'idle',active:false};await poll()");
+ assert.equal(await run("$('start').textContent"),'Loading model\u2026');
+ assert.equal(await run("$('start').disabled"),true);
+ assert.equal(await run("$('stop').hidden"),false);
+ assert.match(await run("$('launch-status').textContent"),/Loading the model into GPU memory . 3:05 elapsed . requests get 503 until it is ready\./);
+ assert.match(await run("$('running-summary').textContent"),/still loading/);
+ assert.equal(await run("$('connect-agent').hidden"),true);
+ assert.equal(await run("$('copy-api').hidden"),true);
+ assert.match(await run("$('endpoint').textContent"),/answers 503 while the model loads/);
+ await run("fixture.engine={running:false,ready:false,provider:'modal',gpu:'L40S',phase:'idle stopped',idle_timeout_seconds:1800};await poll()");
+ assert.match(await run("$('remote-phase').textContent"),/stopped after 30 minutes without requests/);
+ await run("fixture.orphans=[{id:'call-1',provider:'modal',gpu:'T4',model:'/models/dense/dense.gguf',elapsed_seconds:61,usd_per_hour:0.59,estimated_cost_usd:0.01,adoptable:true,caveat:'Check current Modal pricing.'}];await refreshOrphans()");
+ assert.equal(await run("$('orphan-banner').hidden"),false);
+ for(const width of [1440,390]){
+  await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
+  assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true,`remote overflow ${width}`);
+  await p.shot(`${artifacts}/remote-${width}.png`);
+ }
+ await p.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+ assert.match(await run("$('orphan-banner').textContent"),/at ~\$0\.59\/hour/);
+ // The banner must not understate an orphan that bills at an unknown rate.
+ await run("fixture.orphans=[{...fixture.orphans[0],usd_per_hour:null}];await refreshOrphans()");
+ assert.match(await run("$('orphan-banner').textContent"),/at an unknown hourly rate/);
+ await run("$('stop-call-call-1').click();await new Promise(r=>setTimeout(r,100))");
+ assert.equal(await run("$('orphan-banner').hidden"),true);
+ await run("fixture.engine={running:false,ready:false};fixture.job={status:'idle'};$('backend').value='CUDA';$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200));customize(false)");
+ assert.equal(await run('settings().gpu_type'),'');
  console.log('Experiment controls passed: visible controls, reactive estimates, keyboard add, independent combinations, empty selection guard, mocked submission and responsive layouts.');
  console.log('Results checks passed: sorting, zero/missing metrics, modes, expansion/focus across refresh, eligibility, CSV quoting, multiline clipboard fallback, full JSON, skip links and unchanged drafts/defaults.');
  console.log('Artifacts: '+artifacts);

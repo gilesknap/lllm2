@@ -6,7 +6,7 @@ to narrow the search. The pane reads metadata only until you queue a download.
 
 Click a column heading to cycle through ascending, descending and no sort
 (the original suggestion order). Results scroll within a short window, keeping
-the horizontal scrollbar and catalogue close by. Titles and filters stay visible
+the horizontal scrollbar close by. Titles and filters stay visible
 while scrolling vertically. Use the filters below each
 heading to match text or set numeric minimums and maximums. Text filters require
 all space-separated terms and ignore case. Prefix a term with `!` to exclude it:
@@ -29,9 +29,10 @@ GPU memory is not summed across cards. These estimates do not predict engine
 architecture support, speed or usable context. Use **Experiments** to measure them.
 
 Choose **Add to catalogue** on a specific variant, then **Queue download** in
-**My catalogue**. New entries pin the HF repository revision. Split GGUFs are
-queued as a complete set. A unique vision projector is included when present;
-ambiguous projectors and incomplete shard sets cannot be added. Downloads run
+**My catalogue** on **Launch model**. New entries pin the HF repository
+revision. Split GGUFs are queued as a complete set. A unique vision projector is
+included when present; ambiguous projectors and incomplete shard sets cannot be
+added. Downloads run
 one at a time, show progress, and can be cancelled and retried. Pending jobs
 survive panel restarts; partial files are retained for resume. Once downloaded,
 open **Launch model** or **Experiments** to use the model.

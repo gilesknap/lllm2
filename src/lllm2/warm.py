@@ -5,53 +5,14 @@ import hashlib
 import json
 import threading
 import time
-from pathlib import Path
 
-from .discovery import hardware
 from .engine import Cancelled
 from .settings import batch_settings, cache_settings, execution_settings
 
 
-def host_memory(process):
-    result = {
-        "pid": process.pid if process else None,
-        "rss_mib": None,
-        "anonymous_mib": None,
-        "swap_mib": None,
-        "lifetime_peak_rss_mib": None,
-        "available_mib": None,
-    }
-    try:
-        if process is None or process.poll() is not None:
-            raise OSError("Owned engine is not running")
-        fields = {}
-        for line in (
-            (Path("/proc") / str(process.pid) / "status").read_text().splitlines()
-        ):
-            key, _, value = line.partition(":")
-            if key in ["VmRSS", "RssAnon", "VmSwap", "VmHWM"]:
-                fields[key] = int(value.split()[0]) / 1024
-        if process.poll() is not None:
-            raise OSError("Owned engine exited during memory sampling")
-        for name, key in [
-            ("rss_mib", "VmRSS"),
-            ("anonymous_mib", "RssAnon"),
-            ("swap_mib", "VmSwap"),
-            ("lifetime_peak_rss_mib", "VmHWM"),
-        ]:
-            result[name] = fields.get(key)
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemAvailable:"):
-                result["available_mib"] = int(line.split()[1]) / 1024
-    except (OSError, ValueError) as e:
-        result["error"] = str(e)
-    return result
-
-
 def measure_turn(bench, s, opts, sample, prompt, cache_prompt):
     engine = bench.engine
-    with engine.guard:
-        process = engine.process
+    host_memory = engine.memory_sampler()
     memory = []
     finished = threading.Event()
     lock = threading.Lock()
@@ -97,18 +58,18 @@ def measure_turn(bench, s, opts, sample, prompt, cache_prompt):
 
     def sample_memory():
         while not finished.is_set():
-            h = hardware()
+            h = engine.gpu_memory()
             memory.append(
                 {
                     "elapsed_seconds": time.monotonic() - started,
-                    "host": host_memory(process),
+                    "host": host_memory(),
                     "gpus": h["gpus"],
                     "error": h["error"],
                 }
             )
             finished.wait(0.5)
 
-    sample["host_before"] = host_memory(process)
+    sample["host_before"] = host_memory()
     sampler = threading.Thread(target=sample_memory, daemon=True)
     sampler.start()
     try:
@@ -186,7 +147,7 @@ def measure_turn(bench, s, opts, sample, prompt, cache_prompt):
         sample.update(
             wall_seconds=time.monotonic() - started,
             memory=list(memory),
-            host_after=host_memory(process),
+            host_after=host_memory(),
         )
         host_points = [sample["host_before"], sample["host_after"]] + [
             m["host"] for m in memory
@@ -195,8 +156,10 @@ def measure_turn(bench, s, opts, sample, prompt, cache_prompt):
             (h["rss_mib"] for h in host_points if h.get("rss_mib") is not None),
             default=None,
         )
+        # Samples without GPUs are unknown memory, not zero use.
         sample["peak_total_gpu_used_mib"] = max(
-            (sum(g["used_mib"] for g in m["gpus"]) for m in memory), default=None
+            (sum(g["used_mib"] for g in m["gpus"]) for m in memory if m["gpus"]),
+            default=None,
         )
 
 
@@ -204,6 +167,7 @@ def run_conversation(bench, s, opts, result):
     def save():
         bench.store.put("result", result["id"], result)
 
+    kernel = bench.engine.probe(s).get("cache_kernel")
     for repetition in range(1, opts["repeats"] + 1):
         if bench.cancel.is_set():
             raise Cancelled()
@@ -233,7 +197,7 @@ def run_conversation(bench, s, opts, result):
         )["tokens"]
         if not continuation or not replacement:
             raise RuntimeError("Could not tokenize conversation continuation.")
-        batches = batch_settings(s, bench.engine.state()["logs"])
+        batches = batch_settings(s, bench.engine.state()["logs"], bench.engine.probe(s))
         turns = []
 
         def run(
@@ -262,7 +226,7 @@ def run_conversation(bench, s, opts, result):
                 "slots": 1,
                 "context_per_slot": s.context,
                 "batch_settings": batches,
-                "cache_settings": cache_settings(s),
+                "cache_settings": cache_settings(s, kernel),
                 "prompt": {
                     "generator": "token-conversation-v1",
                     "token_ids": list(prompt),
@@ -290,8 +254,7 @@ def run_conversation(bench, s, opts, result):
             finally:
                 if sample.get("execution_settings"):
                     result["execution_settings"] = sample["execution_settings"]
-                with bench.engine.log_lock:
-                    logs = list(bench.engine.lines)
+                logs = bench.engine.logs()
                 starts = [
                     i for i, line in enumerate(logs) if line.startswith("Launching: ")
                 ]

@@ -969,6 +969,11 @@ p {
   accent-color: var(--accent);
 }
 
+.download-row .download-reason {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
 .download-row details {
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -1357,9 +1362,11 @@ section[tabindex="-1"], #comparisons {
 #find-table {min-width:1900px;width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed}
 #find-table thead {position:sticky;top:0;z-index:1;background:var(--card)}
 #find-table th {vertical-align:middle;padding:10px 8px 4px;width:170px;white-space:normal}
-#find-table th:first-child {width:260px}
-#find-table th:nth-child(2),#find-table th:nth-child(5) {width:230px}
-#find-table th:last-child {width:160px}
+/* Column widths follow the header order: catalogue action, model, publisher,
+   quantisation, size, suitability, then the rest at the default width. */
+#find-table th:first-child {width:150px}
+#find-table th:nth-child(2) {width:260px}
+#find-table th:nth-child(3),#find-table th:nth-child(6) {width:230px}
 #find-table th button {display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-height:40px;text-align:left;font-weight:600;border:0;background:none;color:var(--dim);padding:4px 0}
 #find-table th[aria-sort=ascending] button,#find-table th[aria-sort=descending] button {color:var(--accent)}
 #find-table .find-filter-row td {padding:4px 8px 10px;vertical-align:top}
@@ -1400,4 +1407,72 @@ section[tabindex="-1"], #comparisons {
 .context-load-actions input {
   margin: 0;
   accent-color: var(--accent);
+}
+
+/* Remote backends: orphan banner, cold-start status, stored models. */
+.orphan-banner {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--bad);
+  border-left-width: 5px;
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.orphan-banner h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.orphan-row, .remote-model {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.orphan-row>div:first-child, .remote-model>div:first-child {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.orphan-row small, .remote-model small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.remote-status {
+  margin: 8px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--wash);
+}
+
+.remote-status p {
+  margin: 0 0 4px;
+}
+
+.remote-status small {
+  display: block;
+  margin-top: 6px;
+}
+
+.remote-idle {
+  gap: 8px;
+  align-items: center;
+}
+
+.remote-idle input {
+  width: 7em;
+}
+
+#remote-error:empty, #remote-storage-error:empty {
+  display: none;
+}
+
+.pill.stored {
+  box-shadow: inset 0 0 0 1px var(--accent);
 }

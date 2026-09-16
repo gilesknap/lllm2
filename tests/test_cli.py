@@ -1,16 +1,94 @@
 import contextlib
 import io
 import json
+import os
+import re
+import signal
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 from typer.testing import CliRunner
 
-from lllm2 import cli, config
+from lllm2 import cli, config, modal_app
+from lllm2.discovery import CATALOG
+from lllm2.engine import Cancelled
+from lllm2.modal_provider import ModalProvider
+from lllm2.remote import GpuProbe, ProbeCache, catalogue_source, companion_names
 from lllm2.settings import Settings
 from lllm2.store import Store
+from test_modal_provider import META, FakeModal
+
+REMOTE_COMMANDS = (
+    ["setup"],
+    ["probe", "--gpu", "T4"],
+    ["list"],
+    ["models"],
+    ["stop", "--all"],
+    ["download", "qwen3-8b"],
+    ["remove", "A/a.gguf"],
+    ["remove", "qwen3-8b"],
+)
+# A catalogue entry with a companion multimodal projector file.
+COMPANION_ENTRY = next(e for e in CATALOG if e.get("mmproj"))
+
+
+class ModalError(Exception):
+    pass
+
+
+class AuthError(ModalError):
+    pass
+
+
+class NotFoundError(ModalError):
+    pass
+
+
+class Refusing:
+    """A Modal object whose every method fails authentication."""
+
+    def __getattr__(self, name):
+        def refuse(*_args, **_kwargs):
+            raise AuthError("Token missing")
+
+        return refuse
+
+
+class StateDict(dict):
+    def put(self, key, value):
+        self[key] = value
+
+
+def fake_modal(state):
+    """Build the parts of the ``modal`` module that setup and listing touch."""
+    return SimpleNamespace(
+        exception=SimpleNamespace(
+            Error=ModalError, AuthError=AuthError, NotFoundError=NotFoundError
+        ),
+        volume=SimpleNamespace(FileEntryType=SimpleNamespace(FILE=1)),
+        Dict=SimpleNamespace(from_name=lambda *_a, **_k: state),
+        Queue=SimpleNamespace(from_name=lambda *_a, **_k: Refusing()),
+        Volume=SimpleNamespace(from_name=lambda *_a, **_k: Refusing()),
+        Function=SimpleNamespace(
+            from_name=lambda *_a, **_k: SimpleNamespace(hydrate=lambda: None)
+        ),
+        FunctionCall=Refusing(),
+    )
+
+
+def flat(text):
+    """Join help text that the terminal renderer wrapped and styled.
+
+    Typer forces styled output when GITHUB_ACTIONS is set, so the ANSI codes
+    are removed before joining.
+    """
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+    return " ".join(plain.replace("│", " ").split())
 
 
 class CliTests(unittest.TestCase):
@@ -217,11 +295,121 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(result.exit_code, 130, result.output)
             launch.assert_called_once_with(
-                "/model.gguf", "/llama-server", "CUDA", "CUDA0", 300
+                "/model.gguf", "/llama-server", "CUDA", "CUDA0", 300, "", None
             )
         with patch.object(cli, "_launch", return_value=0) as launch:
             self.assertEqual(self.runner.invoke(cli.app, ["launch"]).exit_code, 0)
-            launch.assert_called_once_with("", "", "", "", 180)
+            launch.assert_called_once_with("", "", "", "", 180, "", None)
+        for value, expected in (("0", 0), ("off", 0), ("45", 45)):
+            with patch.object(cli, "_launch", return_value=0) as launch:
+                result = self.runner.invoke(
+                    cli.app,
+                    [
+                        "launch",
+                        "--backend",
+                        "modal",
+                        "--gpu",
+                        "L40S",
+                        "--idle-timeout",
+                        value,
+                    ],
+                )
+                self.assertEqual(result.exit_code, 0, result.output)
+                launch.assert_called_once_with(
+                    "", "", "modal", "", 180, "L40S", expected
+                )
+        for value in ("-1", "1441", "soon"):
+            with patch.object(cli, "_launch", return_value=0) as launch:
+                result = self.runner.invoke(
+                    cli.app, ["launch", "--backend", "modal", "--idle-timeout", value]
+                )
+                self.assertEqual(result.exit_code, 2, result.output)
+                launch.assert_not_called()
+
+    def test_remote_idle_timeout_order_is_flag_environment_saved_default(self):
+        values = {
+            "model": "/models/example.gguf",
+            "backend": "modal",
+            "gpu_type": "T4",
+        }
+        saved = Settings.parse(values | {"context": 32768, "idle_timeout_minutes": 90})
+        default = Settings.parse(values).idle_timeout_minutes
+        cases = (
+            # (flag, environment variable value or None, saved?, expected)
+            (5, 7, True, 5),
+            (0, 7, True, 0),
+            (None, 7, True, 7),
+            (None, 0, True, 0),
+            (None, None, True, 90),
+            (None, None, False, default),
+        )
+        for flag, environment, has_saved, expected in cases:
+            with self.subTest(flag=flag, environment=environment, saved=has_saved):
+                engine = MagicMock()
+                engine.start.side_effect = Cancelled()
+                engine.defaults_inputs.return_value = {}
+                with (
+                    patch.object(cli, "_catalogue", return_value=[]),
+                    patch.object(
+                        cli, "_remote_model_path", return_value="/models/example.gguf"
+                    ),
+                    patch.object(cli, "create_engine", return_value=engine),
+                    patch.object(
+                        cli,
+                        "_saved_launch_settings",
+                        side_effect=lambda s, has_saved=has_saved: (
+                            (Settings.parse(saved.dict()), True)
+                            if has_saved
+                            else (s, False)
+                        ),
+                    ),
+                    patch.object(
+                        cli,
+                        "starting_defaults",
+                        side_effect=lambda s, **_: {"settings": s.dict()},
+                    ),
+                    patch.object(
+                        config, "IDLE_TIMEOUT_FROM_ENVIRONMENT", environment is not None
+                    ),
+                    patch.object(config, "IDLE_TIMEOUT_MINUTES", environment or 0),
+                    patch.object(cli.signal, "signal"),
+                ):
+                    code = cli._launch("", "", "modal", "", 30, "T4", flag)
+                self.assertEqual(code, 130)
+                started = engine.start.call_args.args[0]
+                if has_saved:
+                    self.assertEqual(started.context, 32768)
+                self.assertEqual(started.idle_timeout_minutes, expected)
+
+    def test_idle_timeout_environment_variable_sets_the_settings_default(self):
+        code = (
+            "from lllm2 import config\n"
+            "from lllm2.settings import Settings\n"
+            "s = Settings.parse({'model': '/m.gguf', 'backend': 'modal', 'gpu_type': 'T4'})\n"
+            "print(Settings().idle_timeout_minutes, s.idle_timeout_minutes,\n"
+            "      config.IDLE_TIMEOUT_FROM_ENVIRONMENT)\n"
+        )
+        for value, expected in (
+            ("7", "7 7 True"),
+            ("off", "0 0 True"),
+            (None, "30 30 False"),
+        ):
+            with self.subTest(value=value):
+                env = {
+                    k: v
+                    for k, v in os.environ.items()
+                    if k != "LLLM2_IDLE_TIMEOUT_MINUTES"
+                }
+                if value is not None:
+                    env["LLLM2_IDLE_TIMEOUT_MINUTES"] = value
+                result = subprocess.run(
+                    [sys.executable, "-c", code],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    check=True,
+                )
+                self.assertEqual(result.stdout.strip(), expected)
 
     def test_saved_launch_settings_override_tuning_but_not_discovery(self):
         selected = Settings(
@@ -334,6 +522,218 @@ class CliTests(unittest.TestCase):
                     run.assert_called_once_with(
                         name, args[1:] if args[0] == "--" else args
                     )
+
+
+class ModalCliTests(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+        state = TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        patcher = patch.object(config, "STATE_DIR", Path(state.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def main(self, args):
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            code = cli.main(["modal", *args])
+        return code, errors.getvalue()
+
+    def test_remote_commands_name_the_extra_when_modal_is_missing(self):
+        with patch.dict(sys.modules, {"modal": None}):
+            for args in REMOTE_COMMANDS:
+                with self.subTest(args=args):
+                    code, errors = self.main(args)
+                    self.assertEqual(code, 2)
+                    self.assertIn("pip install 'lllm2[modal]'", errors)
+
+    def test_remote_commands_point_at_setup_without_credentials(self):
+        def provider():
+            return ModalProvider(fake_modal(Refusing()), deploy=AssertionError)
+
+        with patch("lllm2.modal_provider.create_provider", side_effect=provider):
+            for args in REMOTE_COMMANDS:
+                with self.subTest(args=args):
+                    code, errors = self.main(args)
+                    self.assertEqual(code, 2)
+                    self.assertIn("modal token new", errors)
+                    self.assertIn("lllm2 modal setup", errors)
+
+    def test_setup_deploys_once_and_a_rerun_says_nothing_changed(self):
+        state, deploys = StateDict(), []
+        with (
+            patch.object(modal_app, "deployment_version", return_value="1.0+abc"),
+            patch(
+                "lllm2.modal_provider.create_provider",
+                side_effect=lambda: ModalProvider(
+                    fake_modal(state), deploy=lambda: deploys.append(1)
+                ),
+            ),
+        ):
+            first = self.runner.invoke(cli.app, ["modal", "setup"])
+            rerun = self.runner.invoke(cli.app, ["modal", "setup"])
+        self.assertEqual(first.exit_code, 0, first.output)
+        self.assertIn("Deployed lllm2 app version 1.0+abc.", first.output)
+        self.assertEqual(rerun.exit_code, 0, rerun.output)
+        self.assertIn("1.0+abc is already deployed; nothing changed.", rerun.output)
+        self.assertEqual(deploys, [1])
+
+    def test_probe_prints_the_gpu_and_engine_and_saves_the_probe(self):
+        digest = "ab" * 32
+        found = GpuProbe(
+            "NVIDIA L4",
+            23034,
+            {"devices": ["CUDA0"], "sha256": digest, "version": "version: 1 (x)"},
+        )
+        provider = MagicMock()
+        provider.name = "modal"
+        provider.probe.return_value = found
+        with patch.object(cli, "remote_provider", return_value=provider):
+            result = self.runner.invoke(cli.app, ["modal", "probe", "--gpu", "L4"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        provider.probe.assert_called_once_with("L4")
+        for text in ("GPU: NVIDIA L4", "VRAM: 23034 MiB", "CUDA0", digest):
+            self.assertIn(text, result.output)
+        self.assertIn("Check current Modal pricing", flat(result.output))
+        saved = ProbeCache(config.STATE_DIR / "remote-probes.json")
+        self.assertEqual(saved.get("modal", "L4"), found)
+
+    def test_probe_rejects_an_unknown_gpu_type_before_contacting_modal(self):
+        with patch.object(cli, "remote_provider") as provider:
+            code, errors = self.main(["probe", "--gpu", "Z9"])
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown modal GPU type: Z9. Choose one of: T4, L4", errors)
+        provider.assert_not_called()
+
+    def modal_client(self, fake):
+        """Serve every provider lookup from one fake ``modal`` module."""
+        return patch(
+            "lllm2.modal_provider.create_provider",
+            side_effect=lambda: ModalProvider(
+                fake, poll_interval=0, deploy=lambda: None
+            ),
+        )
+
+    def test_download_shows_progress_and_a_rerun_downloads_nothing(self):
+        fake, entry = FakeModal(), COMPANION_ENTRY
+        source = catalogue_source(entry)
+        stored = [source.name, *companion_names(entry)]
+
+        def download(name, repo, files, revision):
+            self.assertEqual((name, files), (source.name, list(source.files)))
+
+            def poll(call):
+                fake.state.put(
+                    modal_app.download_key(call.object_id),
+                    {"file": files[0], "done_bytes": 10**9, "total_bytes": 2 * 10**9},
+                )
+                if not call.pending:
+                    fake.store.files.update(dict.fromkeys(stored, 2 * 10**9))
+
+            return {"pending": 2, "result": dict(META), "on_poll": poll}
+
+        fake.behaviour["download"] = download
+        with self.modal_client(fake):
+            first = self.runner.invoke(cli.app, ["modal", "download", entry["id"]])
+            rerun = self.runner.invoke(cli.app, ["modal", "download", entry["id"]])
+            listed = self.runner.invoke(cli.app, ["modal", "models"])
+        self.assertEqual(first.exit_code, 0, first.output)
+        self.assertIn(f"Downloading {source.files[0]} inside Modal", first.stderr)
+        self.assertIn(f"Stored {source.name} on Modal.", first.stdout)
+        self.assertEqual(rerun.exit_code, 0, rerun.output)
+        self.assertIn("already stored on Modal; nothing downloaded", rerun.stdout)
+        self.assertEqual(rerun.stderr, "")
+        # The rerun starts no download call.
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(listed.exit_code, 0, listed.output)
+        for path in stored:
+            self.assertIn(f"{path}  2.0 GB  {entry['id']}", listed.stdout)
+
+    def test_ctrl_c_cancels_the_download_and_keeps_the_partial_file(self):
+        fake = FakeModal()
+        partial = catalogue_source(COMPANION_ENTRY).name + ".part"
+
+        def download(*_args):
+            def poll(_call):
+                fake.store.files[partial] = 1000
+                signal.raise_signal(signal.SIGINT)
+
+            return {"pending": 100, "on_poll": poll}
+
+        fake.behaviour["download"] = download
+        before = signal.getsignal(signal.SIGINT)
+        with self.modal_client(fake):
+            result = self.runner.invoke(
+                cli.app, ["modal", "download", COMPANION_ENTRY["id"]]
+            )
+        self.assertEqual(result.exit_code, 130, result.output)
+        self.assertIn(
+            f"rerun `lllm2 modal download {COMPANION_ENTRY['id']}` to resume",
+            flat(result.stderr),
+        )
+        self.assertEqual([call.cancelled for call in fake.calls.values()], [True])
+        self.assertFalse(any(str(key).startswith("heartbeat:") for key in fake.state))
+        self.assertEqual(fake.store.files, {partial: 1000})
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
+
+    def test_download_names_close_matches_for_an_unknown_id(self):
+        with patch.object(cli, "remote_provider") as provider:
+            code, errors = self.main(["download", "qwen3-8"])
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown catalogue id: qwen3-8. Close matches: qwen3-8b", errors)
+        provider.assert_not_called()
+
+    def test_remove_takes_a_catalogue_id_or_stored_name_and_deletes_companions(self):
+        fake, entry = FakeModal(), COMPANION_ENTRY
+        main, (projector,) = catalogue_source(entry).name, companion_names(entry)
+        fake.store.files.update(
+            {main: 10, projector + ".part": 5, "other/x.gguf": 7, "extra/y.gguf": 3}
+        )
+        with self.modal_client(fake):
+            listed = self.runner.invoke(cli.app, ["modal", "models", "--json"])
+            by_id = self.runner.invoke(cli.app, ["modal", "remove", entry["id"]])
+            by_name = self.runner.invoke(cli.app, ["modal", "remove", "other/x.gguf"])
+            code, errors = self.main(["remove", "other/x.gguf"])
+        rows = {row["name"]: row["catalogue_id"] for row in json.loads(listed.stdout)}
+        self.assertEqual(
+            rows, {main: entry["id"], "other/x.gguf": None, "extra/y.gguf": None}
+        )
+        self.assertEqual(by_id.exit_code, 0, by_id.output)
+        self.assertIn(f"Removed {main} from Modal.", by_id.stdout)
+        self.assertEqual(by_name.exit_code, 0, by_name.output)
+        self.assertEqual(fake.store.files, {"extra/y.gguf": 3})
+        self.assertEqual(code, 2)
+        self.assertIn("No catalogue id or stored model named other/x.gguf", errors)
+        self.assertIn("Close matches: extra/y.gguf", errors)
+        # A stored name that escapes the Volume resolves to nothing and deletes nothing.
+        with self.modal_client(fake):
+            for name in ("../extra/y.gguf", "/extra/y.gguf", "extra/../extra/y.gguf"):
+                code, errors = self.main(["remove", name])
+                self.assertEqual(code, 2, name)
+                self.assertIn(f"No catalogue id or stored model named {name}", errors)
+        self.assertEqual(fake.store.files, {"extra/y.gguf": 3})
+
+    def test_remove_refuses_a_model_that_a_running_call_serves(self):
+        fake = FakeModal()
+        name = catalogue_source(COMPANION_ENTRY).name
+        fake.store.files[name] = 10
+        row = {"id": "fc-9", "model": str(config.MODELS_DIR / name)}
+        with (
+            self.modal_client(fake),
+            patch.object(cli, "describe_calls", return_value=[row]),
+        ):
+            code, errors = self.main(["remove", COMPANION_ENTRY["id"]])
+        self.assertEqual(code, 2)
+        self.assertIn(f"Serve call fc-9 uses {name}", errors)
+        self.assertIn("lllm2 modal stop", errors)
+        self.assertEqual(fake.store.files, {name: 10})
+
+    def test_gpu_help_shows_the_pricing_caveat(self):
+        for args in (["launch"], ["modal", "list"], ["modal", "probe"]):
+            with self.subTest(args=args):
+                result = self.runner.invoke(cli.app, [*args, "--help"])
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertIn("Check current Modal pricing", flat(result.output))
 
 
 if __name__ == "__main__":

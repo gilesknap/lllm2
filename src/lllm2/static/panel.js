@@ -1,18 +1,20 @@
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const settingKeys=['model','engine','backend','device','context','slots','gpu_layers','flash','cache','cache_k','cache_v','speculation','drafter','pair_confirmed','draft_length','effort','draft_cache','chat_template','batch_size','ubatch_size','backend_sampling','cuda_graph_opt','cache_ram_mib','context_checkpoints','lookup_ngram_n','lookup_ngram_m'];
-const optionalNumbers=['gpu_layers','batch_size','ubatch_size','cache_ram_mib','context_checkpoints','lookup_ngram_n','lookup_ngram_m'];
+const settingKeys=['model','engine','backend','device','context','slots','gpu_layers','flash','cache','cache_k','cache_v','speculation','drafter','pair_confirmed','draft_length','effort','draft_cache','chat_template','batch_size','ubatch_size','backend_sampling','cuda_graph_opt','cache_ram_mib','context_checkpoints','lookup_ngram_n','lookup_ngram_m','gpu_type','idle_timeout_minutes'];
+const optionalNumbers=['gpu_layers','batch_size','ubatch_size','cache_ram_mib','context_checkpoints','lookup_ngram_n','lookup_ngram_m','idle_timeout_minutes'];
 const optionalCache=['cache_k','cache_v'];
 const cachePair=s=>[s.cache_k||s.cache,s.cache_v||s.cache];
 const cacheLabel=s=>{const [k,v]=cachePair(s);return `K ${k} / V ${v}`;};
-const settingValue=(s,k)=>optionalNumbers.includes(k)||optionalCache.includes(k)?s[k]??null:k==='backend_sampling'?s[k]??false:k==='cuda_graph_opt'?s[k]??'default':s[k];
+const settingValue=(s,k)=>optionalNumbers.includes(k)||optionalCache.includes(k)?s[k]??null:k==='backend_sampling'?s[k]??false:k==='cuda_graph_opt'?s[k]??'default':k==='gpu_type'?s[k]??'':s[k];
 // Shared launch and feature copy; help buttons stay outside labels.
 const launchHelp={
  model:['Installed checkpoint','The GGUF file contains the model weights. Size and precision affect memory, speed and answers. Keep the recommended checkpoint unless comparing models.'],
  engine:['llama-server binary','The program that runs the checkpoint. Builds support different devices and features; changing it can affect speed and compatibility. Keep a working build for fair comparisons.'],
- backend:['Backend','CUDA and Vulkan are ways to run the model on your NVIDIA GPU. Support and speed can differ; keep the recommended backend unless comparing them.'],
+ backend:['Backend','Where the model runs. CUDA and Vulkan use the NVIDIA GPU in this workstation; support and speed can differ. A remote backend such as Modal rents a GPU, bills while it runs and serves the model on the same local port.'],
+ gpu_type:['Remote GPU type','The rented GPU for a remote backend. More memory fits larger models and contexts but costs more per hour. Starting settings are sized for the chosen type. Prices are estimates; check current provider pricing.'],
+ idle_timeout_minutes:['Idle stop (minutes)','A remote model stops after this many minutes without requests, so a forgotten session stops billing. Blank or 0 keeps it running until you stop it. Requests, including long benchmarks, reset the timer.'],
  device:['GPU device','The GPU reported by this engine for the chosen backend. Its free memory limits what fits. Keep the detected device unless deliberately using another GPU.'],
- context:['Total allocated context','Text capacity in tokens, including prompts and replies, shared across slots. More needs more memory and can take longer to fill. Keep the recommended allocation unless you need a different context.'],
- slots:['Slots','How many requests can hold their own conversation state. Total context is divided between slots; more slots leave less per request. This is not CPU threads. Keep the recommended value for normal use.'],
+ context:['Context per conversation','Text capacity in tokens for one conversation, including its prompt and reply. The total allocation is this figure times the slots, so more needs more memory. Keep the recommended value unless you need a different context.'],
+ slots:['Slots','How many requests can hold their own conversation state. Each slot gets the context per conversation, so more slots need more memory. This is not CPU threads. Keep the recommended value for normal use.'],
  batch_size:['Logical batch (tokens)','Maximum prompt tokens submitted together. A larger batch may read prompts faster but uses more working memory. Leave blank for this engine’s default; microbatch must not exceed it.'],
  backend_sampling:['Target GPU sampling','Experimental: choose the next target token on the GPU. This may reduce overhead, but unsupported sampler requests can fall back. Leave unchecked for the engine default until measured. Draft sampling is unchanged.'],
  cuda_graph_opt:['Concurrent CUDA streams','Experimental: overlap eligible operations inside a CUDA graph. Requires one visible CUDA device and ordinary CUDA Graphs. Default preserves the engine environment; this does not add concurrent requests.'],
@@ -85,20 +87,46 @@ let view='launch', drafts={launch:null,experiments:null}, connected=false, resol
 let validationSnapshot='', validationError='', actionError='', selectionNote='', pendingAction=false, pollPending=false, scanPending=false;
 let savedExists=false, engineOverride=false, editTimer=null, lastDownloads='', startAttempt=null, discoveredOnce=false, queuedView=null;
 let savedFeedback='', pickerSequence=0;
-const sameSettings=(a,b)=>!!a&&!!b&&settingKeys.every(k=>settingValue(a,k)===settingValue(b,k));
+// The idle timeout changes without a restart, so it does not make settings differ.
+const sameSettings=(a,b)=>!!a&&!!b&&settingKeys.every(k=>k==='idle_timeout_minutes'||settingValue(a,k)===settingValue(b,k));
+const localBackends=['CUDA','Vulkan'];
+const remoteBackend=b=>!!b&&!localBackends.includes(b);
+const backendInfo=b=>discovered.backends?.find(x=>x.name===b);
+const backendLabel=s=>remoteBackend(s?.backend)?`${backendInfo(s.backend)?.label||s.backend} · ${s.gpu_type||'choose a GPU type'}`:s?.backend||'';
+const money=n=>Number.isFinite(n)?'$'+n.toFixed(2):'unknown';
+// An unknown rate must read as unknown: $0.00/hour understates the bill.
+const hourlyRate=n=>Number.isFinite(n)?`~${money(n)}/hour`:'an unknown hourly rate';
+const clockText=seconds=>{const t=Math.max(0,Math.floor(seconds||0)),h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=String(t%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${s}`:`${m}:${s}`;};
+const selection=()=>{const s=currentLaunch()||{};return remoteBackend(s.backend)?{backend:s.backend,gpu_type:s.gpu_type||''}:{backend:s.backend||''};};
 const snapshot=()=>JSON.stringify(settings());
 const currentLaunch=()=>view==='launch'?settings():drafts.launch?.settings;
-const modelName=path=>{const m=discovered.models?.find(m=>m.path===path),c=discovered.catalog?.find(c=>c.id===m?.catalog_id);return c?(c.recommendation?.name||c.name):path?.split('/').slice(-2).join('/')||'No model selected';};
+const modelName=path=>{const m=discovered.models?.find(m=>m.path===path),c=discovered.catalog?.find(c=>c.id===m?.catalog_id)||(path?discovered.catalog?.find(c=>c.path===path):null);return c?(c.recommendation?.name||c.name):path?.split('/').slice(-2).join('/')||'No model selected';};
 
-function settings(){return Object.fromEntries(settingKeys.map(k=>[k,$(k).type==='checkbox'?$(k).checked:$(k).type==='number'?(optionalNumbers.includes(k)&&$(k).value===''?null:Number($(k).value)):optionalCache.includes(k)?$(k).value||null:$(k).value]));}
+function settings(){
+ const s=Object.fromEntries(settingKeys.map(k=>[k,$(k).type==='checkbox'?$(k).checked:$(k).type==='number'?(optionalNumbers.includes(k)&&$(k).value===''?null:Number($(k).value)):optionalCache.includes(k)?$(k).value||null:$(k).value]));
+ // The editor holds the context per conversation; Settings.context is the
+ // total across the slots. Leave a bad slot count alone, so the server
+ // names the slots rather than a total this multiplication invented.
+ if(Number.isInteger(s.slots)&&s.slots>=1)s.context=s.context*s.slots;
+ return s;
+}
+// Settings.context caps the total at 1048576, so the per-conversation ceiling
+// falls as slots rise. Keep the ceiling on the step grid the input declares.
+function contextCap(){
+ const slots=Number($('slots').value);
+ const max=Number.isInteger(slots)&&slots>=1?Math.floor(1048576/slots/256)*256:1048576;
+ $('context').max=max;
+ if(Number($('context').value)>max)$('context').value=max;
+}
 function slotNote(){
+ contextCap();
  const context=Number($('context').value),slots=Number($('slots').value);
- // Blank, zero or negative entries have no meaningful per-slot size; the server rejects them too.
- $('slot-note').textContent=context>=1&&Number.isInteger(slots)&&slots>=1?`${Math.floor(context/slots).toLocaleString()} tokens per conversation (slot), including the reply. Total allocation is divided across ${slots} slot(s).`:'Enter a positive total context and at least one slot to see the tokens per conversation.';
+ // Blank, zero or negative entries have no meaningful total; the server rejects them too.
+ $('slot-note').textContent=context>=1&&Number.isInteger(slots)&&slots>=1?`Each conversation includes its reply. Total allocation is ${(context*slots).toLocaleString()} tokens across ${slots} slot(s).`:'Enter a positive context per conversation and at least one slot to see the total allocation.';
  benchmarkCost();
 }
 function message(s,error=false){$('message').textContent=s;$('message').style.display='block';$('message').className=error?'error':'';}
-async function api(path,data){const r=await fetch(path,{signal:AbortSignal.timeout(path==='/api/start'?15000:path==='/api/status'?10000:180000),...(data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-LLLM2-Token':token},body:JSON.stringify(data)})});const d=await r.json();if(!r.ok)throw Error(d.error||r.statusText);return d;}
+async function api(path,data){const r=await fetch(path,{signal:AbortSignal.timeout(path==='/api/start'?15000:path.startsWith('/api/status')?10000:180000),...(data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-LLLM2-Token':token},body:JSON.stringify(data)})});const d=await r.json();if(!r.ok)throw Error(d.error||r.statusText);return d;}
 async function attempt(fn){try{await fn();}catch(e){message(e.message,true);}}
 let resultSort={key:'started',direction:'descending'}, resultRequest=0;
 let resultDeletion=null,resultDeleteBusy=false;
@@ -124,12 +152,13 @@ function resultDetails({r,s,i,key}){
  const fmt=resultFormat,warm=r.measurement_mode==='warm-conversation',allocated=r.settings.context,slots=r.settings.slots;
  const {samples,...record}=r;
  return `<div class="row result-actions">${!resultBlock(r)?`<button id="promote-${key}" data-promote="${esc(r.id)}" data-has-context="${!!r.largest_observed_context}">Try in Launch</button>${r.largest_observed_context?`<span class="context-load-actions" role="radiogroup" aria-label="Context to use in Launch">${headroomControl(r,key)}</span>`:''}`:''}<span class="spacer"></span><button data-copy-row="${key}" id="copy-row-${key}">Copy row</button><button id="delete-run-${key}" data-delete-result="${esc(r.id)}" aria-label="Delete entire run: ${esc(r.label)}" ${deletableResult(r)?'':'disabled'}>Delete run…</button></div>
- <div class="result-detail-grid"><div><b>Configuration</b><p>${esc(r.settings.model)}</p><p>${esc(r.settings.backend)} · ${esc(r.settings.device)} · ${esc(r.settings.speculation)} · ${esc(cacheLabel(r.settings))}</p><p>${fmt(allocated/slots)} tokens per conversation · ${fmt(allocated)} total / ${fmt(slots)} slots</p></div>
+ <div class="result-detail-grid"><div><b>Configuration</b><p>${esc(r.settings.model)}</p><p>${esc(resultHardware(r))} · ${esc(r.settings.device)} · ${esc(r.settings.speculation)} · ${esc(cacheLabel(r.settings))}</p><p>Hardware: ${esc(r.hardware?.source||'local')}${r.hardware?.gpu_type?' · GPU type '+esc(r.hardware.gpu_type):''} · ${esc((r.hardware?.gpus||[]).map(g=>g.name).join(', ')||'unknown GPU')}</p><p>${fmt(allocated/slots)} tokens per conversation · ${fmt(allocated)} total / ${fmt(slots)} slots</p></div>
  <div><b>Sample & timing</b><p>${esc(sampleMode(r,s))}${s?.turn?' · '+esc(s.turn):''} · ${esc(s?.workload||'No sample')}</p><p>${fmt(s?.input_tokens)} input / ${fmt(s?.output_tokens)} output tokens · ${fmt(s?.wall_seconds??s?.completion_seconds)} s elapsed</p><p>Output requested / cap: ${fmt(s?.requested_output_budget)} / ${fmt(s?.output_budget)}</p>${warm?`<p>Processed ${fmt(s?.processed_tokens)} · reused ${fmt(s?.reused_tokens)} tokens</p><p>First token event ${fmt(s?.first_token_event_seconds)} s · first text ${fmt(s?.first_text_seconds)} s · completion ${fmt(s?.completion_seconds)} s</p>`:''}<p>Peak engine RSS ${fmt(s?.peak_engine_rss_mib)} MiB · sampled total VRAM ${fmt(s?.peak_total_gpu_used_mib)} MiB</p>${s?.adherence?`<p>Source adherence: ${esc(s.adherence.status)}</p>`:''}</div>
  <div><b>Context search</b><p>Observed ${fmt(r.largest_observed_context)} / headroom estimate ${fmt(r.recommended_context)} tokens per conversation${r.context_confirmed===false?' (loaded only; not confirmed with a full prompt)':''}</p><p>${esc(r.context_search_status||'No context search recorded')}${r.context_failed_upper_bound?' · failed upper bound '+fmt(r.context_failed_upper_bound):''}${r.context_timeout_upper_bound?' · timed out at '+fmt(r.context_timeout_upper_bound):''}${r.largest_started_context&&r.largest_started_context!==r.largest_observed_context?' · loaded up to '+fmt(r.largest_started_context)+' (unconfirmed)':''}</p><p>${esc(r.context_search_stop_reason||'')}${r.context_ceiling_reached?' Search ceiling reached; maximum may be higher.':''}</p></div>
  <div><b>Run status</b><p>${statusBadge(r.status)} · ${esc(r.started)}</p>${r.quality_status?`<p>Quality/adherence: ${esc(r.quality_status)}</p>`:''}<p class="error">${esc([s?.error,r.error].filter(Boolean).join('\n'))}</p><p>Result: ${esc(r.id)} · sample ${s?i+1:'unavailable'}</p></div></div>
  <details id="result-evidence-${key}"><summary id="result-evidence-summary-${key}">Exact settings & measurement evidence</summary><pre>${esc(JSON.stringify({...record,sample:s},null,2))}</pre></details>`;
 }
+function resultHardware(r){const source=r.hardware?.source;return source&&source!=='local'?`${r.settings.backend} · ${r.hardware.gpu_type||r.settings.gpu_type||'unknown GPU type'}`:r.settings.backend;}
 function renderResults(){
  const rows=resultRows(),fmt=resultFormat;
  $('export-csv').disabled=$('copy-results').disabled=!rows.length;
@@ -139,7 +168,7 @@ function renderResults(){
  const liveKeys=new Set(rows.map(row=>row.key));for(const key of expandedResults)if(!liveKeys.has(key))expandedResults.delete(key);
  renderMarkup('results',rows.map(row=>{
   const {r,s,key}=row,warm=r.measurement_mode==='warm-conversation',status=sampleStatus(r,s),expanded=expandedResults.has(key);
-  return `<tr data-result-key="${key}"><td class="result-name"><div class="result-head"><button class="result-expander" id="expand-${key}" data-expand="${key}" aria-expanded="${expanded}" aria-controls="detail-${key}" aria-label="${expanded?'Hide':'Show'} details for ${esc(r.label)}, sample ${row.i+1}">${expanded?'▾':'▸'}</button><div><b>${esc(r.label)}</b><small>${esc(s?.workload||'No sample')} · ${esc(sampleMode(r,s))}${s?.turn?' · '+esc(s.turn):''}</small><small class="result-model" title="${esc(r.settings.model)}">${esc(modelName(r.settings.model))} · ${esc(r.settings.backend)} · ${fmt(Math.floor(r.settings.context/r.settings.slots))} context</small><small>${esc(r.started)}</small></div></div></td>
+  return `<tr data-result-key="${key}"><td class="result-name"><div class="result-head"><button class="result-expander" id="expand-${key}" data-expand="${key}" aria-expanded="${expanded}" aria-controls="detail-${key}" aria-label="${expanded?'Hide':'Show'} details for ${esc(r.label)}, sample ${row.i+1}">${expanded?'▾':'▸'}</button><div><b>${esc(r.label)}</b><small>${esc(s?.workload||'No sample')} · ${esc(sampleMode(r,s))}${s?.turn?' · '+esc(s.turn):''}</small><small class="result-model" title="${esc(r.settings.model)}">${esc(modelName(r.settings.model))} · ${esc(resultHardware(r))} · ${fmt(Math.floor(r.settings.context/r.settings.slots))} context</small><small>${esc(r.started)}</small></div></div></td>
   <td>${statusBadge(status)}${status!==r.status?`<small>Run: ${esc(r.status)}</small>`:''}${r.quality_status==='failed'||s?.adherence?.status==='failed'?'<small class="error">Adherence failed</small>':''}</td>
   <td>${fmt(warm?s?.processed_prefill_tok_s:s?.prefill_tok_s)}${warm?'<small>Processed tokens only</small>':''}</td><td>${fmt(s?.decode_tok_s)}</td><td>${fmt(s?.input_tokens)} / ${fmt(s?.output_tokens)}</td><td>${fmt(s?.peak_total_gpu_used_mib)}</td></tr>
   <tr class="result-detail" id="detail-${key}" ${expanded?'':'hidden'}><td colspan="6">${resultDetails(row)}</td></tr>`;
@@ -197,7 +226,7 @@ async function refreshResults(){
 const resultColumns=[
  ['result_id',({r})=>r.id],['sample_number',({s,i})=>s?i+1:null],['started',({r})=>r.started],['label',({r})=>r.label],
  ['model',({r})=>r.settings.model],['engine',({r})=>r.settings.engine],['backend',({r})=>r.settings.backend],['device',({r})=>r.settings.device],
- ['model_sha256',({r})=>r.model?.sha256],['engine_sha256',({r})=>r.engine?.sha256],['hardware_json',({r})=>r.hardware?JSON.stringify(r.hardware):null],
+ ['model_sha256',({r})=>r.model?.sha256],['engine_sha256',({r})=>r.engine?.sha256],['hardware_source',({r})=>r.hardware?.source||'local'],['gpu_type',({r})=>r.hardware?.gpu_type||r.settings.gpu_type||null],['hardware_json',({r})=>r.hardware?JSON.stringify(r.hardware):null],
  ['run_status',({r})=>r.status],['sample_status',({r,s})=>sampleStatus(r,s)],['measurement_mode',({r})=>r.measurement_mode||'cold'],['sample_kind',({r,s})=>sampleMode(r,s)],
  ['workload',({s})=>s?.workload],['turn',({s})=>s?.turn],['adherence_status',({s})=>s?.adherence?.status],['quality_status',({r})=>r.quality_status],
  ['input_tokens',({s})=>s?.input_tokens],['output_tokens',({s})=>s?.output_tokens],['requested_output_budget',({s})=>s?.requested_output_budget],['output_cap',({s})=>s?.output_budget],
@@ -236,7 +265,7 @@ function benchmarkCost(){
  $('prompt_tokens').disabled=quick;
  $('max_context').disabled=$('context_timeout').disabled=!search;
  const hasSource=[...document.querySelectorAll('#workloads input:checked')].some(x=>['source-copy','source-small-edit','context-retrieval-edit'].includes(x.value));
- const upper=Math.floor(Number($('context').value)/Number($('slots').value))-Math.max(Number($('output_tokens').value),hasSource?2048:0)-32;
+ const upper=Number($('context').value)-Math.max(Number($('output_tokens').value),hasSource?2048:0)-32;
  const sizes=[...new Set([...(quick?[1024,16384,65536].map(n=>Math.min(n,upper)):[Number($('prompt_tokens').value)]),...(full?[upper]:[])])].sort((a,b)=>a-b);
  const workloads=document.querySelectorAll('#workloads input:checked').length, repeats=Number($('repeats').value);
  $('benchmark-time-tip').textContent='Rough guide from an observed Qwen/Vulkan run; other models, engines and hardware may take longer or finish sooner. Smaller windows may finish sooner. Suites and selected combinations repeat the work for each configuration. Context probes are additional and can take several minutes each. This is not a time limit.';
@@ -329,16 +358,32 @@ $('skip-content').onclick=e=>{e.preventDefault();const section=$(view+'-view');s
 
 
 // One editor, moved between views, with independent in-memory drafts and provenance.
+function gpuOptions(backend,value){
+ const info=backendInfo(backend);
+ const options=remoteBackend(backend)?(info?.gpus||[]).map(g=>new Option(`${g.name} · ${g.vram_gb} GB · ~$${g.usd_per_hour.toFixed(2)}/h`,g.name)):[new Option('Not used locally','')];
+ if(value&&!options.some(o=>o.value===value))options.push(new Option(value,value));
+ $('gpu_type').replaceChildren(...options);$('gpu_type').value=value||options[0]?.value||'';
+}
+function syncBackend(){
+ const s=settings(),remote=remoteBackend(s.backend),info=backendInfo(s.backend);
+ for(const [id,hidden] of [['engine',remote],['device',remote],['gpu_type',!remote],['idle_timeout_minutes',!remote]]){const field=$(id).closest('.field-control')||$(id).closest('label');if(field)field.hidden=hidden;}
+ $('remote-note').hidden=!remote;
+ $('remote-note').textContent=remote?`${info?.label||s.backend} runs the lllm2 CUDA engine on a rented ${s.gpu_type||'GPU'} and serves it on this workstation's usual engine port. It bills while it runs. ${info?.caveat||''}`:'';
+ if(remote)$('device-hint').textContent='';
+}
 function fill(s){
  savedFeedback='';
  if(s.model&&!Array.from($('model').options).some(o=>o.value===s.model))$('model').add(new Option(modelName(s.model),s.model));
+ if(s.backend&&!Array.from($('backend').options).some(o=>o.value===s.backend))$('backend').add(new Option(backendInfo(s.backend)?.label||s.backend,s.backend));
+ gpuOptions(s.backend,s.gpu_type);
  for(const k of settingKeys){
-  if(k==='device')continue;
+  if(k==='device'||k==='gpu_type')continue;
   if($(k).type==='checkbox')$(k).checked=s[k]??false;
+  else if(k==='context')$(k).value=s.context?Math.floor(s.context/(s.slots>=1?s.slots:1)):'';
   else $(k).value=s[k]??(k==='cuda_graph_opt'?'default':'');
  }
  $('device').replaceChildren(new Option(s.device||'Choose device',s.device||''));
- syncPlacement();
+ syncPlacement();syncBackend();
  slotNote();defaultState();launchState();
 }
 function rememberDraft(){drafts[view]={settings:settings(),defaults:loadedDefaults,engineOverride,savedExists,selectionNote};}
@@ -348,7 +393,7 @@ async function switchView(next){
   $('launch-view').hidden=true;$('experiments-view').hidden=true;$('find-view').hidden=false;
   for(const name of ['launch','experiments','find'])$('nav-'+name).setAttribute('aria-current',name===next?'page':'false');
   $('skip-content').href='#find-view';
-  await loadCatalogue();if(!findLoaded)await searchHF();return;
+  await loadCatalogue();if(!findLoaded||findSelection!==JSON.stringify(selection()))await searchHF();return;
  }
  if(resolving||scanPending){queuedView=next;return;}
  $('find-view').hidden=true;
@@ -389,7 +434,7 @@ function defaultState(){
  $('selected-model').hidden=!s.model||view!=='launch';
  $('selected-model').textContent='Selected model: '+modelName(s.model);
  $('summary-title').textContent=resolving?'Preparing settings…':names[mode];
- $('summary-context').textContent=s.model?`${Math.floor(s.context/s.slots).toLocaleString()} tokens per conversation · ${s.slots} slot${s.slots===1?'':'s'} · ${s.backend}${mode==='recommended'?' · '+(measured?(source.includes('qualified')?'Qualified recommendation':'Tested on RTX 3090'):'Estimated starting settings'):''}`:'';
+ $('summary-context').textContent=s.model?`${Math.floor(s.context/s.slots).toLocaleString()} tokens per conversation · ${s.slots} slot${s.slots===1?'':'s'} · ${backendLabel(s)}${mode==='recommended'?' · '+(measured?(source.includes('qualified')?'Qualified recommendation':'Tested on RTX 3090'):'Estimated starting settings'):''}`:'';
  $('draft-note').textContent=changed.length?'Changed: '+changed.map(k=>launchHelp[k][0]).join(', ')+'. Last loaded evidence does not validate these edits.':(s.speculation.includes('dflash')||s.speculation.includes(',')||cachePair(s)[0]!==cachePair(s)[1])?'Experimental settings selected. Review feature details before starting.':'';
  $('default-source').textContent=source;
  $('recommendation-notes').replaceChildren(...(loadedDefaults?.notes||[]).map(note=>{const p=document.createElement('p');p.textContent=note;return p;}));
@@ -397,12 +442,12 @@ function defaultState(){
  $('default-evidence').querySelector('summary').textContent=changed.length?'Last loaded evidence':'Recommendation evidence';
  $('default-evidence').querySelector('pre').textContent=loadedDefaults?.evidence?JSON.stringify(loadedDefaults.evidence,null,2):'';
  const loadingBlocked=resolving||scanPending||!connected;
- $('load-default').textContent=`Load defaults for ${s.backend}`;
+ $('load-default').textContent=`Load defaults for ${backendLabel(s)}`;
  $('load-default').disabled=loadingBlocked||!savedExists;
- $('built-in-default').disabled=loadingBlocked||!s.model||!s.engine;
+ $('built-in-default').disabled=loadingBlocked||!s.model||(!s.engine&&!remoteBackend(s.backend));
  $('load-experiment').disabled=loadingBlocked;
  $('saved-unavailable').textContent=!savedExists?'No saved settings for this model and backend.':'';
- $('recommended-unavailable').textContent=!s.model||!s.engine?'Choose a model and engine first.':'';
+ $('recommended-unavailable').textContent=!s.model||(!s.engine&&!remoteBackend(s.backend))?'Choose a model and engine first.':'';
  $('settings-status').textContent=s.model?`Settings: ${names[loadedDefaults?.mode]||names.custom}${changed.length?' · Modified · Unsaved changes':savedFeedback?' · '+savedFeedback:mode==='result'?' · Not saved':''}`:'Settings will be prepared after you choose a model.';
  $('saved-note').textContent=savedExists&&mode==='recommended'?'Recommended settings are selected. Your saved settings are still available.':'';
  $('experiment-model').textContent=modelName(s.model);
@@ -420,23 +465,26 @@ function launchState(){
  const ready=connected&&!resolving&&validationSnapshot===snapshot()&&!pendingAction;
  let title='Start Model',status='Ready to start';
  if(!connected){title='Waiting for panel…';status='Panel connection unavailable. Last-known service state may be stale.';}
- else if(pendingAction||launchJob){title='Starting…';status=`Loading ${modelName(job.settings?.model||launch?.model)}${job.started_at?' · '+Math.max(0,Math.floor(Date.now()/1000-job.started_at))+'s elapsed':''}`;}
+ else if(pendingAction||launchJob){title='Starting…';status=`${running.provider&&running.phase?remotePhase(running):job.adopting?'Adopting a running remote call':'Loading '+modelName(job.settings?.model||launch?.model)}${job.started_at?' · '+Math.max(0,Math.floor(Date.now()/1000-job.started_at))+'s elapsed':''}`;}
  else if(experiment){title='Experiment running';status='The experiment owns the engine. View its progress or cancel it in Experiments.';}
- else if(running.ready&&same){title='Running';status=`Ready · ${modelName(running.settings?.model)}`;}
+ // A model can be up and still loading, after a restart or an adopted call.
+ // Saying "Running" there points a client at an endpoint that answers 503.
+ else if(running.running&&!running.ready){title='Loading model…';status=`${running.provider&&running.phase?remotePhase(running):'Loading '+modelName(running.settings?.model)}${running.elapsed_seconds?' · '+clockText(running.elapsed_seconds)+' elapsed':''} · requests get 503 until it is ready.`;}
+ else if(running.ready&&same){title='Running';status=`Ready · ${modelName(running.settings?.model)}${running.provider?' · '+backendLabel(running.settings):''}`;}
  else if(resolving){title='Preparing model…';status='Checking model identity, recommended settings and engine compatibility…';}
  else if(!validationSnapshot&&!validationError&&launch?.model&&s.engine){title='Checking settings…';status='Checking the selected settings before starting.';}
  else if(running.running){title=launch?.model===running.settings?.model?'Restart with these settings':`Switch to ${modelName(launch?.model)}`;status='This replaces the running model and interrupts its current requests.';}
  else if(!launch?.model){status='Choose or download a model to get started.';}
  else if(validationError){status='Setup needs attention before starting.';}
- $('start').textContent=title;$('start').disabled=!ready||!!job.active||(running.ready&&same)||view!=='launch';
+ $('start').textContent=title;$('start').disabled=!ready||!!job.active||(running.running&&!running.ready)||(running.ready&&same)||view!=='launch';
  $('start').hidden=connected&&!resolving&&!launch?.model&&!running.running&&!job.active;
  $('launch-status').textContent=status;
  $('stop').hidden=!(running.running||launchJob);$('stop').textContent=launchJob?'Cancel start':'Stop model';$('stop').disabled=!connected||pendingAction;
  $('copy-api').hidden=!running.ready;$('copy-api').disabled=!connected;
  $('connect-agent').hidden=!connected||!running.ready;
- $('resources-scope').textContent=connected?'Model workstation resources':'Model workstation resources · last known';
+ $('resources-scope').textContent=(hardwareSource&&hardwareSource!=='local'?`${backendInfo(hardwareSource)?.label||hardwareSource} GPU · selected for launch`:'Model workstation resources')+(connected?'':' · last known');
  $('connect-context').textContent=running.ready&&running.settings?`${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation on the running server.`:'';
- $('running-summary').textContent=running.running&&running.settings?`Current model: ${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation · ${running.ready?'ready':'loading'}`:'';
+ $('running-summary').textContent=running.running&&running.settings?`Current model: ${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation · ${running.ready?'ready':'still loading'}`:'';
  const rawError=actionError||running.error||(job.status==='failed'?job.error:'')||(view==='launch'&&s.model?validationError:'')||'';
  const friendlyError=explainError(rawError);
  $('launch-error').textContent=friendlyError;
@@ -444,21 +492,56 @@ function launchState(){
  $('experiment-error').textContent=view==='experiments'?(!connected?'Panel connection unavailable. Reconnect before running an experiment.':validationError||actionError||running.error||''):'';
  $('setup-actions').hidden=resolving||(!validationError&&connected&&!!launch?.model);
  $('browse-models').hidden=!!launch?.model;
- $('engine-setup').hidden=resolving||(!!discovered.engines?.some(e=>e.devices?.length)&&!!s.engine&&!/engine|llama-server|binary|backend|device/i.test(validationError));
+ $('engine-setup').hidden=resolving||remoteBackend(s.backend)||(!!discovered.engines?.some(e=>e.devices?.length)&&!!s.engine&&!/engine|llama-server|binary|backend|device/i.test(validationError));
  $('selection-note').textContent=selectionNote;
  $('launch-state').textContent=running.running&&!same?'Settings shown are for the next start. The current model is unchanged.':'';
  $('global-operation').hidden=!job.active;
- renderMarkup('global-operation',job.active?`${esc(launchJob?'Model starting':'Experiment running')} · ${esc(job.phase||job.status)} <a id="operation-progress" href="#${launchJob?'launch':'experiments'}">View progress</a>`:'');
+ renderMarkup('global-operation',job.active?`${esc(launchJob?'Model starting':'Experiment running')} · ${esc(running.provider&&running.phase?remotePhase(running):job.phase||job.status)} <a id="operation-progress" href="#${launchJob?'launch':'experiments'}">View progress</a>`:'');
  document.querySelectorAll('.run').forEach(b=>{b.disabled=!ready||!!job.active||view!=='experiments'||(b.dataset.mode==='combinations'&&!combinations.length);b.textContent=(running.running?'Stop model and run · ':'')+b.dataset.label;});
  $('cancel').disabled=!connected||!job.active||pendingAction;
  $('save-default').disabled=!ready||view!=='launch';
  modelControlsState();
  const loadingBlocked=resolving||scanPending||!connected;
- $('load-default').textContent=`Load defaults for ${s.backend}`;
+ $('load-default').textContent=`Load defaults for ${backendLabel(s)}`;
  $('load-default').disabled=loadingBlocked||!savedExists;
- $('built-in-default').disabled=loadingBlocked||!s.model||!s.engine;
+ $('built-in-default').disabled=loadingBlocked||!s.model||(!s.engine&&!remoteBackend(s.backend));
  $('load-experiment').disabled=loadingBlocked;
+ remoteStatusState(running,launchJob);
 }
+// Remote engines report a cold-start phase, cost and idle countdown while they run.
+const phaseNames={probing:'Checking the GPU type',"downloading model":'Downloading the model into remote storage',"starting container":'Starting the GPU container',"loading model":'Loading the model into GPU memory',ready:'Ready',stopped:'Stopped',"idle stopped":'Stopped when idle',exited:'The remote engine exited'};
+function remotePhase(e){
+ const d=e.download,gb=n=>(n/1e9).toFixed(1);
+ const progress=e.phase==='downloading model'&&d?` · ${d.file} ${gb(d.done_bytes)}${d.total_bytes?` / ${gb(d.total_bytes)} GB (${Math.floor(100*d.done_bytes/d.total_bytes)}%)`:' GB'}`:'';
+ return (phaseNames[e.phase]||e.phase||'Idle')+progress;
+}
+function remoteStatusState(running,launchJob){
+ const remote=!!running.provider,shown=remote&&(running.running||launchJob||running.phase==='idle stopped');
+ $('remote-status').hidden=!shown;
+ const info=backendInfo(running.provider),label=`${info?.label||running.provider||''} · ${running.gpu||''}`;
+ const s=settings();
+ $('remote-error').textContent=remoteBackend(s.backend)&&remoteState?.provider===s.backend&&remoteState.error?`${backendInfo(s.backend)?.label||s.backend} is unavailable: ${remoteState.error}`:'';
+ if(!shown)return;
+ if(running.phase==='idle stopped'){
+  const minutes=running.idle_timeout_seconds?Math.round(running.idle_timeout_seconds/60):null;
+  $('remote-phase').textContent=`${label}: stopped after ${minutes?minutes+' minute'+(minutes===1?'':'s'):'the idle timeout'} without requests, so it no longer bills. Start the model again when you need it.`;
+  $('remote-cost').textContent='';$('remote-idle-row').hidden=true;$('remote-caveat').textContent='';return;
+ }
+ $('remote-phase').textContent=`${label}: ${remotePhase(running)}${running.phase==='probing'?' (a first launch on this GPU type runs a short probe container)':''}`;
+ $('remote-cost').textContent=running.running?`Running ${clockText(running.elapsed_seconds)} · about ${money(running.estimated_cost_usd)} so far at ${hourlyRate(running.usd_per_hour)} · ${running.idle_remaining_seconds!=null?'idle stop in '+clockText(running.idle_remaining_seconds):running.ready&&!running.idle_timeout_seconds?'idle stop off: runs until you stop it':'idle timer starts when ready'}`:'No GPU container is billing yet.';
+ $('remote-idle-row').hidden=!running.running;
+ if(!running.running)idleEdited=false;
+ if(document.activeElement!==$('remote-idle')&&!idleEdited)$('remote-idle').value=running.idle_timeout_seconds?Math.round(running.idle_timeout_seconds/60):'';
+ $('remote-caveat').textContent=info?.caveat||'';
+}
+let idleEdited=false;
+$('remote-idle').addEventListener('input',()=>{idleEdited=true;});
+$('remote-idle-apply').onclick=()=>attempt(async()=>{
+ const value=$('remote-idle').value.trim(),minutes=value===''?null:Number(value);
+ await api('/api/remote/idle',{minutes});idleEdited=false;
+ message(minutes?`The running model now stops after ${minutes} idle minute${minutes===1?'':'s'}.`:'Idle stop is off for the running model. It bills until you stop it.');
+ await poll();
+});
 function explainError(error){
  if(/out of memory|cuda.*alloc|failed to allocate|insufficient.*memory/i.test(error))return 'Not enough memory for this configuration. Close unused applications, choose Auto GPU placement, or reduce context under Customize, then try again.';
  if(/exceed.*context|context.*exceed|context.*overflow|prompt.*too long/i.test(error))return 'The request exceeds the context window. Increase context and restart the model, or shorten the conversation. Relaunch your agent after changing context.';
@@ -466,8 +549,13 @@ function explainError(error){
  if(/no such file|not found|does not exist|disappear/i.test(error))return 'A selected model or engine file is unavailable. Check its path under Customize or rescan model locations.';
  return error.length>240?'The operation could not complete. Open the exact error details and engine logs, check the selected settings, then try again.':error;
 }
+let hardwareSource='local';
 function renderHardware(hardware){
  const gpus=hardware.gpus||[],fmt=n=>Number.isFinite(n)?n.toFixed(1):'—';
+ hardwareSource=hardware.source||'local';
+ const remote=hardwareSource!=='local';
+ $('ram').hidden=remote;$('memory-details').hidden=remote;
+ if(remote){$('gpu').textContent=gpus.map(g=>`${g.name} · ${hardware.gpu_type}`).join(' · ')||hardware.gpu_type;$('vram').textContent=gpus.map(g=>`VRAM ${fmt(g.total_mib/1024)} GiB`).join(' · ');return;}
  $('gpu').textContent=gpus.length?gpus.map(g=>g.name).join(' · '):'No NVIDIA GPU detected';
  $('vram').textContent=gpus.length?gpus.map((g,i)=>`${gpus.length>1?'GPU '+(g.index??i)+' ':''}VRAM ${fmt(Number.isFinite(g.used_mib)?g.used_mib/1024:NaN)} / ${fmt(Number.isFinite(g.total_mib)?g.total_mib/1024:NaN)} GiB`).join(' · '):'VRAM unavailable';
  const ram=hardware.ram||{};
@@ -475,9 +563,13 @@ function renderHardware(hardware){
  $('ram-available').textContent=Number.isFinite(ram.available_gib)?`${fmt(ram.available_gib)} GiB RAM available to applications.`:'Available RAM could not be read.';
 }
 const pendingDownloads=new Set();
+// Key a pending download the way its click handler does: a remote download is
+// held under `${backend}:${id}`, so reading data-download alone would miss it
+// and a rerender would enable the button in the middle of the request.
+const downloadKey=b=>b.dataset.remoteDownload?`${b.dataset.store||currentLaunch()?.backend}:${b.dataset.remoteDownload}`:b.dataset.download;
 function modelControlsState(){
- for(const b of document.querySelectorAll('[data-select-model],[data-download],[data-verify]')){
-  b.disabled=!connected||pendingAction||pendingDownloads.has(b.dataset.download)||(b.dataset.selectModel?(resolving||scanPending||b.dataset.selectModel===currentLaunch()?.model):false);
+ for(const b of document.querySelectorAll('[data-select-model],[data-download],[data-verify],[data-remote-download],[data-remote-remove]')){
+  b.disabled=!connected||pendingAction||pendingDownloads.has(downloadKey(b))||(b.dataset.selectModel?(resolving||scanPending||b.dataset.selectModel===currentLaunch()?.model):false);
  }
 }
 function renderMarkup(id,markup){
@@ -489,7 +581,24 @@ function renderMarkup(id,markup){
  if(focused)($(focused)||$('find-more'))?.focus({preventScroll:true});
 }
 function setModelFilter(filter){if(filter==='catalog'){location.hash='find';attempt(()=>switchView('find'));return;}renderRecommendations();}
+function renderRemoteChoices(backend){
+ const catalog=discovered.catalog||[],selected=currentLaunch()?.model,label=backendInfo(backend)?.label||backend;
+ const known=remoteState?.provider===backend&&!remoteState.error,stored=new Set(known?remoteState.stored_ids:[]);
+ const rows=[...catalog].filter(c=>c.path).sort((a,b)=>(a.recommendation?.rank||999)-(b.recommendation?.rank||999)||String(a.name).localeCompare(b.name));
+ $('installed-count').textContent=known?`${rows.length} in catalogue · ${stored.size} in ${label} storage`:`${rows.length} in catalogue`;
+ renderMarkup('recommended-list',rows.map(c=>{
+  const job=(statusState.downloads||[]).find(d=>d.id===`${backend}:${c.id}`),active=job&&['queued','downloading'].includes(job.state);
+  const storedName=remoteState?.models?.find(m=>m.catalogue_id===c.id)?.name;
+  const presence=!known?`${label} storage contents unknown`:active?`Downloading into ${label} storage · ${job.percent||0}%`:stored.has(c.id)?`In ${label} storage · starts without a download`:`Not in ${label} storage · the first start downloads it inside ${label}`;
+  const actions=[selected===c.path?`<span class="selected-label">✓ Selected<span class="visually-hidden">: ${esc(c.display_name||c.name)}</span></span>`:`<button id="remote-use-${esc(c.id)}" aria-label="Use model: ${esc(c.display_name||c.name)}" data-select-model="${esc(c.path)}">Use this model</button>`];
+  if(known&&(active||!stored.has(c.id)))actions.push(`<button id="remote-download-${esc(c.id)}" data-remote-download="${esc(c.id)}" data-active="${!!active}">${active?'Cancel download':'Download to '+esc(label)}</button>`);
+  if(known&&storedName&&!active)actions.push(`<button id="remote-remove-${esc(c.id)}" data-remote-remove="${esc(storedName)}">Remove from ${esc(label)}…</button>`);
+  return `<div class="model-choice ${selected===c.path?'selected':''}"${selected===c.path?' aria-current="true"':''}><div><b>${esc(c.display_name||c.recommendation?.name||c.name)}</b>${c.recommendation?` <span class="pill">${esc(c.recommendation.label)}</span>`:''}${stored.has(c.id)?` <span class="pill stored">In ${esc(label)}</span>`:''}<small>${esc(c.recommendation?.variant||c.quant||c.file)} · ${esc(c.size_gb??'Unknown')} GB · ${esc(c.fit||'')}</small><small>${esc(presence)}</small></div><div class="row">${actions.join('')}</div></div>`;
+ }).join('')||'<p class="muted">The catalogue is empty. Find models to add one.</p>');
+ renderCatalogue();$('model-browser-note').textContent='';modelControlsState();
+}
 function renderRecommendations(){
+ if(remoteBackend(currentLaunch()?.backend)){renderRemoteChoices(currentLaunch().backend);return;}
  const catalog=discovered.catalog||[],models=discovered.models||[],selected=currentLaunch()?.model;
  const rank=m=>catalog.find(c=>c.id===m.catalog_id)?.recommendation?.rank||999;
  const rows=[...models].sort((a,b)=>rank(a)-rank(b)||a.path.localeCompare(b.path));
@@ -509,20 +618,26 @@ function renderDownloads(){
  if(!discovered.catalog)return;
  const ds=statusState.downloads||[];
  $('download-section').hidden=!ds.length;
- renderMarkup('active-downloads',ds.map(d=>`<div class="download-row" id="download-${esc(d.id)}"><div class="row"><div><h3>${esc(d.name)}</h3><small data-download-status></small></div><button id="download-action-${esc(d.id)}"></button></div><progress aria-label="${esc(d.name)} download progress"></progress><details id="download-detail-${esc(d.id)}"><summary id="download-summary-${esc(d.id)}">Download details</summary><small data-download-detail></small></details></div>`).join(''));
+ renderMarkup('active-downloads',ds.map(d=>`<div class="download-row" id="download-${esc(d.id)}"><div class="row"><div><h3>${esc(d.name)}</h3><small data-download-status></small></div><button id="download-action-${esc(d.id)}"></button></div><p class="error download-reason" data-download-reason hidden></p><progress aria-label="${esc(d.name)} download progress"></progress><details id="download-detail-${esc(d.id)}"><summary id="download-summary-${esc(d.id)}">Download details</summary><small data-download-detail></small></details></div>`).join(''));
  for(const d of ds){
   const row=$('download-'+d.id),active=['queued','downloading'].includes(d.state),button=$('download-action-'+d.id);
-  row.querySelector('[data-download-status]').textContent=`${d.state==='complete'?'Downloaded':d.state} · ${d.done_gb??0} / ${d.total_gb||'unknown'} GB${active?` · ${d.rate_mib_s??0} MiB/s`:''}`;
+  row.querySelector('[data-download-status]').textContent=`${d.store?(backendInfo(d.store)?.label||d.store)+' storage · ':''}${d.state==='complete'?'Downloaded':d.state} · ${d.done_gb??0} / ${d.total_gb||'unknown'} GB${active?` · ${d.rate_mib_s??0} MiB/s`:''}`;
   row.querySelector('[data-download-detail]').textContent=[d.target,d.file,d.detail].filter(Boolean).join(' · ');
+  // The reason belongs with the download, not only inside its details.
+  const reason=row.querySelector('[data-download-reason]'),failed=d.state==='error';
+  reason.hidden=!failed;reason.textContent=failed?(d.detail||'The download failed.'):'';
   const progress=row.querySelector('progress');progress.max=100;if(d.total_gb)progress.value=Math.min(100,Math.max(0,d.percent||0));else progress.removeAttribute('value');progress.hidden=!active;
-  delete button.dataset.selectModel;delete button.dataset.download;delete button.dataset.active;
+  delete button.dataset.selectModel;delete button.dataset.download;delete button.dataset.active;delete button.dataset.remoteDownload;delete button.dataset.store;
+  // Kept bytes resume, so say so rather than implying a fresh download.
+  const label=active?'Cancel download':d.done_gb?'Resume download':'Retry download';
   if(d.state==='complete'){
    button.hidden=true;delete button.dataset.verify;
-  }else{button.hidden=false;delete button.dataset.verify;button.textContent=active?'Cancel download':'Retry download';button.dataset.download=d.id;button.dataset.active=String(active);}
+  }else if(d.store){button.hidden=false;delete button.dataset.verify;button.textContent=label;button.dataset.remoteDownload=d.catalogue_id;button.dataset.store=d.store;button.dataset.active=String(active);}
+  else{button.hidden=false;delete button.dataset.verify;button.textContent=label;button.dataset.download=d.id;button.dataset.active=String(active);}
   button.setAttribute('aria-label',button.textContent+' · '+d.name);
   button.disabled=!connected||resolving||scanPending||pendingAction;
  }
- const notice=ds.some(d=>d.state==='complete')?'Download complete. Open Launch or Experiments to use the model.':ds.some(d=>d.state==='error')?'A download failed. Open its details, then retry.':ds.some(d=>['queued','downloading'].includes(d.state))?'Downloading to the model workstation. You can continue using the panel.':'';
+ const notice=ds.some(d=>d.state==='complete')?'Download complete. Open Launch or Experiments to use the model.':ds.some(d=>d.state==='error')?'A download failed. Its reason is shown with it.':ds.some(d=>['queued','downloading'].includes(d.state))?'Downloading to the model workstation. You can continue using the panel.':'';
  if($('download-notice').textContent!==notice)$('download-notice').textContent=notice;
  renderRecommendations();
 }
@@ -531,15 +646,16 @@ async function scan(){
  let applied=false;scanPending=true;const n=++selectionSequence;resolving=true;validationSnapshot='';defaultState();launchState();
  const before=settings();
  try{
-  const data=await api('/api/discover',{});
+  const data=await api('/api/discover',selection());
   if(n!==selectionSequence)return;
   discovered=data;applied=true;
+  for(const b of data.backends||[])if(!Array.from($('backend').options).some(o=>o.value===b.name))$('backend').add(new Option(`${b.label} · remote GPU`,b.name));
   $('model').replaceChildren(new Option('Choose an installed model',''),...data.models.map(m=>new Option(`${modelName(m.path)} · ${m.path}`,m.path)));
   $('engine-list').replaceChildren(...data.engines.map(e=>{const o=new Option(e.path,e.path);o.label=e.devices?.join(', ')||'No GPU device';return o;}));
   renderDownloads();
   const initial=!discoveredOnce;discoveredOnce=true;
   const running=statusState.engine?.running?statusState.engine.settings:statusState.job?.kind==='launch'&&statusState.job?.active?statusState.job.settings:null;
-  if(initial&&running){loadedDefaults={settings:running,mode:'running',source:'Current model settings',notes:['Showing the current operation. No saved preferences changed.']};fill(running);await inspect();}
+  if(initial&&running){loadedDefaults={settings:running,mode:'running',source:'Current model settings',notes:['Showing the current operation. No saved preferences changed.']};lastBackend=running.backend;fill(running);await inspect();refreshRemote();}
   else if(before.model){fill(before);await inspect();}
   else if(initial){await selectModel('');}
   else{fill(before);await inspect();}
@@ -552,7 +668,8 @@ async function selectModel(path){
  if(path){if(!Array.from($('model').options).some(o=>o.value===path))$('model').add(new Option(modelName(path),path));$('model').value=path;}
  defaultState();launchState();
  try{
-  const data=await api('/api/launch/select',{model:path,...(engineOverride?{engine:$('engine').value,backend:$('backend').value,device:$('device').value}:{})});
+  const backend=$('backend').value;
+  const data=await api('/api/launch/select',{model:path,...(remoteBackend(backend)?{backend,gpu_type:$('gpu_type').value}:engineOverride?{engine:$('engine').value,backend,device:$('device').value}:{})});
   if(n!==selectionSequence)return;
   selectionNote=data.reason||'';
   if(data.settings){loadedDefaults={...data,mode:'recommended'};fill(data.settings);await inspect();}
@@ -576,19 +693,19 @@ async function inspect(){
  $('model-facts').textContent=(discovered.models?.find(m=>m.path===selected.model)?.metadata.context?'Checkpoint metadata context limit: '+discovered.models.find(m=>m.path===selected.model).metadata.context.toLocaleString()+' tokens. ':'')+'Usable allocation is shown above.';
  launchState();
  // Without an engine, the server's selection reason (such as no GPU detected) names the real cause.
- if(!selected.model||!selected.engine){validationError=!selected.model?'Choose or download a model.':selectionNote||'Choose an installed GPU-enabled llama-server under Customize settings.';launchState();return;}
+ if(!selected.model||(!selected.engine&&!remoteBackend(selected.backend))){validationError=!selected.model?'Choose or download a model.':selectionNote||'Choose an installed GPU-enabled llama-server under Customize settings.';launchState();return;}
  $('features').textContent='Checking support…';
  try{
   const [c,v]=await Promise.all([api('/api/capabilities',{settings:selected}),api('/api/launch/check',{settings:selected})]);
   if(n!==validationSequence||key!==snapshot())return;
   featureState=c.features;savedExists=v.saved_exists;
-  const devices=c.engine.devices.filter(d=>d.startsWith(selected.backend));
+  const gpuBackend=remoteBackend(selected.backend)?'CUDA':selected.backend,devices=c.engine.devices.filter(d=>d.startsWith(gpuBackend));
   $('device').replaceChildren(...[...new Set([selected.device,...devices])].map(d=>new Option(d||'Choose device',d)));
   $('device').value=selected.device;
-  $('device-hint').textContent=devices.includes(selected.device)?'':`Choose a detected ${selected.backend} device or a matching engine build.`;
+  $('device-hint').textContent=devices.includes(selected.device)||remoteBackend(selected.backend)?'':`Choose a detected ${selected.backend} device or a matching engine build.`;
   $('device-probe').hidden=devices.includes(selected.device);$('device-output').textContent=c.engine.error||c.engine.device_output||'';
   const alternative=discovered.engines?.find(e=>e.path!==selected.engine&&e.devices?.some(d=>d.startsWith(selected.backend)));
-  if(!devices.length&&alternative){$('engine-alternative').hidden=false;$('use-backend-engine').textContent=`Use matching ${selected.backend} build`;$('backend-engine-path').textContent=alternative.path;$('use-backend-engine').onclick=()=>attempt(async()=>{
+  if(!devices.length&&alternative&&!remoteBackend(selected.backend)){$('engine-alternative').hidden=false;$('use-backend-engine').textContent=`Use matching ${selected.backend} build`;$('backend-engine-path').textContent=alternative.path;$('use-backend-engine').onclick=()=>attempt(async()=>{
     if(key!==snapshot())return;
     $('engine').value=alternative.path;$('device').replaceChildren(new Option(alternative.devices.find(d=>d.startsWith(selected.backend))));engineOverride=true;await loadDefaults();
   });}
@@ -613,11 +730,17 @@ async function poll(){
  if(pollPending)return;
  pollPending=true;
  try{
-  const s=await api('/api/status');statusState=s;token=s.token;connected=true;
+  const q=selection(),s=await api('/api/status?'+new URLSearchParams(q));const previous=statusState;statusState=s;token=s.token;connected=true;
+  if(previous.engine?.phase!==s.engine.phase||previous.job?.status!==s.job.status){
+   if(s.engine.phase==='idle stopped'&&previous.engine?.phase&&previous.engine.phase!=='idle stopped')message('The remote model stopped after its idle timeout, so it no longer bills.');
+   if(remoteBackend(q.backend)&&previous.engine)refreshRemote();
+   if(s.job.adopting&&s.job.status==='serving'&&s.engine.settings&&adoptedFill!==s.job.adopting){adoptedFill=s.job.adopting;loadedDefaults={settings:s.engine.settings,mode:'running',source:'Current model settings',notes:['Adopted a running remote call. No saved preferences changed.']};lastBackend=s.engine.settings.backend;fill(s.engine.settings);attempt(inspect);}
+  }
   $('app-version').textContent=s.version?`Version ${s.version}`:'';
   if(startAttempt&&s.job.request_id===startAttempt.request_id&&['failed','cancelled','serving'].includes(s.job.status))startAttempt=null;
   renderHardware(s.hardware);
-  $('endpoint').textContent=s.engine.ready?`API on model workstation: ${s.endpoint}`:'';
+  // An endpoint that is up but not ready answers 503, so do not offer it yet.
+  $('endpoint').textContent=s.engine.ready?`API on model workstation: ${s.endpoint}`:s.engine.running?`API not ready: ${s.endpoint} answers 503 while the model loads.`:'';
   $('paths').textContent=`Models: ${s.paths.models}. Engine roots: ${s.paths.engines.join(', ')}. Configure LLLM2_MODELS_DIR and LLLM2_ENGINE_ROOTS before starting the panel.`;
   $('job').textContent=`${s.job.status}${s.job.current?' · '+s.job.current:''}`;
   $('job-detail').textContent=[s.job.phase,s.job.error,...(s.job.skipped||[]).map(x=>`${x.option}: ${x.reason}`)].filter(Boolean).join(' · ');
@@ -625,7 +748,7 @@ async function poll(){
   $('logs').textContent=[(s.engine.argv||[]).join(' '),'',...(s.engine.logs||[])].join('\n');
   renderDownloads();launchState();resultDeleteControls();
   const complete=(s.downloads||[]).filter(d=>d.state==='complete').map(d=>d.id).sort().join('|');
-  if(complete!==lastDownloads){if(!discoveredOnce)lastDownloads=complete;else if(!scanPending&&await scan())lastDownloads=complete;}
+  if(complete!==lastDownloads){if(!discoveredOnce)lastDownloads=complete;else if(!scanPending&&await scan()){lastDownloads=complete;refreshRemote();}}
   if(view==='experiments'){try{await refreshResults();}catch(e){message('Experiment history could not be refreshed: '+e.message,true);}}
  }catch(e){connected=false;launchState();}
  finally{pollPending=false;}
@@ -645,7 +768,17 @@ $('gpu-placement').onchange=()=>{
 for(const id of ['choose-engine','manage-engine'])$(id).onclick=()=>{customize(true);$('engine').focus();};
 $('model').onchange=()=>attempt(()=>selectModel($('model').value));
 for(const k of settingKeys){if(k!=='model')$(k).addEventListener('input',()=>edited(k));}
-for(const k of ['engine','backend'])$(k).onchange=()=>{clearTimeout(editTimer);attempt(loadDefaults);};
+for(const k of ['engine','gpu_type'])$(k).onchange=()=>{clearTimeout(editTimer);syncBackend();attempt(loadDefaults);};
+let lastBackend='CUDA';
+// Crossing between local and remote backends reselects the model for the new target.
+$('backend').onchange=()=>attempt(async()=>{
+ clearTimeout(editTimer);
+ const backend=$('backend').value,remote=remoteBackend(backend),wasRemote=remoteBackend(lastBackend);lastBackend=backend;
+ if(remote===wasRemote&&!remote){syncBackend();await loadDefaults();return;}
+ const model=$('model').value;
+ if(remote){$('engine').value='';$('device').replaceChildren(new Option('CUDA0','CUDA0'));gpuOptions(backend,$('gpu_type').value);syncBackend();await refreshRemote();await selectModel(model||'');}
+ else{gpuOptions(backend,'');$('engine').value='';$('device').replaceChildren(new Option('Choose device',''));engineOverride=true;syncBackend();await refreshRemote();await selectModel(discovered.models?.some(m=>m.path===model)?model:'');}
+});
 $('load-default').onclick=()=>{$('load-menu').open=false;attempt(()=>loadDefaults('saved'));};
 $('built-in-default').onclick=()=>{$('load-menu').open=false;attempt(()=>loadDefaults('built-in'));};
 document.addEventListener('click',e=>{if(!$('load-menu').contains(e.target))$('load-menu').open=false;});
@@ -667,7 +800,7 @@ $('start').onclick=()=>attempt(async()=>{
 });
 for(const k of ['stop','cancel'])$(k).onclick=()=>attempt(async()=>{
  if(pendingAction)return;pendingAction=true;launchState();
- try{await api('/api/'+k,{});actionError='';}finally{await poll();pendingAction=false;launchState();}
+ try{await api('/api/'+k,{});actionError='';}finally{await poll();pendingAction=false;launchState();refreshRemote();}
 });
 async function copyText(text,label,workstation=true){
  try{await navigator.clipboard.writeText(text);message(label+' copied.'+(workstation?' Use it on the model workstation.':''));}
@@ -683,6 +816,16 @@ document.querySelectorAll('[data-agent]').forEach(b=>b.onclick=()=>{
 });
 async function downloadClick(e){
  if(e.target.closest('[data-verify]')){await scan();return;}
+ const remoteDownload=e.target.closest('[data-remote-download]');
+ if(remoteDownload){
+  if(remoteDownload.disabled)return;const backend=remoteDownload.dataset.store||currentLaunch()?.backend,key=`${backend}:${remoteDownload.dataset.remoteDownload}`;
+  pendingDownloads.add(key);remoteDownload.disabled=true;
+  try{if(remoteDownload.dataset.active==='true')await api('/api/remote/download/cancel',{id:key});else{await api('/api/remote/download',{backend,id:remoteDownload.dataset.remoteDownload});message(`Downloading inside ${backendInfo(backend)?.label||backend}; no weights pass through this workstation. Progress also shows in the Downloads card on Launch model.`);}await poll();}
+  finally{pendingDownloads.delete(key);renderDownloads();}
+  return;
+ }
+ const remoteRemove=e.target.closest('[data-remote-remove]');
+ if(remoteRemove){if(!remoteRemove.disabled)openRemoteRemove(remoteRemove.dataset.remoteRemove);return;}
  if(e.target.closest('#empty-browse')){setModelFilter('catalog');$('nav-find').focus();return;}
  const variant=e.target.closest('[data-select-model]');
  if(variant){if(variant.disabled)return;await selectModel(variant.dataset.selectModel);return;}
@@ -766,9 +909,12 @@ $('experiment-picker').addEventListener('cancel',()=>pickerSequence++);
 $('experiment-options').onclick=e=>{const b=e.target.closest('[data-result]');if(!b||b.disabled)return;$('experiment-picker').close();attempt(()=>previewResult(b.dataset.result,b.dataset.hasContext==='true'&&contextChoice!=='original'));};
 // Find models keeps discovery and catalogue actions separate from launch drafts.
 let findLoaded=false,findBusy=false,findEntries=[],removingId=null;
-let findSort={key:null,direction:0};
+// The selection whose hardware scored the current rows, as JSON, or null.
+let findSelection=null;
+let findSort={key:null,direction:0},findShowIssues=false;
 const findColumns=[['display_name','Model'],['repo','Publisher / repository'],['quant','Quantisation'],['size_gb','Size GB','number'],['fit','Suitability'],['task','Task'],['downloads','Downloads','number'],['likes','Likes','number'],['updated','Updated'],['license','Licence']];
-$('find-table').querySelector('thead').innerHTML='<tr>'+findColumns.map(([key,label])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}"><span>${label}</span><span aria-hidden="true">↕</span></button></th>`).join('')+'<th scope="col">Catalogue</th></tr><tr class="find-filter-row">'+findColumns.map(([key,label,type])=>`<td>${type==='number'?`<div class="find-number-filter"><input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max"></div>`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" aria-describedby="find-filter-help" title="Space-separated terms must all match. Prefix ! to exclude; use quotes for phrases." placeholder="Filter ${label.toLowerCase()}">`}</td>`).join('')+'<td></td></tr>';
+// The catalogue action leads, so adding a model needs no sideways scrolling.
+$('find-table').querySelector('thead').innerHTML='<tr><th scope="col">Catalogue</th>'+findColumns.map(([key,label])=>`<th scope="col" aria-sort="none"><button type="button" data-find-sort="${key}"><span>${label}</span><span aria-hidden="true">↕</span></button></th>`).join('')+'</tr><tr class="find-filter-row"><td></td>'+findColumns.map(([key,label,type])=>`<td>${type==='number'?`<div class="find-number-filter"><input type="number" min="0" step="any" data-find-min="${key}" aria-label="Minimum ${label}" placeholder="Min"><input type="number" min="0" step="any" data-find-max="${key}" aria-label="Maximum ${label}" placeholder="Max"></div>`:`<input type="search" data-find-filter="${key}" aria-label="Filter ${label}" aria-describedby="find-filter-help" title="Space-separated terms must all match. Prefix ! to exclude; use quotes for phrases." placeholder="Filter ${label.toLowerCase()}">`}</td>`).join('')+'</tr>';
 
 function findTextTerms(query){
  // An unfinished quoted phrase remains usable while typing; a lone ! is ignored.
@@ -801,10 +947,13 @@ function filteredFindEntries(ignoreSuitable=false){
  });
 }
 function renderFind(){
- const rows=filteredFindEntries();
+ const matched=filteredFindEntries();
+ // A variant with an issue cannot be added at all, so it stays out of the way
+ // until the reader asks to see why.
+ const blocked=matched.filter(e=>e.issue),rows=findShowIssues?matched:matched.filter(e=>!e.issue);
  // Name the suitability filter only when clearing it would show rows.
- const unsuitable=!rows.length&&$('find-suitable').checked&&filteredFindEntries(true).length>0;
- const empty=unsuitable?'No variants are likely to fit this workstation’s GPU or RAM. Clear “Likely suitable only” to see them all.':'No matching variants. Try a different search or relax the filters.';
+ const unsuitable=!matched.length&&$('find-suitable').checked&&filteredFindEntries(true).length>0;
+ const empty=unsuitable?'No variants are likely to fit the selected hardware. Clear “Likely suitable only” to see them all.':blocked.length?'Every matching variant has something that stops it being added. Choose “Show them” to see why.':'No matching variants. Try a different search or relax the filters.';
  for(const button of $('find-table').querySelectorAll('[data-find-sort]')){
   const key=button.dataset.findSort,active=key===findSort.key;
   button.parentElement.setAttribute('aria-sort',active?(findSort.direction===1?'ascending':'descending'):'none');
@@ -814,22 +963,30 @@ function renderFind(){
  }
  $('find-table').querySelector('tbody').innerHTML=rows.map(e=>{
   const saved=(discovered.catalog||[]).some(c=>c.repo===e.repo&&c.file===e.file);
-  return `<tr${saved?' class="find-in-catalogue"':''}>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+`<td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td></tr>`;
+  return `<tr${saved?' class="find-in-catalogue"':''}><td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+'</tr>';
  }).join('')||`<tr><td colspan="11">${esc(empty)}</td></tr>`;
  $('find-count').textContent=`${rows.length} of ${findEntries.length} variants shown.`;
+ const reasons=new Map();
+ for(const e of blocked)reasons.set(e.issue,(reasons.get(e.issue)||0)+1);
+ $('find-hidden').hidden=!blocked.length;
+ $('find-hidden-summary').textContent=blocked.length?`${blocked.length} result${blocked.length===1?'':'s'} cannot be added: ${[...reasons].map(([issue,n])=>`${issue.replace(/\.$/,'')} (${n})`).join(', ')}.`:'';
+ $('find-hidden-toggle').textContent=findShowIssues?'Hide them':'Show them';
 }
 async function searchHF(refresh=false){
  if(findBusy)return;findBusy=true;$('find-search').disabled=$('find-refresh').disabled=true;
  $('find-status').textContent='Reading Hugging Face metadata…';
+ // The server scores suitability against the selected backend and GPU type,
+ // so keep the selection these rows describe and search again when it changes.
+ const chosen=selection();
  try{
-  const result=await api('/api/models/find',{query:$('find-query').value,refresh});
-  findEntries=result.entries.sort((a,b)=>a.fit_rank-b.fit_rank||b.downloads-a.downloads||b.updated.localeCompare(a.updated)||a.repo.localeCompare(b.repo));findLoaded=true;renderFind();
+  const result=await api('/api/models/find',{query:$('find-query').value,refresh,...chosen});
+  findEntries=result.entries.sort((a,b)=>a.fit_rank-b.fit_rank||b.downloads-a.downloads||b.updated.localeCompare(a.updated)||a.repo.localeCompare(b.repo));findLoaded=true;findSelection=JSON.stringify(chosen);renderFind();
   $('find-status').textContent=`${result.repositories} repositories inspected · metadata fetched ${new Date(result.fetched_at*1000).toLocaleString()}. ${result.warning||''}`;
  }catch(e){$('find-status').textContent=e.message;}
  finally{findBusy=false;$('find-search').disabled=$('find-refresh').disabled=false;}
 }
 async function loadCatalogue(){
- const result=await api('/api/catalogue',{});discovered.catalog=result.entries;renderRecommendations();renderFind();
+ const result=await api('/api/catalogue',selection());discovered.catalog=result.entries;renderRecommendations();renderFind();
 }
 function renderCatalogue(){
  const entries=discovered.catalog||[];
@@ -837,10 +994,11 @@ function renderCatalogue(){
   const job=(statusState.downloads||[]).find(d=>d.id===e.id),active=job&&['queued','downloading'].includes(job.state);
   const installed=e.installed===true||(e.installed===undefined&&job?.state==='complete');
   return `<div class="model-choice"><div><b>${esc(e.display_name||e.name)}</b><small>${esc(e.repo)} · ${esc(e.quant||e.file)} · ${esc(e.size_gb??'Unknown')} GB</small><small>${esc(e.fit||'')} ${installed?' · Downloaded':''}</small></div><div class="row">${installed&&!active?'<span class="pill">Downloaded</span>':`<button id="catalog-download-${esc(e.id)}" data-download="${esc(e.id)}" data-active="${!!active}">${active?'Cancel download':'Queue download'}</button>`}<button data-catalogue-remove="${esc(e.id)}" ${active?'disabled':''}>Remove…</button></div></div>`;
- }).join('')||'<p>Your catalogue is empty. Add a variant from the results above.</p>');
+ }).join('')||'<p>Your catalogue is empty. Add a variant from <a href="#find">Find models</a>.</p>');
 }
 $('find-form').onsubmit=e=>{e.preventDefault();searchHF();};
 $('find-refresh').onclick=()=>searchHF(true);
+$('find-hidden-toggle').onclick=()=>{findShowIssues=!findShowIssues;renderFind();};
 $('find-clear').onclick=()=>{for(const input of $('find-table').querySelectorAll('thead input'))input.value='';renderFind();};
 for(const id of ['find-suitable','find-instruct','find-quants'])$(id).onchange=renderFind;
 $('find-table').querySelector('thead').oninput=renderFind;
@@ -864,4 +1022,54 @@ $('remove-model-confirm').onclick=async()=>{
  catch(e){$('remove-model-error').textContent=e.message;}
  finally{$('remove-model-confirm').disabled=false;}
 };
-(async()=>{await poll();await scan();if(['#find','#experiments'].includes(location.hash))await switchView(location.hash.slice(1));slotNote();setInterval(poll,2500);})();
+// Remote storage and calls come from the provider account, so they refresh on demand.
+let remoteState=null,remoteSequence=0,remoteRemoving=null,orphans=[],adoptedFill=null;
+async function refreshRemote(){
+ const backend=currentLaunch()?.backend;
+ if(!remoteBackend(backend)){remoteState=null;renderRemote();return;}
+ const n=++remoteSequence;
+ try{const d=await api('/api/remote',{backend});if(n!==remoteSequence)return;remoteState=d;}
+ catch(e){if(n!==remoteSequence)return;remoteState={provider:backend,error:e.message,models:[],stored_ids:[],calls:[]};}
+ renderRemote();renderRecommendations();launchState();
+}
+function renderRemote(){
+ const backend=currentLaunch()?.backend,remote=remoteBackend(backend),label=backendInfo(backend)?.label||backend;
+ $('remote-storage').hidden=!remote;if(!remote)return;
+ const state=remoteState?.provider===backend?remoteState:null,models=state?.models||[];
+ $('remote-storage-summary').textContent=`${label} storage & running calls${state&&!state.error?` · ${models.length} stored model${models.length===1?'':'s'}`:''}`;
+ $('remote-storage-error').textContent=state?.error?`${label} is unavailable: ${state.error}`:'';
+ $('remote-storage-note').textContent=state?`Models stored in ${label} start without a download. Storage may be billed by ${label}. ${(state.calls||[]).length} lllm2 call${(state.calls||[]).length===1?'':'s'} running.`:`Checking ${label}…`;
+ renderMarkup('remote-models',models.map(m=>`<div class="remote-model"><div><b>${esc(m.display_name||m.name)}</b><small>${esc(m.name)} · ${(m.size_bytes/1e9).toFixed(1)} GB${m.in_use.length?' · in use by call '+esc(m.in_use.join(', ')):''}</small></div><button id="remote-store-remove-${esc(encodeURIComponent(m.name))}" data-remote-remove="${esc(m.name)}" ${m.in_use.length?'disabled':''}>Remove…</button></div>`).join('')+(state?.calls||[]).map(c=>`<div class="remote-model"><div><b>Call ${esc(c.id)} · ${esc(c.gpu||'unknown GPU')} · ${esc(c.status)}</b><small>${esc(modelName(c.model))} · running ${clockText(c.elapsed_seconds)} · about ${money(c.estimated_cost_usd)}</small></div></div>`).join('')||(state&&!state.error?`<p class="muted">No models stored in ${esc(label)} yet.</p>`:''));
+}
+$('remote-refresh').onclick=()=>attempt(async()=>{await refreshRemote();await refreshOrphans();});
+$('remote-models').onclick=e=>{const b=e.target.closest('[data-remote-remove]');if(b&&!b.disabled)openRemoteRemove(b.dataset.remoteRemove);};
+function openRemoteRemove(name){
+ remoteRemoving={backend:currentLaunch()?.backend,name};
+ $('remote-remove-name').textContent=`${name} · ${backendInfo(remoteRemoving.backend)?.label||remoteRemoving.backend} storage`;
+ $('remote-remove-error').textContent='';$('remote-remove-dialog').showModal();$('remote-remove-cancel').focus();
+}
+$('remote-remove-cancel').onclick=()=>$('remote-remove-dialog').close();
+$('remote-remove-confirm').onclick=async()=>{
+ $('remote-remove-confirm').disabled=true;
+ try{remoteState=await api('/api/remote/models/remove',remoteRemoving);$('remote-remove-dialog').close();message(`Removed ${remoteRemoving.name} from remote storage.`);renderRemote();renderRecommendations();}
+ catch(e){$('remote-remove-error').textContent=e.message;}
+ finally{$('remote-remove-confirm').disabled=false;}
+};
+async function refreshOrphans(){
+ try{orphans=(await api('/api/remote/orphans',{backend:currentLaunch()?.backend||''})).orphans;}catch{orphans=[];}
+ renderOrphans();
+}
+function renderOrphans(){
+ $('orphan-banner').hidden=!orphans.length;
+ const running=!!statusState.engine?.running;
+ renderMarkup('orphan-banner',orphans.length?`<h2>${orphans.length===1?'A remote model is':'Remote models are'} still running from an earlier session</h2><p class="muted">No running lllm2 session owns ${orphans.length===1?'this call':'these calls'}, so ${orphans.length===1?'it bills':'they bill'} until adopted or stopped.</p>`+orphans.map(o=>{const label=backendInfo(o.provider)?.label||o.provider;return `<div class="orphan-row"><div><b>${esc(label)} · ${esc(o.gpu||'unknown GPU')} · ${esc(modelName(o.model))}</b><small>Running ${clockText(o.elapsed_seconds)} when checked · about ${money(o.estimated_cost_usd)} so far at ${hourlyRate(o.usd_per_hour)} · call ${esc(o.id)}</small>${o.adoptable?'':'<small>No saved key on this workstation, so it can only be stopped.</small>'}<small>${esc(o.caveat||'')}</small></div><div class="row"><button id="adopt-${esc(o.id)}" data-adopt="${esc(o.id)}" data-provider="${esc(o.provider)}" ${o.adoptable?'':'disabled'}>${running?'Stop current model and adopt':'Adopt and serve'}</button><button id="stop-call-${esc(o.id)}" data-stop-call="${esc(o.id)}" data-provider="${esc(o.provider)}">Stop call</button></div></div>`;}).join(''):'');
+}
+$('orphan-banner').onclick=e=>attempt(async()=>{
+ const adopt=e.target.closest('[data-adopt]'),stop=e.target.closest('[data-stop-call]'),b=adopt||stop;if(!b||b.disabled)return;
+ for(const button of $('orphan-banner').querySelectorAll('button'))button.disabled=true;
+ try{
+  if(adopt){await api('/api/remote/adopt',{backend:b.dataset.provider,call_id:b.dataset.adopt,replace_running:!!statusState.engine?.running});message(`Adopting call ${b.dataset.adopt}. It serves on the usual engine port once ready.`);location.hash='launch';await switchView('launch');}
+  else{await api('/api/remote/stop-call',{backend:b.dataset.provider,call_id:b.dataset.stopCall});message(`Stopped remote call ${b.dataset.stopCall}.`);}
+ }finally{await refreshOrphans();await poll();refreshRemote();}
+});
+(async()=>{await poll();await scan();refreshOrphans();if(['#find','#experiments'].includes(location.hash))await switchView(location.hash.slice(1));slotNote();setInterval(poll,2500);})();

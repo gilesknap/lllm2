@@ -2,7 +2,7 @@
 
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from lllm2.bench import Bench
 from lllm2.settings import Settings
@@ -16,6 +16,8 @@ def run_search(behaviour, selected=32768, max_context=131072, confirm=False, log
     """
     bench = Bench.__new__(Bench)
     bench.engine = Mock()
+    bench.engine.metadata.return_value = {"context": 262144}
+    bench.engine.hardware.return_value = {"gpus": ["GPU0"], "error": None}
     bench.engine.state.return_value = {
         "logs": logs
         if logs is not None
@@ -55,11 +57,7 @@ def run_search(behaviour, selected=32768, max_context=131072, confirm=False, log
         "full_window": confirm,
     }
     r = {"id": "r", "probes": [], "samples": []}
-    with (
-        patch("lllm2.bench.metadata", return_value={"context": 262144}),
-        patch("lllm2.bench.hardware", return_value={"gpus": ["GPU0"], "error": None}),
-    ):
-        bench.context_search(s, opts, r)
+    bench.context_search(s, opts, r)
     return loads, workloads, r
 
 

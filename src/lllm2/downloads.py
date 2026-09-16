@@ -8,8 +8,10 @@ handler that started it.
 
 from __future__ import annotations
 
+import http.client
 import queue
 import shutil
+import ssl
 import threading
 import time
 import urllib.error
@@ -24,6 +26,108 @@ from .tls import download_context
 
 CHUNK = 4 * 1024 * 1024
 USER_AGENT = "lllm2/0.1 (+https://github.com/gilesknap/lllm2)"
+
+#: Consecutive attempts that add no bytes before a file download gives up. An
+#: attempt that adds bytes resets the count, so a long transfer survives any
+#: number of resets as long as it keeps moving.
+RETRY_ATTEMPTS = 5
+#: Seconds to wait before each consecutive failed attempt, last value repeating.
+RETRY_BACKOFF = (2.0, 4.0, 8.0, 16.0, 30.0)
+#: Seconds between cancel and heartbeat checks while backing off.
+RETRY_POLL = 0.5
+
+
+def retry_delay(stalled: int, backoff: tuple[float, ...] = RETRY_BACKOFF) -> float:
+    """Return the backoff before a retry.
+
+    Args:
+        stalled: The number of consecutive attempts that added no bytes, from 1.
+        backoff: The delays, the last one repeating.
+
+    Returns:
+        The seconds to wait.
+    """
+    return backoff[min(max(stalled, 1), len(backoff)) - 1]
+
+
+def transient(error: BaseException) -> bool:
+    """Return whether a transfer error is worth retrying with a Range request.
+
+    A reset connection, a read timeout and a truncated body all leave the bytes
+    already written on disk, so a ranged request continues where it stopped.
+    An HTTP status means the request itself was refused: a 404 or a 401 will
+    not improve with another try, while a 5xx may.
+
+    Args:
+        error: The exception the attempt raised.
+
+    Returns:
+        True when another attempt is worth making.
+    """
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500
+    if isinstance(error, urllib.error.URLError) and isinstance(
+        error.reason, BaseException
+    ):
+        return transient(error.reason)
+    return isinstance(
+        error,
+        http.client.IncompleteRead
+        | ConnectionError
+        | TimeoutError
+        | ssl.SSLError
+        | urllib.error.URLError,
+    )
+
+
+def short_read_message(file: str, tries: int, kept: int) -> str:
+    """Return the message for a file that never finished.
+
+    Args:
+        file: The file name.
+        tries: The attempts made.
+        kept: The bytes left on disk for a later resume.
+
+    Returns:
+        The failure text, which names the attempts and the bytes kept.
+    """
+    return (
+        f"Download of {file} ended early after {tries} attempts; "
+        f"{kept} bytes are kept, so a retry resumes."
+    )
+
+
+class StalePartError(Exception):
+    """A part file the server's file is shorter than, so it cannot resume."""
+
+    def __init__(self, total: int | None):
+        """Report the discarded part.
+
+        Args:
+            total: The complete length the server gave, or None when the
+                range header did not carry one.
+        """
+        super().__init__("the part file did not match the file on the server")
+        self.total = total
+
+
+def complete_length(header: str | None) -> int | None:
+    """Return the complete length a ``Content-Range`` header states.
+
+    A 416 answer carries ``bytes */N``, while a 206 carries
+    ``bytes FIRST-LAST/N``. Both end in the length, or in ``*`` when the
+    server does not know it.
+
+    Args:
+        header: The header value, or None when the response had none.
+
+    Returns:
+        The complete length in bytes, or None when it is absent or unusable.
+    """
+    if not header or not header.strip().startswith("bytes"):
+        return None
+    _, _, total = header.partition("/")
+    return int(total) if total.strip().isdecimal() else None
 
 
 @dataclass
@@ -90,22 +194,59 @@ def _size_of(repo: str, file: str, revision: str = "main") -> int:
     try:
         with urllib.request.urlopen(req, timeout=60, context=download_context()) as r:
             return int(r.headers.get("Content-Length") or 0)
-    except Exception:
+    except Exception as error:
+        # An HTTP status is a response as well as an error; drop it properly.
+        if isinstance(error, urllib.error.HTTPError):
+            error.close()
         return 0
 
 
-def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
-    """One file, resuming a part file if there is one. ``base`` is bytes already
-    finished in this download, so progress runs across the whole job."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_suffix(target.suffix + ".part")
-    part.parent.mkdir(parents=True, exist_ok=True)
-    resume = part.stat().st_size if part.exists() else 0
+def _attempt(
+    dl: Download, file: str, part: Path, base: int, resume: int
+) -> bool | None:
+    """One transfer attempt for a file, appending to its part file.
+
+    A truncated body is not an error here: ``http.client`` returns an empty
+    read when a connection drops mid-body rather than raising, so the caller
+    compares the bytes on disk with the expected length.
+
+    Args:
+        dl: The download being run.
+        file: The repository file.
+        part: The part file to append to.
+        base: Bytes already finished in this job, for whole-job progress.
+        resume: Bytes already in the part file.
+
+    Returns:
+        True when the file is complete, False when the body ended early, or
+        None when the download was cancelled.
+
+    Raises:
+        StalePartError: The part file is not the file the server holds. It has
+            been discarded, so the next attempt reads from zero.
+    """
     req = urllib.request.Request(url_for(dl.repo, file, dl.revision))
     req.add_header("User-Agent", USER_AGENT)
     if resume:
         req.add_header("Range", f"bytes={resume}-")
-    with urllib.request.urlopen(req, timeout=60, context=download_context()) as r:
+    try:
+        response = urllib.request.urlopen(req, timeout=60, context=download_context())
+    except urllib.error.HTTPError as error:
+        if not (resume and error.code == 416):
+            raise
+        headers = error.headers
+        complete = complete_length(headers.get("Content-Range") if headers else None)
+        error.close()
+        # 416 says the range starts past the end of the file, as it does when
+        # a run stopped between writing the last byte and renaming the part.
+        # That is the whole file only when the server's length matches it; a
+        # part left by a longer, stale revision is past the end too.
+        if complete is not None and complete == resume:
+            dl.done = base + resume
+            return True
+        part.unlink(missing_ok=True)
+        raise StalePartError(complete) from error
+    with response as r:
         # Servers may ignore Range; never append a full response to a partial.
         if resume and r.status != 206:
             resume = 0
@@ -122,15 +263,60 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
                 if dl._cancel.is_set():
                     dl.state = "cancelled"
                     dl.detail = "cancelled; part file kept for resume"
-                    return False
+                    return None
                 chunk = r.read(CHUNK)
                 if not chunk:
                     break
                 f.write(chunk)
                 received += len(chunk)
                 dl.done += len(chunk)
-        if expected and received != expected:
-            raise ValueError("Download incomplete; partial file retained for resume")
+        return not expected or received == expected
+
+
+def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
+    """One file, resuming a part file if there is one. ``base`` is bytes already
+    finished in this download, so progress runs across the whole job.
+
+    A dropped connection retries from the bytes on disk. Only attempts that add
+    no bytes count towards the limit, so a transfer that keeps moving survives
+    any number of resets.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_suffix(target.suffix + ".part")
+    part.parent.mkdir(parents=True, exist_ok=True)
+    stalled = tries = 0
+    while True:
+        resume = part.stat().st_size if part.exists() else 0
+        tries += 1
+        try:
+            complete = _attempt(dl, file, part, base, resume)
+        except StalePartError as error:
+            # The part file is gone, so the next attempt asks for the whole
+            # file. It added nothing, so it counts towards the stall limit.
+            complete, reason = False, str(error)
+        except Exception as error:
+            if not transient(error):
+                raise
+            # This attempt is over and the next one opens its own response, so
+            # close the one the status came on before the retry drops it.
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            complete, reason = False, str(error) or type(error).__name__
+        else:
+            if complete is None:
+                return False
+            if complete:
+                break
+            reason = "the connection closed early"
+        kept = part.stat().st_size if part.exists() else 0
+        stalled = 0 if kept > resume else stalled + 1
+        if stalled >= RETRY_ATTEMPTS:
+            raise ValueError(short_read_message(file, tries, kept))
+        dl.detail = f"retry {tries} after {reason}"
+        if dl._cancel.wait(retry_delay(stalled)):
+            dl.state = "cancelled"
+            dl.detail = "cancelled; part file kept for resume"
+            return False
     from . import gguf
 
     gguf.header(part)
@@ -182,6 +368,7 @@ def _run(dl: Download) -> None:
         dl.state = "complete"
         dl.detail = f"saved to {dl.target.parent}"
     except urllib.error.HTTPError as e:
+        e.close()
         dl.state = "error"
         dl.detail = f"HTTP {e.code} for {url_for(dl.repo, dl.file, dl.revision)}"
     except Exception as e:

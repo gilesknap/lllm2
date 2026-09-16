@@ -76,3 +76,4 @@ lockfiles/
 engine-dist/
 engine-smoke/
 engine-checks/
+.modal.toml
