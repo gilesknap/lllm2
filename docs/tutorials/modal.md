@@ -32,16 +32,25 @@ runs the lllm2 CUDA engine. Pick a **Remote GPU type**: each option shows its
 memory and hourly price, and the starting settings are sized for it. See
 [Modal GPU types](../reference/modal-gpus.md).
 
-## 3. Download a model into Modal storage
+## 3. Find a model the rented GPU can hold
+
+A new catalogue holds little, so open **Find models**. lllm2 rates every result
+against the GPU you selected, not against your own card. A rented 96 GB card
+therefore rates models as a good fit that no local card of yours could load.
+Change the GPU type and the list rates them again.
+
+Pick one and add it to your catalogue, then return to **Launch model**.
+
+## 4. Download a model into Modal storage
 
 **Choose a model** now lists catalogue models with their presence in Modal
 storage. Click **Use this model** on one, then **Download to Modal**. Modal
 fetches the weights from Hugging Face straight into its Volume, so nothing
 passes through your machine. Wait for the line to read **In Modal storage ·
-starts without a download**. A large model takes several minutes; progress also
-appears under **Find models → Downloads**.
+starts without a download**. A large model takes several minutes, and progress
+appears in the **Downloads** card on this page.
 
-## 4. Start the model
+## 5. Start the model
 
 Click **Start Model**. The status line names each phase: checking the GPU type
 (a first launch on a GPU type runs a short probe container), downloading the
@@ -49,7 +58,7 @@ model into remote storage, starting the GPU container, loading the model into
 GPU memory, then ready. In our test a 29 GB model took about 169 seconds from
 container start to ready on a T4, on top of the one-off download.
 
-## 5. Connect a coding agent
+## 6. Connect a coding agent
 
 When the model is ready, **Connect a coding agent** appears with the command to
 run. Copy it and run it in a terminal on the same machine, in your project
@@ -63,7 +72,7 @@ uv tool install claude-sandbox; claude-sandbox pi
 to `http://127.0.0.1:1920/v1` as it would for a local model and never sees the
 tunnel.
 
-## 6. Stop paying
+## 7. Stop paying
 
 The launch status shows the elapsed time, the cost so far at the hourly price
 and the time left until the idle stop. Watch that line.
