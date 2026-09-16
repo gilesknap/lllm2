@@ -269,6 +269,35 @@ class UncataloguedPlanTests(unittest.TestCase):
         s, _ = self.resolve("/models/Mystery/Mystery-Q6_K.gguf", blind, host)
         self.assertEqual((s.context, s.slots), (8192, 1))
 
+    def test_a_declared_context_that_is_not_a_count_is_ignored(self):
+        """A converter can write the header context as anything at all.
+
+        A string, a float or an array marker is not a token count, and
+        neither is zero or a negative. The cap always stands, so a checkpoint
+        that declares nothing usable still plans against it.
+        """
+        for junk in ("131072", 131072.0, "[131072]", True, 0, -1, None):
+            with self.subTest(declared=junk):
+                ceiling = defaults.planner_ceiling(
+                    {"max_ctx": junk}, {"context": junk}
+                )
+                self.assertEqual(ceiling, defaults.MAX_CONTEXT)
+        # A real limit beside the junk is still the ceiling.
+        self.assertEqual(
+            defaults.planner_ceiling({"max_ctx": "8192"}, {"context": 8192}), 8192
+        )
+
+    def test_a_junk_header_context_plans_against_the_cap(self):
+        """A header that declares no usable context plans, rather than raising.
+
+        The checkpoint then has no limit of its own, so the cap bounds one
+        conversation, exactly as an undeclared context does.
+        """
+        host = table_hardware("modal", "RTX-PRO-6000")
+        meta = dict(Q8_META, context="131072")
+        s, _ = self.resolve(Q8_PATH, meta, host)
+        self.assertEqual((s.context, s.slots), (defaults.MAX_CONTEXT, 1))
+
     def test_no_gpu_is_an_error_not_a_default(self):
         for host in (
             {"source": "modal", "gpus": [], "error": None},

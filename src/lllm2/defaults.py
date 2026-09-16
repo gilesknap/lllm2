@@ -89,9 +89,22 @@ def planner_evidence(entry, meta, model=None):
 
 
 def planner_ceiling(entry, meta):
-    """Return the largest context any source allows for this checkpoint."""
+    """Return the largest context any source allows for this checkpoint.
+
+    A GGUF header declares its context however the converter wrote it, so a
+    string, a float or an array marker can arrive here. Only a positive whole
+    number is a context, and ``MAX_CONTEXT`` always stands, so an entry that
+    declares nothing usable still has a ceiling.
+
+    Args:
+        entry: The catalogue entry, or None.
+        meta: The checkpoint metadata, or None.
+
+    Returns:
+        The smallest declared limit, in tokens.
+    """
     declared = [(entry or {}).get("max_ctx"), (meta or {}).get("context"), MAX_CONTEXT]
-    return min(v for v in declared if v)
+    return min(v for v in declared if type(v) is int and v > 0)
 
 
 def context_plan(
