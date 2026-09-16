@@ -137,8 +137,9 @@ Modal backend without restarting it. For the short path, follow
    entries with their presence in the Volume: **In Modal storage** starts
    without a download, and **Not in Modal storage** downloads on the first
    start. **Download to Modal** fetches a model ahead of time, and
-   **Remove from Modal…** deletes it. Download progress also appears under
-   **Find models → Downloads**. No weights pass through your workstation.
+   **Remove from Modal…** deletes it. Download progress also appears in the
+   **Downloads** card on **Launch model**. No weights pass through your
+   workstation.
 5. Start the model. The status line names the cold-start phase: checking the
    GPU type, downloading the model into remote storage, starting the GPU
    container, loading the model into GPU memory, then ready.

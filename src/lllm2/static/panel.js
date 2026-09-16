@@ -820,7 +820,7 @@ async function downloadClick(e){
  if(remoteDownload){
   if(remoteDownload.disabled)return;const backend=remoteDownload.dataset.store||currentLaunch()?.backend,key=`${backend}:${remoteDownload.dataset.remoteDownload}`;
   pendingDownloads.add(key);remoteDownload.disabled=true;
-  try{if(remoteDownload.dataset.active==='true')await api('/api/remote/download/cancel',{id:key});else{await api('/api/remote/download',{backend,id:remoteDownload.dataset.remoteDownload});message(`Downloading inside ${backendInfo(backend)?.label||backend}; no weights pass through this workstation. Progress also shows under Find models · Downloads.`);}await poll();}
+  try{if(remoteDownload.dataset.active==='true')await api('/api/remote/download/cancel',{id:key});else{await api('/api/remote/download',{backend,id:remoteDownload.dataset.remoteDownload});message(`Downloading inside ${backendInfo(backend)?.label||backend}; no weights pass through this workstation. Progress also shows in the Downloads card on Launch model.`);}await poll();}
   finally{pendingDownloads.delete(key);renderDownloads();}
   return;
  }
