@@ -32,6 +32,7 @@ from lllm2.remote import (
     DownloadProgress,
     GpuProbe,
     ModelSource,
+    ProviderError,
     RemoteCall,
     RemoteEngine,
     StoredModel,
@@ -63,6 +64,10 @@ class ModalTimeoutError(Error):
 
 class OutputExpiredError(ModalTimeoutError):
     pass
+
+
+class FunctionTimeoutError(ModalTimeoutError):
+    """Modal's own timeout for a function that outran its ``timeout``."""
 
 
 class ModalConnectionError(Error):
@@ -112,11 +117,20 @@ class FakeCall:
     """A function call that reports running for ``pending`` polls, then ``result``."""
 
     def __init__(
-        self, modal, function, gpu, args, pending=0, result=None, on_poll=None
+        self,
+        modal,
+        function,
+        gpu,
+        args,
+        pending=0,
+        result=None,
+        on_poll=None,
+        timeout_error=None,
     ):
         self.object_id = f"fc-{len(modal.calls) + 1}"
         self.function, self.gpu, self.args = function, gpu, args
         self.pending, self.result, self.on_poll = pending, result, on_poll
+        self.timeout_error = timeout_error
         self.cancelled = False
         modal.calls[self.object_id] = self
 
@@ -127,7 +141,7 @@ class FakeCall:
             self.pending -= 1
             if self.on_poll:
                 self.on_poll(self)
-            raise ModalTimeoutError()
+            raise self.timeout_error or ModalTimeoutError()
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
@@ -690,6 +704,20 @@ def test_an_ended_call_reports_its_exit_status(fake, provider):
     assert provider.calls() == []
 
 
+def test_a_serve_call_that_hit_its_own_timeout_is_not_running(fake, provider):
+    """Modal's function timeout subclasses the not-ready one, so check the args."""
+    fake.behaviour["serve"] = lambda *args: {
+        "pending": 1,
+        "result": {"exit_code": 0},
+        "timeout_error": FunctionTimeoutError("the function hit its 12 hour timeout"),
+    }
+    call_id = provider.spawn("T4", ["llama-server"], "k", {}, {})
+    status = provider.poll(call_id)
+    assert not status.running
+    assert "12 hour timeout" in status.error
+    assert provider.calls() == []
+
+
 def test_paths_inside_the_container(provider):
     assert provider.file_path("dir/template.jinja") == "/tmp/lllm2-files/template.jinja"
     with pytest.raises(ValueError):
@@ -1017,3 +1045,35 @@ def test_engine_layer_installs_each_pinned_track_without_a_gpu(monkeypatch, tmp_
 
 def test_opener_default_is_urlopen():
     assert modal_app.fetch_model.__defaults__[-1] is urllib.request.urlopen
+
+
+def test_only_a_bare_not_ready_timeout_keeps_a_download_polling(fake, provider):
+    """Every other timeout ends the call, so the job must fail, not poll on."""
+    source = ModelSource("M/m.gguf", "org/repo", ("m.gguf",))
+    ended = (
+        OutputExpiredError("the call's output expired"),
+        FunctionTimeoutError("the function hit its 2 hour timeout"),
+        # A read timeout inside the container comes back with its message.
+        TimeoutError("The read operation timed out"),
+        RuntimeError("Download of m.gguf ended early; the partial file is kept."),
+    )
+    for error in ended:
+        fake.behaviour["download"] = lambda *_args, error=error: {
+            "pending": 1,
+            "result": error,
+        }
+        with pytest.raises((ProviderError, TimeoutError, RuntimeError)) as raised:
+            provider.ensure_model(source, lambda _update: None, threading.Event())
+        assert str(error) in str(raised.value)
+        assert fake.calls[f"fc-{len(fake.calls)}"].cancelled
+    # A bare timeout, whichever class carries it, only means "not ready yet".
+    for pending in (ModalTimeoutError(), TimeoutError()):
+        fake.behaviour["download"] = lambda *_args, pending=pending: {
+            "pending": 2,
+            "result": dict(META),
+            "on_poll": lambda call: fake.store.files.update({source.name: 1000}),
+            "timeout_error": pending,
+        }
+        assert provider.ensure_model(source, lambda _u: None, threading.Event()) == META
+        fake.store.files.clear()
+        fake.state.pop(modal_app.meta_key(source.name), None)

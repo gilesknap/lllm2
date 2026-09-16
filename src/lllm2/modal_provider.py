@@ -57,6 +57,25 @@ def create_provider():
     return ModalProvider(modal)
 
 
+def output_pending(error, errors):
+    """Return whether a timeout only means a call has not finished yet.
+
+    Modal raises a bare timeout with no message while a call's output is not
+    ready. Every other timeout ends the call: an expired output, the
+    function's own timeout, and a timeout raised inside the container, which
+    Modal re-raises here with its original message. Treating those as "not
+    ready" would leave a caller polling a call that is already over.
+
+    Args:
+        error: The timeout the Modal client raised.
+        errors: The ``modal.exception`` module.
+
+    Returns:
+        True when the caller should poll again.
+    """
+    return type(error) in (TimeoutError, errors.TimeoutError) and not error.args
+
+
 def _translated(method):
     """Turn Modal client errors into ``ProviderError`` with a user-facing message."""
 
@@ -175,10 +194,9 @@ class ModalProvider(RemoteProvider):
                     meta = call.get(timeout=self.poll_interval)
                     finished = True
                     break
-                except errors.OutputExpiredError:
-                    raise
-                except (TimeoutError, errors.TimeoutError):
-                    pass
+                except (TimeoutError, errors.TimeoutError) as error:
+                    if not output_pending(error, errors):
+                        raise
                 update = self._state.get(key)
                 if update:
                     progress(
@@ -374,8 +392,13 @@ class ModalProvider(RemoteProvider):
             result = self.modal.FunctionCall.from_id(call_id).get(timeout=0)
         except errors.OutputExpiredError:
             return False, "the serve call ended"
-        except (TimeoutError, errors.TimeoutError):
-            return True, None
+        except (TimeoutError, errors.TimeoutError) as error:
+            # Only a bare timeout means the output is not ready yet. The
+            # function's own timeout arrives as one of these too, and calling
+            # that "running" would keep the panel polling a finished call.
+            if output_pending(error, errors):
+                return True, None
+            return False, str(error) or "the serve call ended"
         except errors.NotFoundError:
             return False, "unknown call"
         except errors.InputCancellation:
