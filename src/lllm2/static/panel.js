@@ -13,8 +13,8 @@ const launchHelp={
  gpu_type:['Remote GPU type','The rented GPU for a remote backend. More memory fits larger models and contexts but costs more per hour. Starting settings are sized for the chosen type. Prices are estimates; check current provider pricing.'],
  idle_timeout_minutes:['Idle stop (minutes)','A remote model stops after this many minutes without requests, so a forgotten session stops billing. Blank or 0 keeps it running until you stop it. Requests, including long benchmarks, reset the timer.'],
  device:['GPU device','The GPU reported by this engine for the chosen backend. Its free memory limits what fits. Keep the detected device unless deliberately using another GPU.'],
- context:['Total allocated context','Text capacity in tokens, including prompts and replies, shared across slots. More needs more memory and can take longer to fill. Keep the recommended allocation unless you need a different context.'],
- slots:['Slots','How many requests can hold their own conversation state. Total context is divided between slots; more slots leave less per request. This is not CPU threads. Keep the recommended value for normal use.'],
+ context:['Context per conversation','Text capacity in tokens for one conversation, including its prompt and reply. The total allocation is this figure times the slots, so more needs more memory. Keep the recommended value unless you need a different context.'],
+ slots:['Slots','How many requests can hold their own conversation state. Each slot gets the context per conversation, so more slots need more memory. This is not CPU threads. Keep the recommended value for normal use.'],
  batch_size:['Logical batch (tokens)','Maximum prompt tokens submitted together. A larger batch may read prompts faster but uses more working memory. Leave blank for this engine’s default; microbatch must not exceed it.'],
  backend_sampling:['Target GPU sampling','Experimental: choose the next target token on the GPU. This may reduce overhead, but unsupported sampler requests can fall back. Leave unchecked for the engine default until measured. Draft sampling is unchanged.'],
  cuda_graph_opt:['Concurrent CUDA streams','Experimental: overlap eligible operations inside a CUDA graph. Requires one visible CUDA device and ordinary CUDA Graphs. Default preserves the engine environment; this does not add concurrent requests.'],
@@ -100,11 +100,27 @@ const snapshot=()=>JSON.stringify(settings());
 const currentLaunch=()=>view==='launch'?settings():drafts.launch?.settings;
 const modelName=path=>{const m=discovered.models?.find(m=>m.path===path),c=discovered.catalog?.find(c=>c.id===m?.catalog_id)||(path?discovered.catalog?.find(c=>c.path===path):null);return c?(c.recommendation?.name||c.name):path?.split('/').slice(-2).join('/')||'No model selected';};
 
-function settings(){return Object.fromEntries(settingKeys.map(k=>[k,$(k).type==='checkbox'?$(k).checked:$(k).type==='number'?(optionalNumbers.includes(k)&&$(k).value===''?null:Number($(k).value)):optionalCache.includes(k)?$(k).value||null:$(k).value]));}
+function settings(){
+ const s=Object.fromEntries(settingKeys.map(k=>[k,$(k).type==='checkbox'?$(k).checked:$(k).type==='number'?(optionalNumbers.includes(k)&&$(k).value===''?null:Number($(k).value)):optionalCache.includes(k)?$(k).value||null:$(k).value]));
+ // The editor holds the context per conversation; Settings.context is the
+ // total across the slots. Leave a bad slot count alone, so the server
+ // names the slots rather than a total this multiplication invented.
+ if(Number.isInteger(s.slots)&&s.slots>=1)s.context=s.context*s.slots;
+ return s;
+}
+// Settings.context caps the total at 1048576, so the per-conversation ceiling
+// falls as slots rise. Keep the ceiling on the step grid the input declares.
+function contextCap(){
+ const slots=Number($('slots').value);
+ const max=Number.isInteger(slots)&&slots>=1?Math.floor(1048576/slots/256)*256:1048576;
+ $('context').max=max;
+ if(Number($('context').value)>max)$('context').value=max;
+}
 function slotNote(){
+ contextCap();
  const context=Number($('context').value),slots=Number($('slots').value);
- // Blank, zero or negative entries have no meaningful per-slot size; the server rejects them too.
- $('slot-note').textContent=context>=1&&Number.isInteger(slots)&&slots>=1?`${Math.floor(context/slots).toLocaleString()} tokens per conversation (slot), including the reply. Total allocation is divided across ${slots} slot(s).`:'Enter a positive total context and at least one slot to see the tokens per conversation.';
+ // Blank, zero or negative entries have no meaningful total; the server rejects them too.
+ $('slot-note').textContent=context>=1&&Number.isInteger(slots)&&slots>=1?`Each conversation includes its reply. Total allocation is ${(context*slots).toLocaleString()} tokens across ${slots} slot(s).`:'Enter a positive context per conversation and at least one slot to see the total allocation.';
  benchmarkCost();
 }
 function message(s,error=false){$('message').textContent=s;$('message').style.display='block';$('message').className=error?'error':'';}
@@ -247,7 +263,7 @@ function benchmarkCost(){
  $('prompt_tokens').disabled=quick;
  $('max_context').disabled=$('context_timeout').disabled=!search;
  const hasSource=[...document.querySelectorAll('#workloads input:checked')].some(x=>['source-copy','source-small-edit','context-retrieval-edit'].includes(x.value));
- const upper=Math.floor(Number($('context').value)/Number($('slots').value))-Math.max(Number($('output_tokens').value),hasSource?2048:0)-32;
+ const upper=Number($('context').value)-Math.max(Number($('output_tokens').value),hasSource?2048:0)-32;
  const sizes=[...new Set([...(quick?[1024,16384,65536].map(n=>Math.min(n,upper)):[Number($('prompt_tokens').value)]),...(full?[upper]:[])])].sort((a,b)=>a-b);
  const workloads=document.querySelectorAll('#workloads input:checked').length, repeats=Number($('repeats').value);
  $('benchmark-time-tip').textContent='Rough guide from an observed Qwen/Vulkan run; other models, engines and hardware may take longer or finish sooner. Smaller windows may finish sooner. Suites and selected combinations repeat the work for each configuration. Context probes are additional and can take several minutes each. This is not a time limit.';
@@ -361,6 +377,7 @@ function fill(s){
  for(const k of settingKeys){
   if(k==='device'||k==='gpu_type')continue;
   if($(k).type==='checkbox')$(k).checked=s[k]??false;
+  else if(k==='context')$(k).value=s.context?Math.floor(s.context/(s.slots>=1?s.slots:1)):'';
   else $(k).value=s[k]??(k==='cuda_graph_opt'?'default':'');
  }
  $('device').replaceChildren(new Option(s.device||'Choose device',s.device||''));

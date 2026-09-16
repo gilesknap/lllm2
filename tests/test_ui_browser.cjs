@@ -53,7 +53,7 @@ const assert=require('node:assert/strict');
  await run("window.draftBeforeChecks=settings();window.noteBeforeChecks=selectionNote");
  for(const [context,slots] of [['-5','0'],['8192','']]){
   await run(`$('context').value='${context}';$('slots').value='${slots}';slotNote()`);
-  assert.match(await run("$('slot-note').textContent"),/^Enter a positive total context/);
+  assert.match(await run("$('slot-note').textContent"),/^Enter a positive context per conversation/);
  }
  // Without an engine, the server's selection reason replaces the generic engine hint.
  await run("selectionNote='No NVIDIA GPU detected. Check GPU availability before starting.';$('engine').value='';await inspect()");
@@ -442,6 +442,19 @@ const assert=require('node:assert/strict');
  await run("document.querySelector('#experiment-options [data-context-choice=tested]').click()");
  assert.equal(await run("document.querySelectorAll('[data-context-choice=headroom]:checked').length"),0);
  await run("document.querySelector('#experiment-options [data-result=cold]').click();await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run('settings().context'),8192);
+ // The editor holds the context per conversation; Settings.context is the total.
+ await run("window.draftBeforeSlots=settings();$('slots').value='4';$('slots').dispatchEvent(new Event('input'));await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run("$('context').value"),'8192');
+ assert.equal(await run('settings().context'),32768);
+ assert.match(await run("$('slot-note').textContent"),/Total allocation is 32,768 tokens across 4 slot\(s\)\./);
+ // The total caps at 1,048,576, so the per-conversation ceiling falls as slots rise.
+ assert.equal(await run("$('context').max"),'262144');
+ await run("$('context').value='999999';$('context').dispatchEvent(new Event('input'));await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run("$('context').value"),'262144');
+ // A stored total divides back into the field it came from.
+ await run("fill(draftBeforeSlots);await new Promise(r=>setTimeout(r,60))");
+ assert.equal(await run("$('context').value"),'8192');
  assert.equal(await run('settings().context'),8192);
  // Remote backend: selector, GPU type defaults, Volume presence, cold-start status and orphan banner.
  await run("await switchView('launch');customize(true);$('backend').value='modal';$('backend').dispatchEvent(new Event('input'));$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200))");

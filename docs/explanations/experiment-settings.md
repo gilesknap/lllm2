@@ -67,11 +67,11 @@ adherence details and any truncation before accepting a result.
 | Context search ceiling (per slot) | The largest window the search may try, including input and output. Initially based on model metadata when available; range: 512–1,048,576. This is a search limit, not a promise that the model or GPU can use it. |
 | Reset experiment settings | Resets workload selections, budgets and experiment checkboxes, including the ceiling for the selected model. It does not reset the model customization draft or delete results. |
 
-Input and output must fit in `total allocated context ÷ slots`, with 32 tokens
+Input and output must fit in the context per conversation, with 32 tokens
 reserved as a margin for cold tests. When source-checking and ordinary workloads
 are mixed, their shared input sizes reserve space for the larger source output
-cap. For example, 32,768 total tokens with two slots gives 16,384 per slot. A source
-workload with a 2048-token cap leaves at most 14,304 input tokens for the sweep.
+cap. For example, 16,384 tokens per conversation with a 2048-token source cap
+leaves at most 14,304 input tokens for the sweep.
 
 The displayed sample count is more useful than a universal time estimate:
 `configurations × workloads × distinct prompt sizes × repeats`. Context probes
@@ -142,8 +142,8 @@ Changes take effect on the next launch or experiment.
 | GPU device | The device reported by that engine for the selected backend. Free memory and other GPU applications affect what fits. Not used by a remote backend. |
 | Remote GPU type | The rented GPU for a remote backend, with its memory and estimated hourly price. Starting settings are sized for it. More memory fits larger models and contexts but costs more. |
 | Idle stop (minutes) | For a remote backend, minutes without requests before the container stops. Default 30, or `LLLM2_IDLE_TIMEOUT_MINUTES`; blank or 0 disables it. The timer pauses while a request runs and restarts after each request. Changing it does not require a restart. |
-| Total allocated context | Capacity in tokens for prompts and replies, shared across slots. A larger allocation needs more conversation memory; it does not make every request contain more text. |
-| Slots | Concurrent conversation slots, not CPU threads. The total context is divided between them. More slots leave less room per conversation. |
+| Context per conversation | Capacity in tokens for one conversation, covering its prompt and reply. A larger value needs more conversation memory. It does not make every request contain more text. |
+| Slots | Concurrent conversation slots, not CPU threads. Each slot gets the context per conversation, so the total allocation is the product of the two. |
 | GPU placement | Auto asks a compatible engine to fit weights and buffers to available VRAM, with a 1 GiB margin. Some weights may remain in system RAM. Manual enables an explicit layer count. |
 | GPU layers | Number of model layers requested on the GPU in manual mode. Zero keeps model layers on the CPU; 999 requests all layers. Automatic fitting is disabled for an explicit count. Check the engine log for actual placement. |
 
