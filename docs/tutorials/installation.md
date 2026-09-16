@@ -104,7 +104,7 @@ guide. Open another terminal on the same machine, change to the project
 directory you want Pi to work in, and run:
 
 ```bash
-uv tool install claude-sandbox; claude-sandbox pi
+uv tool install claude-sandbox && claude-sandbox pi
 ```
 
 The first command installs the launcher and is needed only once.

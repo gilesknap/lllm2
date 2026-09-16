@@ -178,9 +178,9 @@ const assert=require('node:assert/strict');
  // Pi leads as the sandboxed option, and its install and launch commands copy together.
  await run("document.querySelector('[data-agent=pi]').click()");
  assert.match(await run("document.querySelector('[data-agent=pi]').textContent"),/recommended/i);
- assert.equal(await run("$('agent-command').textContent"),'uv tool install claude-sandbox; claude-sandbox pi');
+ assert.equal(await run("$('agent-command').textContent"),'uv tool install claude-sandbox && claude-sandbox pi');
  await run("$('copy-agent').click();new Promise(r=>setTimeout(r,30))");
- assert.equal(await run("$('copy-text').value"),'uv tool install claude-sandbox; claude-sandbox pi');
+ assert.equal(await run("$('copy-text').value"),'uv tool install claude-sandbox && claude-sandbox pi');
  await run("$('copy-close').click()");
  await run("fixture.disconnected=true;poll()");assert.equal(await run("$('start').disabled"),true);assert.equal(await run("$('connect-agent').hidden"),true);assert.match(await run("$('resources-scope').textContent"),/last known/);
  await run("fixture.disconnected=false;poll()");assert.equal(await run("$('connect-agent').hidden"),false);

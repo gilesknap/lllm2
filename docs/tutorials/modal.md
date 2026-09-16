@@ -65,7 +65,7 @@ run. Copy it and run it in a terminal on the same machine, in your project
 directory:
 
 ```bash
-uv tool install claude-sandbox; claude-sandbox pi
+uv tool install claude-sandbox && claude-sandbox pi
 ```
 
 **Claude Code** and **Codex** give you their commands instead. The agent talks
