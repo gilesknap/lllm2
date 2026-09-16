@@ -253,7 +253,7 @@ def probe_container(binary: str | None = None) -> dict:
     return {"name": name, "total_mib": int(total), "engine": engine}
 
 
-class StalePart(Exception):
+class StalePartError(Exception):
     """A part file the server's file is shorter than, so it cannot resume."""
 
     def __init__(self, total: int | None):
@@ -417,7 +417,7 @@ def fetch_model(
         """Read a file once. Returns the bytes on disk and the expected total.
 
         Raises:
-            StalePart: The part file is not the file the server holds. It has
+            StalePartError: The part file is not the file the server holds. It has
                 been discarded, so the next attempt reads from zero.
         """
         nonlocal persisted
@@ -429,7 +429,10 @@ def fetch_model(
         try:
             response = opener(request, timeout=60, context=download_context())
         except urllib.error.HTTPError as error:
-            complete = complete_length((error.headers or {}).get("Content-Range"))
+            headers = error.headers
+            complete = complete_length(
+                headers.get("Content-Range") if headers else None
+            )
             error.close()
             if not (resume and error.code == 416):
                 raise
@@ -443,7 +446,7 @@ def fetch_model(
             # Commit the removal, so the retry below and any other worker
             # request the file from zero rather than resume a stale part.
             persist(part)
-            raise StalePart(complete)
+            raise StalePartError(complete) from error
         with response:
             if resume and response.status != 206:
                 resume = 0
@@ -524,7 +527,7 @@ def fetch_model(
             tries += 1
             try:
                 done, total = attempt(file, part, resume)
-            except StalePart as error:
+            except StalePartError as error:
                 # The part file is gone, so the next attempt asks for the
                 # whole file. It added nothing, so it counts towards the
                 # stall limit like any other fruitless attempt.

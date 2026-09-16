@@ -278,9 +278,7 @@ class UncataloguedPlanTests(unittest.TestCase):
         """
         for junk in ("131072", 131072.0, "[131072]", True, 0, -1, None):
             with self.subTest(declared=junk):
-                ceiling = defaults.planner_ceiling(
-                    {"max_ctx": junk}, {"context": junk}
-                )
+                ceiling = defaults.planner_ceiling({"max_ctx": junk}, {"context": junk})
                 self.assertEqual(ceiling, defaults.MAX_CONTEXT)
         # A real limit beside the junk is still the ceiling.
         self.assertEqual(
