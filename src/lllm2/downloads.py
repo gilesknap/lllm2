@@ -161,7 +161,10 @@ def _size_of(repo: str, file: str, revision: str = "main") -> int:
     try:
         with urllib.request.urlopen(req, timeout=60, context=download_context()) as r:
             return int(r.headers.get("Content-Length") or 0)
-    except Exception:
+    except Exception as error:
+        # An HTTP status is a response as well as an error; drop it properly.
+        if isinstance(error, urllib.error.HTTPError):
+            error.close()
         return 0
 
 
@@ -236,6 +239,10 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
         except Exception as error:
             if not transient(error):
                 raise
+            # This attempt is over and the next one opens its own response, so
+            # close the one the status came on before the retry drops it.
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
             complete, reason = False, str(error) or type(error).__name__
         else:
             if complete is None:

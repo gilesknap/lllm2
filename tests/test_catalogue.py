@@ -1,5 +1,6 @@
 """Metadata discovery, catalogue ownership and persistent download queue behaviour."""
 
+import contextlib
 import email.message
 import http.client
 import io
@@ -342,12 +343,16 @@ class TransientErrorTests(unittest.TestCase):
         self.assertTrue(downloads.transient(ConnectionResetError()))
         self.assertTrue(downloads.transient(TimeoutError()))
         self.assertTrue(downloads.transient(http.client.IncompleteRead(b"")))
-        self.assertTrue(
-            downloads.transient(
-                urllib.error.HTTPError(url, 503, "Unavailable", headers, None)
-            )
-        )
+        # An HTTPError built without a body opens a temporary file to stand in
+        # for one, so close each error here rather than leave the collector to
+        # warn about it while some later test is running.
+        with contextlib.closing(
+            urllib.error.HTTPError(url, 503, "Unavailable", headers, None)
+        ) as error:
+            self.assertTrue(downloads.transient(error))
         for code in (401, 404, 416):
-            error = urllib.error.HTTPError(url, code, "No", headers, None)
-            self.assertFalse(downloads.transient(error))
+            with contextlib.closing(
+                urllib.error.HTTPError(url, code, "No", headers, None)
+            ) as error:
+                self.assertFalse(downloads.transient(error))
         self.assertFalse(downloads.transient(ValueError("unexpected range")))
