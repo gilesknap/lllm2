@@ -461,6 +461,16 @@ const assert=require('node:assert/strict');
  await run("fixture.engine={running:true,ready:true,pid:null,provider:'modal',gpu:'L40S',phase:'ready',elapsed_seconds:125,usd_per_hour:1.951,estimated_cost_usd:0.07,idle_timeout_seconds:1800,idle_remaining_seconds:1700,settings:settings()};fixture.job={kind:'launch',status:'serving',active:false};await poll()");
  assert.match(await run("$('remote-cost').textContent"),/Running 2:05 · about \$0\.07 .* idle stop in 28:20/);
  assert.match(await run("$('remote-caveat').textContent"),/Check current Modal pricing/);
+ // Up but still loading, with no start job: it must not read as running.
+ await run("fixture.engine={running:true,ready:false,pid:null,provider:'modal',gpu:'L40S',phase:'loading model',elapsed_seconds:185,usd_per_hour:1.951,settings:settings()};fixture.job={status:'idle',active:false};await poll()");
+ assert.equal(await run("$('start').textContent"),'Loading model\u2026');
+ assert.equal(await run("$('start').disabled"),true);
+ assert.equal(await run("$('stop').hidden"),false);
+ assert.match(await run("$('launch-status').textContent"),/Loading the model into GPU memory . 3:05 elapsed . requests get 503 until it is ready\./);
+ assert.match(await run("$('running-summary').textContent"),/still loading/);
+ assert.equal(await run("$('connect-agent').hidden"),true);
+ assert.equal(await run("$('copy-api').hidden"),true);
+ assert.match(await run("$('endpoint').textContent"),/answers 503 while the model loads/);
  await run("fixture.engine={running:false,ready:false,provider:'modal',gpu:'L40S',phase:'idle stopped',idle_timeout_seconds:1800};await poll()");
  assert.match(await run("$('remote-phase').textContent"),/stopped after 30 minutes without requests/);
  await run("fixture.orphans=[{id:'call-1',provider:'modal',gpu:'T4',model:'/models/dense/dense.gguf',elapsed_seconds:61,usd_per_hour:0.59,estimated_cost_usd:0.01,adoptable:true,caveat:'Check current Modal pricing.'}];await refreshOrphans()");

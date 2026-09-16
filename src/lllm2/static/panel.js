@@ -448,13 +448,16 @@ function launchState(){
  if(!connected){title='Waiting for panel…';status='Panel connection unavailable. Last-known service state may be stale.';}
  else if(pendingAction||launchJob){title='Starting…';status=`${running.provider&&running.phase?remotePhase(running):job.adopting?'Adopting a running remote call':'Loading '+modelName(job.settings?.model||launch?.model)}${job.started_at?' · '+Math.max(0,Math.floor(Date.now()/1000-job.started_at))+'s elapsed':''}`;}
  else if(experiment){title='Experiment running';status='The experiment owns the engine. View its progress or cancel it in Experiments.';}
+ // A model can be up and still loading, after a restart or an adopted call.
+ // Saying "Running" there points a client at an endpoint that answers 503.
+ else if(running.running&&!running.ready){title='Loading model…';status=`${running.provider&&running.phase?remotePhase(running):'Loading '+modelName(running.settings?.model)}${running.elapsed_seconds?' · '+clockText(running.elapsed_seconds)+' elapsed':''} · requests get 503 until it is ready.`;}
  else if(running.ready&&same){title='Running';status=`Ready · ${modelName(running.settings?.model)}${running.provider?' · '+backendLabel(running.settings):''}`;}
  else if(resolving){title='Preparing model…';status='Checking model identity, recommended settings and engine compatibility…';}
  else if(!validationSnapshot&&!validationError&&launch?.model&&s.engine){title='Checking settings…';status='Checking the selected settings before starting.';}
  else if(running.running){title=launch?.model===running.settings?.model?'Restart with these settings':`Switch to ${modelName(launch?.model)}`;status='This replaces the running model and interrupts its current requests.';}
  else if(!launch?.model){status='Choose or download a model to get started.';}
  else if(validationError){status='Setup needs attention before starting.';}
- $('start').textContent=title;$('start').disabled=!ready||!!job.active||(running.ready&&same)||view!=='launch';
+ $('start').textContent=title;$('start').disabled=!ready||!!job.active||(running.running&&!running.ready)||(running.ready&&same)||view!=='launch';
  $('start').hidden=connected&&!resolving&&!launch?.model&&!running.running&&!job.active;
  $('launch-status').textContent=status;
  $('stop').hidden=!(running.running||launchJob);$('stop').textContent=launchJob?'Cancel start':'Stop model';$('stop').disabled=!connected||pendingAction;
@@ -462,7 +465,7 @@ function launchState(){
  $('connect-agent').hidden=!connected||!running.ready;
  $('resources-scope').textContent=(hardwareSource&&hardwareSource!=='local'?`${backendInfo(hardwareSource)?.label||hardwareSource} GPU · selected for launch`:'Model workstation resources')+(connected?'':' · last known');
  $('connect-context').textContent=running.ready&&running.settings?`${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation on the running server.`:'';
- $('running-summary').textContent=running.running&&running.settings?`Current model: ${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation · ${running.ready?'ready':'loading'}`:'';
+ $('running-summary').textContent=running.running&&running.settings?`Current model: ${modelName(running.settings.model)} · ${Math.floor(running.settings.context/running.settings.slots).toLocaleString()} tokens per conversation · ${running.ready?'ready':'still loading'}`:'';
  const rawError=actionError||running.error||(job.status==='failed'?job.error:'')||(view==='launch'&&s.model?validationError:'')||'';
  const friendlyError=explainError(rawError);
  $('launch-error').textContent=friendlyError;
@@ -713,7 +716,8 @@ async function poll(){
   $('app-version').textContent=s.version?`Version ${s.version}`:'';
   if(startAttempt&&s.job.request_id===startAttempt.request_id&&['failed','cancelled','serving'].includes(s.job.status))startAttempt=null;
   renderHardware(s.hardware);
-  $('endpoint').textContent=s.engine.ready?`API on model workstation: ${s.endpoint}`:'';
+  // An endpoint that is up but not ready answers 503, so do not offer it yet.
+  $('endpoint').textContent=s.engine.ready?`API on model workstation: ${s.endpoint}`:s.engine.running?`API not ready: ${s.endpoint} answers 503 while the model loads.`:'';
   $('paths').textContent=`Models: ${s.paths.models}. Engine roots: ${s.paths.engines.join(', ')}. Configure LLLM2_MODELS_DIR and LLLM2_ENGINE_ROOTS before starting the panel.`;
   $('job').textContent=`${s.job.status}${s.job.current?' · '+s.job.current:''}`;
   $('job-detail').textContent=[s.job.phase,s.job.error,...(s.job.skipped||[]).map(x=>`${x.option}: ${x.reason}`)].filter(Boolean).join(' · ');
