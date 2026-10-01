@@ -214,6 +214,41 @@ class InstallTests(unittest.TestCase):
             installer.install("cuda", root=self.root)
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_local_tarballs_install_with_the_same_checks(self):
+        """A CI-built tarball installs without a release, but is still verified."""
+        source = self.root / "engine-dist"
+        source.mkdir()
+        archive, checksum = (
+            source / asset_name("13"),
+            source / (asset_name("13") + ".sha256"),
+        )
+        archive.write_bytes(self.archive())
+        installed = self.root / "engines"
+
+        def install():
+            return installer.install(
+                "cuda", root=installed, track="13", check_startup=False, source=source
+            )
+
+        with (
+            patch.object(installer, "_release_asset_urls") as lookup,
+            patch.object(installer, "_download") as download,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "does not contain"):
+                install()
+            checksum.write_text(f"{'0' * 64}  {asset_name('13')}\n")
+            with self.assertRaisesRegex(RuntimeError, "checksum verification"):
+                install()
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            checksum.write_text(f"{digest}  {asset_name('13')}\n")
+            binary = install()
+            lookup.assert_not_called()
+            download.assert_not_called()
+        self.assertEqual(installer.provenance(binary)["cuda_track"], CUDA_TRACKS["13"])
+        # The source tarballs stay where they were; only the engine is new.
+        self.assertTrue(archive.is_file())
+        self.assertEqual([p.name for p in installed.iterdir()], [binary.parent.name])
+
     def test_download_streams_bytes_and_reports_network_failure(self):
         destination = self.root / "download"
         with patch.object(
