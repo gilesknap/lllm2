@@ -52,6 +52,11 @@ jobs:
           LATEST: ${{ steps.bump.outputs.latest }}
           BASE: ${{ github.ref_name }}
           HAS_TOKEN: ${{ secrets.LLAMA_CPP_BUMP_TOKEN != '' }}
+          # Auto-merge is opt-in, and needs the token (so CI runs and the merge
+          # starts CI on main) and Modal credentials (so the GPU test runs).
+          AUTO_MERGE: >-
+            ${{ vars.LLAMA_CPP_AUTO_RELEASE == 'true' &&
+            secrets.LLAMA_CPP_BUMP_TOKEN != '' && secrets.MODAL_TOKEN_ID != '' }}
         run: |
           title="Bump llama.cpp to $LATEST"
           git config user.name 'github-actions[bot]'
@@ -74,6 +79,11 @@ jobs:
           if [ "$HAS_TOKEN" != true ]; then
             checks="$checks This PR was opened with \`GITHUB_TOKEN\`, so CI does not run on it automatically: close and reopen it to start CI."
           fi
+          if [ "$AUTO_MERGE" = true ]; then
+            release="Auto-merge is enabled: GitHub merges this PR once the required checks, including the GPU smoke test, pass, and \`llama-cpp-release.yml\` then tags the next patch release."
+          else
+            release="Merge this PR by hand; auto-merge and auto-release are not enabled for this repository."
+          fi
           cat > pr-body.md <<EOF
           Upstream llama.cpp has a newer release than the pinned engine.
 
@@ -81,6 +91,8 @@ jobs:
           - Upstream changes: https://github.com/ggml-org/llama.cpp/compare/$CURRENT...$LATEST
 
           $checks
+
+          $release
 
           Users receive the new engine after a new lllm2 release is tagged and they run
           \`uv tool install --upgrade lllm2\` (or \`uv tool upgrade lllm2\`).
@@ -90,9 +102,27 @@ jobs:
 
           pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "$pr" ]; then
-            gh pr edit "$pr" --title "$title" --body-file pr-body.md
+            # The REST API, because `gh pr edit` fails on this repository's
+            # GraphQL Projects (classic) lookup.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$pr" \
+              -f title="$title" -F body=@pr-body.md > /dev/null
           else
-            gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file pr-body.md
+            url=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file pr-body.md)
+            echo "$url"
+            pr=${url##*/}
+          fi
+
+          if [ "$AUTO_MERGE" = true ]; then
+            # Branch protection decides when: GitHub merges only after every
+            # required check passes. Only this bump PR is ever auto-merged.
+            node=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .node_id)
+            gh api graphql -f id="$node" -f query='
+              mutation($id: ID!) {
+                enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: MERGE}) {
+                  clientMutationId
+                }
+              }' > /dev/null
+            echo "Enabled auto-merge on PR #$pr"
           fi
 
           if [ "$pushed" = true ]; then

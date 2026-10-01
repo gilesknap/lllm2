@@ -42,3 +42,19 @@ required version is already installed.
 
 See [Install a model engine](../how-to/install-an-engine.md) for driver
 compatibility, engine discovery and installation options.
+
+## Return to an earlier version
+
+New lllm2 releases can follow new llama.cpp builds automatically. If a release
+misbehaves, install the previous version by number, then its engine. Release
+numbers are listed on the
+[releases page](https://github.com/gilesknap/lllm2/releases):
+
+```bash
+uv tool install lllm2==X.Y.Z
+lllm2 engines install cuda
+```
+
+Stop and start the panel or its service around these commands, as above.
+`uv tool install --upgrade lllm2` returns to the newest release later; `uv tool
+upgrade` alone keeps the pinned version.

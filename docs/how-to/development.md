@@ -109,6 +109,41 @@ or close and reopen the PR to start it. The repository setting "Allow GitHub
 Actions to create and approve pull requests" must be enabled. Merging the PR
 changes nothing for users until a new lllm2 version is tagged; they then get the
 new engine with `uv tool install --upgrade lllm2`.
+
+Bump PRs can also merge and release themselves. When enabled, the bump workflow
+turns on GitHub auto-merge for the `bot/llama-cpp-bump` PR, and GitHub merges it
+only once every required check passes. `Release llama.cpp bump`
+(`.github/workflows/llama-cpp-release.yml`) then waits for CI to pass on `main`
+for that merge commit and pushes the next patch tag after the highest `X.Y.Z`
+tag (`0.9.0` becomes `0.9.1`), which starts the normal tag pipeline: engines,
+GitHub release and PyPI. `.github/scripts/tag_bump_release.py` tags only the
+merge commit of a merged `bot/llama-cpp-bump` PR from this repository, and never
+a commit that already has a version tag, so each bump releases at most once.
+Nothing else is auto-merged or auto-tagged. A bump PR merged by hand is released
+the same way.
+
+To enable it, a maintainer:
+
+- Adds the `LLAMA_CPP_BUMP_TOKEN` secret described above. Its pushes start CI
+  on the PR, the auto-merge it enables is attributed to it so the merge starts
+  CI on `main`, and the release tag must be pushed with it: a tag pushed with
+  `GITHUB_TOKEN` does not start the tag pipeline. Grant the fine-grained token
+  contents and pull request read and write access to this repository.
+- Adds the `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` secrets for the GPU smoke
+  test. Without them the GPU test is skipped and auto-merge stays off.
+- Enables **Settings > General > Allow auto-merge**.
+- Protects `main` with a branch protection rule or ruleset that requires the
+  CI checks to pass before merging: `lint / run`, `test (3.11)` to
+  `test (3.14)`, `browser`, `docs-build`, `dist / build` and the GPU smoke test,
+  `gpu-smoke`. A skipped check counts as passed, so `gpu-smoke` gates only bump
+  PRs. Without required checks, GitHub refuses to enable auto-merge on a PR that
+  is already mergeable.
+- Sets the repository variable `LLAMA_CPP_AUTO_RELEASE` to `true` (**Settings >
+  Secrets and variables > Actions > Variables**). Delete it to return to
+  merging and tagging by hand.
+
+Users who hit a problem with a new engine can return to an earlier release with
+`uv tool install lllm2==X.Y.Z` (see [Upgrade lllm2](../tutorials/upgrade.md)).
 Version-tag CI first looks for matching llama.cpp/CUDA asset names in earlier
 GitHub releases. Each track skips building, downloading and uploading when its exact tarball
 and checksum already exist on a published release; only a missing combination is built in NVIDIA's Rocky Linux 8
