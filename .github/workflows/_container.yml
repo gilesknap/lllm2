@@ -53,10 +53,15 @@ jobs:
           fi
           echo "::notice::The pinned engine is not built or published yet, so no image was built. The release tag builds and publishes it with the image."
 
+      # The build needs about 10 GB. Freeing space takes about 40 seconds, so
+      # do it only on a runner that is short of it.
       - name: Free disk space for the engine layers
         if: steps.engines.outputs.available == 'true'
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+          if [ "$free" -lt 20 ]; then
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          fi
           df -h /
 
       - name: Set up Docker Buildx
@@ -88,6 +93,7 @@ jobs:
         if: steps.engines.outputs.available == 'true'
         run: |
           df -h /
+          docker image ls tag_for_testing
           docker run --rm tag_for_testing --version
           docker run --rm tag_for_testing engines list | tee engines.txt
           grep -q '(matches running release)' engines.txt
