@@ -97,7 +97,8 @@ versions. Change the pin in a normal PR when panel features need a newer engine.
 
 The `Propose llama.cpp bump` workflow (`.github/workflows/llama-cpp-bump.yml`)
 does this weekly, or on manual dispatch. When upstream llama.cpp has a newer
-release than `LLAMA_CPP_REF`, `.github/scripts/bump_llama_cpp.py` moves the pin
+per-commit `bNNNNN` build than `LLAMA_CPP_REF` (the stable `vX.Y.Z` releases
+lag new model support, so they are not tracked), `.github/scripts/bump_llama_cpp.py` moves the pin
 forward and the workflow force-pushes `bot/llama-cpp-bump` and opens or updates a
 single "Bump llama.cpp to bNNNNN" PR with the upstream compare link. It also
 dispatches the engine workflow on that branch, so both CUDA tracks are built and
