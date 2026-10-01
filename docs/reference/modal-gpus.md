@@ -41,7 +41,7 @@ defaults for a remote backend are keyed on the model, backend and GPU type.
 | --- | --- | --- |
 | `lllm2` | App | The `probe`, `download` and `serve` functions. |
 | `lllm2-models` | Volume | Downloaded models. |
-| `lllm2-state` | Dict | Call records, tunnel addresses, heartbeats and download progress. |
+| `lllm2-state` | Dict | Call records, tunnel addresses, heartbeats, download progress and download leases. |
 | `lllm2-logs` | Queue | llama-server log lines for each call. |
 
 | Limit | Value |

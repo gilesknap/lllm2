@@ -80,6 +80,13 @@ prints progress and downloads nothing if the model is already stored. Press
 Ctrl-C to cancel; the partial download stays in the Volume and a rerun resumes
 it.
 
+Only one lllm2 session downloads a model at a time. If another session, such
+as the panel on another machine, is already downloading it, the command says
+so and shows that download's progress instead of starting a second one. Ctrl-C
+then stops only the waiting. If that session stops sending heartbeats, this one
+takes the download over within about 3 minutes and resumes from the bytes
+already stored.
+
 ## Launch a model
 
 ```bash
@@ -139,7 +146,8 @@ Modal backend without restarting it. For the short path, follow
    start. **Download to Modal** fetches a model ahead of time, and
    **Remove from Modal…** deletes it. Download progress also appears in the
    **Downloads** card on **Launch model**. No weights pass through your
-   workstation.
+   workstation. A download another lllm2 session runs shows as such, and the
+   panel follows it rather than starting another.
 5. Start the model. The status line names the cold-start phase: checking the
    GPU type, downloading the model into remote storage, starting the GPU
    container, loading the model into GPU memory, then ready.

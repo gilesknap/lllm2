@@ -106,6 +106,14 @@ heartbeat cannot: an owner process on this host that has since died, whose call
 is an orphan straight away, unless the heartbeat has moved on without that
 record because a later session took the call over.
 
+Downloads use the same heartbeat for a lease. Before downloading, a session
+claims the model in the provider's shared state with an atomic put-if-absent.
+A second session that finds the claim taken follows the running download
+instead of starting its own. It takes the claim over once the owner's heartbeat
+has been silent for the grace, and downloads the rest itself. A provider
+without an atomic claim downloads in each session, which costs a repeated
+download but nothing else.
+
 `lllm2 modal list` shows orphans, and a new session can adopt or cancel them.
 A live call belongs to its own session: bulk stops skip it, no session may
 adopt it, and only `lllm2 modal stop CALL_ID --force` takes it away.

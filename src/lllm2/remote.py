@@ -1281,14 +1281,18 @@ class StoreDownloads:
         # hold it in between, instead of reading zero until the next one. The
         # next file, or one that starts again, takes a fresh baseline: holding
         # the last rate until the count passes the previous file would report
-        # a speed nothing is moving at.
-        marked, counted, rate, measured = time.monotonic(), 0, 0.0, ""
+        # a speed nothing is moving at. So does a file whose size changes, as
+        # when a caller following another session's download first learns it:
+        # that count is everything stored so far, not bytes moved since.
+        marked, counted, rate, measured = time.monotonic(), 0, 0.0, ("", None)
 
         def progress(update):
             nonlocal marked, counted, rate, measured
             now = time.monotonic()
-            if update.file != measured or update.done_bytes < counted:
-                rate, measured = 0.0, update.file
+            if (update.file, update.total_bytes) != measured or (
+                update.done_bytes < counted
+            ):
+                rate, measured = 0.0, (update.file, update.total_bytes)
                 marked, counted = now, update.done_bytes
             elif update.done_bytes > counted:
                 if now > marked:
@@ -1296,6 +1300,11 @@ class StoreDownloads:
                 marked, counted = now, update.done_bytes
             total = update.total_bytes or 0
             detail = f"Downloading {update.file} inside {provider.name}"
+            if update.attached:
+                detail = (
+                    f"Another lllm2 session is downloading {update.file} "
+                    f"inside {provider.name}"
+                )
             if update.retry:
                 # Say why the bytes stopped moving, so a retry does not read
                 # as a stalled download.
@@ -2046,8 +2055,16 @@ class RemoteEngine(Engine):
 
     def _ensure(self, path, cancel):
         source = self._sources(path)
+        following = False
 
         def progress(update):
+            nonlocal following
+            if update.attached and not following:
+                following = True
+                self.log(
+                    f"Another lllm2 session is already downloading {source.name} "
+                    f"into {self.provider.name} storage; following its progress."
+                )
             self._download = {
                 "file": update.file,
                 "done_bytes": update.done_bytes,
