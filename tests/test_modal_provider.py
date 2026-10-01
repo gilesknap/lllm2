@@ -1326,6 +1326,10 @@ def test_engine_layer_installs_each_pinned_track_without_a_gpu(monkeypatch, tmp_
     assert [(b, o["track"], o["check_startup"]) for b, o in installed] == [
         ("cuda", track, False) for track in CUDA_TRACKS
     ]
+    assert all(o["source"] is None for _, o in installed)
+    installed.clear()
+    modal_app.install_engines(LLAMA_CPP_REF, dict(CUDA_TRACKS), str(tmp_path), "/ci")
+    assert [o["source"] for _, o in installed] == [Path("/ci")] * len(CUDA_TRACKS)
     # Stale layer arguments fail the build instead of installing other engines.
     with pytest.raises(RuntimeError, match="pins"):
         modal_app.install_engines("b1", dict(CUDA_TRACKS), str(tmp_path))
@@ -1336,6 +1340,60 @@ def test_engine_layer_installs_each_pinned_track_without_a_gpu(monkeypatch, tmp_
         if op.opname in ("LOAD_GLOBAL", "LOAD_NAME")
     }
     assert not global_reads & set(vars(modal_app))
+
+
+class FakeImage:
+    """Records the image steps ``engine_image`` chains."""
+
+    def __init__(self, steps):
+        self.steps = steps
+
+    def __getattr__(self, name):
+        def step(*args, **kwargs):
+            self.steps.append((name, args, kwargs))
+            return self
+
+        return step
+
+
+def test_image_installs_published_engines_unless_ci_supplies_tarballs(tmp_path):
+    steps: list = []
+    fake = SimpleNamespace(Image=FakeImage(steps))
+    modal_app.engine_image(fake)
+    names = [name for name, _, _ in steps]
+    assert names == [
+        "debian_slim",
+        "apt_install",
+        "run_function",
+        "add_local_python_source",
+    ]
+    # User images keep the release layer arguments, so no engine source.
+    assert steps[2][2]["args"] == (
+        LLAMA_CPP_REF,
+        dict(CUDA_TRACKS),
+        "/opt/lllm2/engines",
+    )
+
+    steps.clear()
+    modal_app.engine_image(fake, str(tmp_path))
+    names = [name for name, _, _ in steps]
+    assert names.index("add_local_dir") < names.index("run_function")
+    _, args, kwargs = steps[names.index("add_local_dir")]
+    assert args == (str(tmp_path), modal_app.LOCAL_ENGINE_ROOT)
+    assert kwargs == {"copy": True}
+    assert steps[names.index("run_function")][2]["args"][-1] == (
+        modal_app.LOCAL_ENGINE_ROOT
+    )
+
+
+def test_ci_engine_tarballs_change_the_deployment_version(tmp_path, monkeypatch):
+    monkeypatch.delenv(modal_app.ENGINE_DIR_VARIABLE, raising=False)
+    published = modal_app.deployment_version()
+    monkeypatch.setenv(modal_app.ENGINE_DIR_VARIABLE, str(tmp_path))
+    (tmp_path / f"{asset_name('13')}.sha256").write_text("1" * 64)
+    first = modal_app.deployment_version()
+    (tmp_path / f"{asset_name('13')}.sha256").write_text("2" * 64)
+    assert len({published, first, modal_app.deployment_version()}) == 3
 
 
 def test_opener_default_is_urlopen():

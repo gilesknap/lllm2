@@ -130,6 +130,15 @@ as well, then adds the checked Python distributions and publishes the draft. PyP
 waits for that release. The engine workflow also supports manual dispatch from a
 selected branch for testing pin changes without publishing a release.
 
+The Modal image normally installs the same published tarballs. To test an
+engine that is not released yet, such as a bump PR's, on a Modal GPU, point
+`LLLM2_MODAL_ENGINE_DIR` at a directory holding both tracks' tarballs and
+`.sha256` files (the `engine-cuda*` workflow artifacts) before the app deploys.
+The image then copies them in and installs them with the same checksum and
+metadata checks, and the app redeploys whenever the tarballs change. Use it only
+in a Modal environment kept for testing: the deployment replaces the `lllm2`
+app in the selected environment.
+
 To iterate locally with Podman (no GPU required for compilation):
 
 ```bash
