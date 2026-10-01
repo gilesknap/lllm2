@@ -101,7 +101,19 @@ const assert=require('node:assert/strict');
  // The catalogue action leads the row, so it needs no sideways scrolling.
  assert.equal(await run("$('find-table').querySelector('thead th').textContent"),'Catalogue');
  assert.equal(await run("$('find-table').querySelector('tbody tr td button').dataset.findAdd"),'hf-a');
+ // A variant whose header is not a model is refused, and the reason shows.
+ await run("fixture.refusals={'hf-a':'Cannot add small-Q4_K_M.gguf. This file is a multi-token prediction (MTP) head for speculative decoding, not a model on its own.'}");
  await run("$('find-table').querySelector('[data-find-add]').click();new Promise(r=>setTimeout(r,40))");
+ assert.match(await run("$('find-status').textContent"),/^Cannot add small-Q4_K_M\.gguf\. This file is a multi-token prediction \(MTP\) head/);
+ assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),false);
+ assert.equal(await run("$('find-table').querySelector('[data-find-add]').disabled"),false);
+ await run("fixture.refusals={}");
+ // The header read takes a few seconds, so the pane says what it is doing.
+ await run("fixture.delay=100;$('find-table').querySelector('[data-find-add]').click()");
+ assert.equal(await run("$('find-status').textContent"),'Reading the start of small-Q4_K_M.gguf from Hugging Face…');
+ await run("new Promise(r=>setTimeout(r,300))");
+ await run("fixture.delay=0");
+ assert.equal(await run("$('find-status').textContent"),'Added small-Q4_K_M.gguf to My catalogue.');
  assert.equal(await run("fixture.catalog.some(e=>e.id==='hf-a')"),true);
  assert.equal(await run("$('find-table').querySelector('tbody tr td button').textContent"),'In catalogue');
  await run("$('catalog').querySelector('[data-catalogue-remove=hf-a]').click();new Promise(r=>setTimeout(r,40))");
