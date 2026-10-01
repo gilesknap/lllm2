@@ -139,6 +139,44 @@ def metadata_get(path, params=None):
     return json.loads(raw)
 
 
+# Repos ship imatrix data, drafters, MTP heads and n-gram tables beside the
+# weights; none runs as a model. For MTP and n-grams match only the sidecar
+# shapes (an ``mtp-`` basename, an ``MTP/`` folder, ``ngrams`` in the basename):
+# a quant named ``…-NVFP4-MTP.gguf`` is a real model whose weights embed the
+# MTP tensors and must stay listed.
+def is_sidecar(file):
+    path = PurePosixPath(file.lower())
+    return (
+        path.name.startswith("mtp-")
+        or "mtp" in path.parts[:-1]
+        or "ngrams" in path.name
+        or any(t in str(path) for t in ("imatrix", "draft", "dflash"))
+    )
+
+
+PROJECTOR_PRECISION = re.compile(r"(?<![a-z0-9])(f16|bf16|f32)(?![a-z0-9])")
+
+
+def pick_projector(projectors):
+    """One projector, or None when the choice is genuinely ambiguous.
+
+    Projectors that differ only in precision are interchangeable, so prefer
+    F16, then BF16, then F32.
+    """
+    if len(projectors) <= 1:
+        return projectors[0] if projectors else None
+    ranked = {}
+    for file in projectors:
+        found = PROJECTOR_PRECISION.findall(file.lower())
+        if len(found) != 1:
+            return None
+        ranked[("f16", "bf16", "f32").index(found[0])] = file
+    stems = {PROJECTOR_PRECISION.sub("", f.lower()) for f in projectors}
+    if len(stems) != 1 or len(ranked) != len(projectors):
+        return None
+    return ranked[min(ranked)]
+
+
 def variants(info):
     """A repository can contain independent quants, shards and projectors."""
     if info.get("private") or info.get("gated") or info.get("disabled"):
@@ -154,7 +192,8 @@ def variants(info):
         for s in info.get("siblings", [])
         if s.get("rfilename", "").lower().endswith(".gguf")
     }
-    projectors = [f for f in siblings if "mmproj" in f.lower()]
+    projectors = sorted(f for f in siblings if "mmproj" in f.lower())
+    projector = pick_projector(projectors)
     tags = info.get("tags") or []
     task = info.get("pipeline_tag") or "Unknown"
     if task not in {"text-generation", "image-text-to-text", "Unknown"}:
@@ -170,9 +209,7 @@ def variants(info):
     gguf = info.get("gguf") or {}
     groups = {}
     for file in siblings:
-        if file in projectors or any(
-            t in file.lower() for t in ("imatrix", "draft", "dflash")
-        ):
+        if file in projectors or is_sidecar(file):
             continue
         match = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", file)
         key = file[: match.start()] if match else file
@@ -190,8 +227,10 @@ def variants(info):
             ]
             if count > 1000 or group != expected:
                 issue = "Incomplete split GGUF metadata."
-        extras = projectors if len(projectors) == 1 else []
-        if len(projectors) > 1 or (task == "image-text-to-text" and not projectors):
+        extras = [projector] if projector else []
+        if (projectors and not projector) or (
+            task == "image-text-to-text" and not projectors
+        ):
             issue = "Cannot identify a unique vision projector from HF metadata."
         wanted = group + extras
         size = (

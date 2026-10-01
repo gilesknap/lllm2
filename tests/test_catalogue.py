@@ -144,6 +144,63 @@ class CatalogueTests(unittest.TestCase):
         del info["siblings"][0]["size"]
         self.assertIsNone(variants(info)[0]["size_bytes"])
 
+    def test_shared_mtp_ngram_sidecars_are_not_variants(self):
+        # apetersson/Qwen3.8-Flash-Next-GGUF keeps its sidecars in shared/.
+        name = "Qwen3.8-Flash-Next"
+        info = {
+            **self.info(),
+            "pipeline_tag": "image-text-to-text",
+            "siblings": [
+                {"rfilename": f"Q4_K_M/{name}-Q4_K_M.gguf", "size": 65},
+                {"rfilename": f"shared/mtp-{name}-shared-Q8_0.gguf", "size": 3},
+                {"rfilename": f"shared/mmproj-{name}-f16.gguf", "size": 1},
+                {"rfilename": f"shared/ngrams-{name}-BF16.gguf", "size": 2},
+            ],
+        }
+        found = variants(info)
+        self.assertEqual([e["file"] for e in found], [f"Q4_K_M/{name}-Q4_K_M.gguf"])
+        self.assertEqual(found[0]["mmproj"], f"shared/mmproj-{name}-f16.gguf")
+        self.assertEqual(found[0]["size_bytes"], 66)
+        self.assertEqual(found[0]["issue"], "")
+
+    def test_mtp_folder_skipped_and_precision_projectors_resolved(self):
+        # unsloth/Qwen3.8-Flash-Next-GGUF: MTP/ heads, three projector precisions.
+        name = "Qwen3.8-Flash-Next"
+        split = [f"UD-IQ1_S/{name}-UD-IQ1_S-0000{i}-of-00003.gguf" for i in (1, 2, 3)]
+        info = {
+            **self.info(),
+            "pipeline_tag": "image-text-to-text",
+            "siblings": [{"rfilename": f, "size": 10} for f in split]
+            + [
+                {"rfilename": f"MTP/mtp-{name}-Q8_0.gguf", "size": 3},
+                {"rfilename": f"MTP/mtp-{name}-BF16.gguf", "size": 5},
+                {"rfilename": "mmproj-BF16.gguf", "size": 2},
+                {"rfilename": "mmproj-F32.gguf", "size": 4},
+                {"rfilename": "mmproj-F16.gguf", "size": 1},
+                {"rfilename": f"{name}-NVFP4-MTP.gguf", "size": 20},
+            ],
+        }
+        found = {e["file"]: e for e in variants(info)}
+        self.assertEqual(sorted(found), [f"{name}-NVFP4-MTP.gguf", split[0]])
+        self.assertEqual(found[split[0]]["files"], [*split, "mmproj-F16.gguf"])
+        self.assertEqual(found[split[0]]["size_bytes"], 31)
+        self.assertFalse(any(e["issue"] for e in found.values()))
+        info["siblings"].remove({"rfilename": "mmproj-F16.gguf", "size": 1})
+        self.assertEqual(variants(info)[0]["mmproj"], "mmproj-BF16.gguf")
+
+    def test_projectors_differing_beyond_precision_stay_ambiguous(self):
+        for names in (
+            ("mmproj-F16.gguf", "mmproj-Q8_0.gguf"),
+            ("mmproj-a-F16.gguf", "mmproj-b-BF16.gguf"),
+            ("mmproj.gguf", "mmproj-F16.gguf"),
+        ):
+            with self.subTest(names=names):
+                info = self.info()
+                info["siblings"] += [{"rfilename": n, "size": 1} for n in names]
+                found = variants(info)
+                self.assertTrue(all("projector" in e["issue"] for e in found))
+                self.assertFalse(any("mmproj" in e for e in found))
+
     def test_gated_non_generation_and_unpinned_repositories_excluded(self):
         for override in (
             {"gated": "auto"},
