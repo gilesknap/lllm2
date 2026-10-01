@@ -1489,8 +1489,19 @@ section[tabindex="-1"], #comparisons {
   width: 7em;
 }
 
-#remote-error:empty, #remote-storage-error:empty {
+#remote-error:empty, #remote-storage-error:empty,
+#workspace-error:empty, #workspace-stop-error:empty {
   display: none;
+}
+
+/* Every running container: one quiet line when nothing runs. */
+.workspace-quiet {
+  margin: 0 0 18px;
+  font-size: 12px;
+}
+
+.workspace-quiet button {
+  margin-left: 6px;
 }
 
 .pill.stored {

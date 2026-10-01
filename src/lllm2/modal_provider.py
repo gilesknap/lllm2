@@ -3,8 +3,11 @@
 ``ModalProvider`` drives the app in ``modal_app``. It deploys the app on first
 use and again when the lllm2 code changes. Serve calls are tracked in a Modal
 Dict: the provider records each call it spawns, and the serve container
-publishes its tunnel address there. ``calls`` lists only recorded calls, so it
-never reports other apps in the workspace. Log lines travel through a Modal
+publishes its tunnel address there. ``calls`` lists only those recorded serve
+calls. ``containers`` lists every running container in the Modal environment
+through the ``modal`` command line, whatever app started it, and matches
+lllm2's own containers to their calls through the records each function
+publishes under ``modal_app.container_key``. Log lines travel through a Modal
 Queue partition per call.
 
 While it drives a call through ``poll`` or ``ensure_model``, the provider writes
@@ -17,9 +20,15 @@ session still drives from an abandoned one, whichever machine owns it.
 
 import functools
 import itertools
+import json
+import os
+import re
 import secrets
+import subprocess
+import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import PurePosixPath
 
 from . import modal_app
@@ -31,6 +40,7 @@ from .remote import (
     GpuProbe,
     ProviderError,
     RemoteCall,
+    RemoteContainer,
     RemoteProvider,
     ServeStatus,
     StoredModel,
@@ -40,6 +50,8 @@ CREDENTIALS_MESSAGE = (
     "Modal credentials are missing or invalid. Sign in with `modal token new` "
     "(or set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET), then run `lllm2 modal setup`."
 )
+# Seconds before a ``modal`` command line call counts as failed.
+CLI_TIMEOUT = 60
 
 
 def create_provider():
@@ -75,6 +87,41 @@ def output_pending(error, errors):
         True when the caller should poll again.
     """
     return type(error) in (TimeoutError, errors.TimeoutError) and not error.args
+
+
+def cli_message(text):
+    """Return the ``modal`` command line's error text without its box drawing.
+
+    Args:
+        text: The command's stderr.
+
+    Returns:
+        One line, or ``CREDENTIALS_MESSAGE`` when the command could not
+        authenticate.
+    """
+    line = " ".join(re.sub(r"[╭╮╰╯│─]+", " ", text or "").split())
+    line = line.removeprefix("Error ").strip()
+    lowered = line.lower()
+    if "token" in lowered and "authenticate" in lowered:
+        return CREDENTIALS_MESSAGE
+    return line or "the modal command failed"
+
+
+def start_time(value):
+    """Parse a ``modal container list --json`` start time.
+
+    Args:
+        value: The ``start_time`` field, such as ``"2026-10-01 19:19:11+00:00"``.
+
+    Returns:
+        Unix seconds, or None for ``"Pending"`` or a value that does not parse.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
 
 
 def _translated(method):
@@ -501,6 +548,122 @@ class ModalProvider(RemoteProvider):
             else:
                 self._forget(call_id)
         return sorted(found, key=lambda call: call.started or 0)
+
+    @_translated
+    def containers(self):
+        # Read the records before listing. A container that publishes its
+        # record after this read is not in it, so the clean-up below cannot
+        # drop the record of a container too new to appear in the listing.
+        records = {
+            key.removeprefix("container:"): value
+            for key, value in list(self._state.items())
+            if isinstance(key, str) and key.startswith("container:")
+        }
+        result = self._cli("container", "list", "--json")
+        if result.returncode != 0:
+            raise ProviderError(
+                f"Modal could not list containers: {cli_message(result.stderr)}"
+            )
+        try:
+            listed = json.loads(result.stdout)
+            found = [
+                (item["container_id"], item.get("app_name"), item.get("start_time"))
+                for item in listed
+            ]
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
+            raise ProviderError(
+                "Unexpected output from `modal container list --json`. "
+                "Update lllm2, or report the modal version in an lllm2 issue."
+            ) from error
+        containers = []
+        for task_id, app, started in found:
+            record = records.pop(task_id, None)
+            record = record if isinstance(record, dict) else {}
+            containers.append(
+                RemoteContainer(
+                    id=task_id,
+                    app=app or None,
+                    function=record.get("function"),
+                    call_id=record.get("call_id"),
+                    started=start_time(started),
+                )
+            )
+        for task_id, record in records.items():
+            self._prune(task_id, record)
+        return sorted(containers, key=lambda c: (c.started is None, c.started or 0))
+
+    def _prune(self, task_id, record):
+        """Drop a container record whose container the listing no longer shows.
+
+        A container removes its own record when its function returns, but not
+        when Modal kills it. A listing can also lag, so a record that names a
+        call stays until that call has ended: a live container that one
+        listing missed keeps its match. The clean-up is best effort; a failed
+        request leaves the record for a later listing.
+
+        Args:
+            task_id: The container id.
+            record: The record the container published.
+        """
+        call_id = record.get("call_id") if isinstance(record, dict) else None
+        try:
+            if call_id and self._status(call_id)[0]:
+                return
+            self._state.pop(modal_app.container_key(task_id), None)
+        except Exception:
+            return
+
+    @_translated
+    def stop_container(self, container_id):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", container_id or ""):
+            raise ValueError(f"Unsafe container id: {container_id}")
+        record = self._state.get(modal_app.container_key(container_id))
+        call_id = record.get("call_id") if isinstance(record, dict) else None
+        if call_id:
+            # Cancelling the call stops its container, and Modal does not retry it.
+            self.cancel(call_id)
+        else:
+            result = self._cli("container", "stop", "--yes", "--", container_id)
+            if result.returncode != 0 and "already stopped" not in result.stderr:
+                raise ProviderError(
+                    f"Modal could not stop container {container_id}: "
+                    f"{cli_message(result.stderr)}"
+                )
+        self._state.pop(modal_app.container_key(container_id), None)
+
+    def _cli(self, *args):
+        """Run the ``modal`` command line of this interpreter.
+
+        The Python client has no supported call that lists or stops
+        containers, so lllm2 runs ``modal container list`` and ``modal
+        container stop``. They read the same credentials, profile and
+        environment as the client.
+
+        Args:
+            args: The command line arguments after ``modal``.
+
+        Returns:
+            The ``subprocess.CompletedProcess`` with text stdout and stderr.
+
+        Raises:
+            ProviderError: The command could not run or timed out.
+        """
+        env = {**os.environ, "NO_COLOR": "1", "COLUMNS": "200"}
+        # rich treats either as a terminal, and NO_COLOR keeps bold, so the
+        # ``--json`` output would carry escape codes that break parsing.
+        env.pop("FORCE_COLOR", None)
+        env.pop("TTY_COMPATIBLE", None)
+        try:
+            return subprocess.run(
+                [sys.executable, "-m", "modal", *args],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT,
+                env=env,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ProviderError(f"The modal command line failed: {error}") from error
 
     def _heartbeat_age(self, call_id):
         """Return seconds since the owning session last heartbeated, or None.

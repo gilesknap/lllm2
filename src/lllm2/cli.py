@@ -41,6 +41,7 @@ from .remote import (
     catalogue_source,
     companion_names,
     describe_calls,
+    describe_containers,
     model_users,
     remote_provider,
     stored_entries,
@@ -592,6 +593,13 @@ def _match(pattern: str, text: str) -> str | None:
 
 def _ownership(row: dict, command: str) -> str:
     owner = row["owner"] or {}
+    if row["status"] == "unknown" and row.get("function"):
+        return (
+            f"an lllm2 {row['function']} call lllm2 does not track; stopping it "
+            "cancels that call, so a start or download that uses it fails"
+        )
+    if row["status"] == "unknown":
+        return "not a serve call lllm2 tracks; stop it from the lllm2 panel or the provider's own tools"
     if row["status"] == "owned":
         return "owned by this process"
     if row["status"] == "active":
@@ -602,6 +610,58 @@ def _ownership(row: dict, command: str) -> str:
         )
         return f"in use by lllm2{where}; its heartbeat is fresh"
     return f"orphan: no live lllm2 session owns it; stop it with `{command} stop {row['id']}`"
+
+
+def _list_containers(provider, label: str, command: str, json_output: bool) -> None:
+    """Print every running container of a provider with its ownership.
+
+    Args:
+        provider: The ``RemoteProvider``.
+        label: The provider name for messages.
+        command: The command group, such as ``"lllm2 modal"``.
+        json_output: Print the rows as JSON instead of text.
+    """
+    view = describe_containers(provider)
+    if view["error"]:
+        typer.echo(f"Could not list every container: {view['error']}", err=True)
+    elif not view["complete"]:
+        typer.echo(
+            f"{label} lists only lllm2 serve calls; other work in the account is not shown.",
+            err=True,
+        )
+    rows = view["containers"]
+    if json_output:
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        typer.echo(f"Nothing is running on {label}.")
+        return
+    for row in rows:
+        where = row["container_id"] or f"call {row['id']}"
+        # A serve call the listing does not show is still lllm2's.
+        app = " · ".join(
+            p
+            for p in (row["app"] or ("lllm2" if row["id"] else None), row["function"])
+            if p
+        )
+        gpu_less = not row["gpu"] and row["function"] == "download"
+        pending = row["container_id"] and row["started"] is None
+        cost = row["estimated_cost_usd"]
+        typer.echo(
+            f"{where}  {app or 'unknown app'}  "
+            f"{row['gpu'] or ('no GPU' if gpu_less else 'unknown GPU')}  "
+            f"{'pending' if pending else _elapsed(row['elapsed_seconds'])}  "
+            + (
+                f"~${cost:.2f}"
+                if cost is not None
+                else "no GPU cost"
+                if gpu_less
+                else "cost unknown"
+            )
+            + f"  {_ownership(row, command)}"
+            + (f"  {row['model']}" if row["model"] else "")
+        )
+    typer.echo(pricing_caveat(provider.name))
 
 
 def provider_app(name: str, label: str) -> typer.Typer:
@@ -693,11 +753,25 @@ def provider_app(name: str, label: str) -> typer.Typer:
         help="List running lllm2 serve calls with owner, elapsed time and cost.\n\n"
         "A call whose owning session still heartbeats is in use, wherever that "
         "session runs. A call with no live owner is an orphan that bills until "
-        f"you stop it. {caveat}",
+        f"you stop it. --containers lists every running container in the {label} "
+        f"account instead, whatever started it. {caveat}",
     )
-    def list_calls(json_output: JsonOutput = False) -> None:
+    def list_calls(
+        json_output: JsonOutput = False,
+        # A default value, not Annotated: postponed annotations cannot see
+        # this function's enclosing variables.
+        containers: bool = typer.Option(
+            False,
+            "--containers",
+            help=f"List every running container in the {label} account, "
+            "whatever started it, not only lllm2 serve calls.",
+        ),
+    ) -> None:
         """List running lllm2 serve calls."""
         provider = remote_provider(name)
+        if containers:
+            _list_containers(provider, label, command, json_output)
+            return
         rows = describe_calls(provider)
         if json_output:
             print(json.dumps(rows, indent=2))

@@ -23,6 +23,7 @@ from .recommendations import promotion_provenance, saved_qualifications
 from .remote import (
     PROVIDERS,
     CallRecords,
+    ProbeCache,
     ProviderError,
     RemoteEngine,
     StoreDownloads,
@@ -174,6 +175,194 @@ class App:
             return self.engine_for(s).hardware(s)
         except RuntimeError:
             return table_hardware(backend, gpu)
+
+    def status(self, query):
+        """Build the status poll response.
+
+        The panel polls this every few seconds, so it reads only local state
+        and the engines' cached status. It never lists remote calls or
+        containers; those refresh through ``/api/remote/containers``.
+
+        Args:
+            query: The poll's query, with optional ``backend`` and ``gpu_type``.
+
+        Returns:
+            The JSON-serialisable status.
+        """
+        return {
+            "token": self.token,
+            "version": __version__,
+            "update": self.update_check.notice(),
+            "engine": self.engine.state(),
+            "job": self.bench.snapshot(),
+            "hardware": self.selected_hardware(query),
+            "downloads": downloads.all_downloads() + self.store_downloads.rows(),
+            "endpoint": self.engine.base + "/v1",
+            "paths": {
+                "models": str(config.MODELS_DIR),
+                "engines": [str(p) for p in config.ENGINE_ROOTS],
+            },
+            "workloads": WORKLOADS,
+        }
+
+    def checked_backends(self, data):
+        """Return the remote backends that a listing may contact.
+
+        A provider is contacted only when the panel selects it, already runs
+        its engine, or this workstation has used it: local call records or a
+        saved GPU probe name it. A local session that has never used a
+        provider then makes no request to it.
+
+        Args:
+            data: The request body, with an optional ``backend``.
+
+        Returns:
+            The provider names, in the order ``remote_backends`` lists them.
+        """
+        checked = {data.get("backend"), *self.engines}
+        checked.update(CallRecords(config.STATE_DIR / "remote-calls.json").providers())
+        checked.update(ProbeCache(config.STATE_DIR / "remote-probes.json").providers())
+        return [b["name"] for b in self.remote_backends() if b["name"] in checked]
+
+    def running_containers(self, data):
+        """List every running container in the checked providers' accounts.
+
+        Args:
+            data: The request body: ``backend`` (the selected backend or
+                empty) and an optional ``check`` list of provider names to
+                contact even when ``checked_backends`` leaves them out.
+
+        Returns:
+            A dict with ``providers`` (one group per contacted provider with
+            ``provider``, ``label``, ``caveat``, ``complete``, ``error`` and
+            the ``describe_containers`` rows under ``containers``) and
+            ``unchecked`` (``provider`` and ``label`` of each remote backend
+            not contacted).
+
+        Raises:
+            ValueError: ``check`` is not a list of provider names.
+        """
+        extra = data.get("check") or []
+        if not isinstance(extra, list) or not all(isinstance(n, str) for n in extra):
+            raise ValueError("Name the providers to check as a list.")
+        checked = set(self.checked_backends(data)) | set(extra)
+        groups, unchecked = [], []
+        for backend in self.remote_backends():
+            name, label = backend["name"], backend["label"]
+            if name not in checked:
+                unchecked.append({"provider": name, "label": label})
+                continue
+            group = {
+                "provider": name,
+                "label": label,
+                "caveat": backend["caveat"],
+                "complete": False,
+                "error": None,
+                "containers": [],
+            }
+            try:
+                group.update(self.remote_engine(name).remote_containers())
+            except RuntimeError as e:
+                group["error"] = str(e)
+            groups.append(group)
+        return {"providers": groups, "unchecked": unchecked}
+
+    def stop_containers(self, data):
+        """Stop listed containers, asking first for work this panel cannot vouch for.
+
+        This session's model stops as **Stop model** does, and an orphan
+        stops at once. Another live session's model and a container lllm2
+        tracks no serve call for are skipped unless ``confirm`` is True, which
+        is allowed for one target at a time.
+
+        Args:
+            data: The request body: ``backend``, ``targets`` (dicts with
+                ``container_id`` and ``call_id``, either may be None) and
+                ``confirm``.
+
+        Returns:
+            A dict with ``stopped``, ``skipped`` (with ``reason``) and
+            ``failed`` (with ``error``) lists of targets. A container the
+            listing does not show is skipped as ended, unless the listing
+            failed: then it is failed, as it may still be running.
+
+        Raises:
+            ValueError: The request names no valid targets, or confirms more
+                than one.
+            RuntimeError: The provider could not list its serve calls.
+        """
+        targets = data.get("targets")
+        if (
+            not isinstance(targets, list)
+            or not targets
+            or not all(
+                isinstance(t, dict)
+                and (
+                    isinstance(t.get("container_id"), str)
+                    or isinstance(t.get("call_id"), str)
+                )
+                for t in targets
+            )
+        ):
+            raise ValueError("Choose the containers to stop.")
+        confirm = data.get("confirm") is True
+        if confirm and len(targets) > 1:
+            raise ValueError(
+                "Confirm one container at a time, so another session's model or "
+                "unrecognised work is never stopped in bulk."
+            )
+        engine = self.remote_engine(data["backend"])
+        view = engine.remote_containers()
+        rows = view["containers"]
+        out = {"stopped": [], "skipped": [], "failed": []}
+        for target in targets:
+            call_id, container_id = target.get("call_id"), target.get("container_id")
+            key = {"container_id": container_id, "call_id": call_id}
+            row = next(
+                (
+                    r
+                    for r in rows
+                    if (
+                        r["id"] == call_id
+                        if call_id
+                        else r["container_id"] == container_id
+                    )
+                ),
+                None,
+            )
+            if row is None and call_id is None and not view["complete"]:
+                # Serve calls are listed apart from containers, so only a
+                # container target is lost when the container listing fails.
+                # It may still be running and billing.
+                out["failed"].append(
+                    key
+                    | {
+                        "error": "Could not check that it is still running, so it "
+                        "was not stopped. "
+                        + (view["error"] or "The provider cannot list containers.")
+                    }
+                )
+                continue
+            if row is None:
+                out["skipped"].append(key | {"reason": "It is no longer running."})
+                continue
+            if row["status"] in ("active", "unknown") and not confirm:
+                out["skipped"].append(key | {"reason": unconfirmed_reason(row)})
+                continue
+            try:
+                if row["status"] == "owned":
+                    if self.engine is not engine or engine.call_id != row["id"]:
+                        raise ValueError(
+                            "Another engine in this panel serves that call."
+                        )
+                    self.action("/api/stop", {})
+                else:
+                    engine.stop_listed(row)
+            except (ValueError, RuntimeError) as e:
+                out["failed"].append(key | {"error": str(e)})
+                continue
+            out["stopped"].append(key)
+        return out
 
     def remote_view(self, backend):
         """Describe a provider's stored models and running calls for the panel.
@@ -642,18 +831,13 @@ class App:
         """
         if path == "/api/remote":
             return self.remote_view(data["backend"])
+        if path == "/api/remote/containers":
+            return self.running_containers(data)
+        if path == "/api/remote/stop-containers":
+            return self.stop_containers(data)
         if path == "/api/remote/orphans":
-            # Contact a provider only when the panel selects it, this panel
-            # already runs its engine, or local call records name it. A local
-            # session with no records then makes no provider request.
             found, unavailable = [], []
-            checked = {data.get("backend"), *self.engines}
-            checked.update(
-                CallRecords(config.STATE_DIR / "remote-calls.json").providers()
-            )
-            for backend in (b["name"] for b in self.remote_backends()):
-                if backend not in checked:
-                    continue
+            for backend in self.checked_backends(data):
                 try:
                     rows = self.remote_engine(backend).orphans()
                 except RuntimeError as e:
@@ -774,6 +958,37 @@ class App:
         raise ValueError("Unknown action")
 
 
+def unconfirmed_reason(row):
+    """Say why a listed container needs confirmation before it stops.
+
+    Args:
+        row: A ``describe_containers`` row whose status is ``"active"`` or
+            ``"unknown"``.
+
+    Returns:
+        A sentence that names what stopping it would cancel.
+    """
+    if row["status"] == "active":
+        owner = row["owner"] or {}
+        where = (
+            f" (pid {owner.get('pid')} on {owner.get('host')})"
+            if owner
+            else " on another machine or in another container"
+        )
+        return (
+            f"Another lllm2 session{where} serves call {row['id']}; confirm to stop it."
+        )
+    if row["function"]:
+        return (
+            f"Container {row['container_id']} runs an lllm2 {row['function']} call "
+            "that this panel does not track; confirm to stop it."
+        )
+    return (
+        f"Container {row['container_id']} ({row['app'] or 'unknown app'}) is not "
+        "a serve call lllm2 tracks; confirm to stop it."
+    )
+
+
 def serve(host="127.0.0.1", port=8082):
     config.STATE_DIR.mkdir(parents=True, exist_ok=True)
     lock = (config.STATE_DIR / "panel.lock").open("w")
@@ -852,25 +1067,7 @@ def serve(host="127.0.0.1", port=8082):
                 query = {
                     k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()
                 }
-                self.send(
-                    200,
-                    {
-                        "token": app.token,
-                        "version": __version__,
-                        "update": app.update_check.notice(),
-                        "engine": app.engine.state(),
-                        "job": app.bench.snapshot(),
-                        "hardware": app.selected_hardware(query),
-                        "downloads": downloads.all_downloads()
-                        + app.store_downloads.rows(),
-                        "endpoint": app.engine.base + "/v1",
-                        "paths": {
-                            "models": str(config.MODELS_DIR),
-                            "engines": [str(p) for p in config.ENGINE_ROOTS],
-                        },
-                        "workloads": WORKLOADS,
-                    },
-                )
+                self.send(200, app.status(query))
             elif path in ["/api/results", "/api/results/export"]:
                 rows = app.store.list("summary" if path == "/api/results" else "result")
                 self.send(200, rows)

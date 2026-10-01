@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -488,6 +489,11 @@ def invoke(*args):
     return CliRunner().invoke(cli.app, ["modal", *args])
 
 
+def plain(text):
+    """Remove the ANSI styling Typer forces on help when GITHUB_ACTIONS is set."""
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+
 def test_a_cli_probe_feeds_later_validation_without_a_container(
     provider, engines, no_local_gpu
 ):
@@ -563,6 +569,66 @@ def test_modal_stop_leaves_a_call_no_local_record_names(modal_cli):
     assert forced.exit_code == 0, forced.output
     assert "Warning" in forced.output and f"Stopped {elsewhere}" in forced.output
     assert [c.id for c in provider.calls()] == [active]
+
+
+def test_modal_list_containers_shows_work_lllm2_did_not_start(modal_cli):
+    provider, orphan, active = modal_cli
+    foreign = provider.run_foreign("my-batch-job")
+    probe = provider.run_foreign("lllm2", function="probe", call_id="fc-probe")
+    download = provider.run_foreign("lllm2", function="download", call_id="fc-dl")
+    assert "--containers" in plain(invoke("list", "--help").output)
+    result = invoke("list", "--containers")
+    assert result.exit_code == 0, result.output
+    lines = {line.split("  ")[0]: line for line in result.output.splitlines()}
+    assert "my-batch-job  unknown GPU" in lines[foreign]
+    assert "cost unknown" in lines[foreign] and "not a serve call" in lines[foreign]
+    assert "lllm2 · probe  unknown GPU" in lines[probe]
+    assert "lllm2 probe call lllm2 does not track" in lines[probe]
+    assert "lllm2 · download  no GPU" in lines[download]
+    assert "no GPU cost" in lines[download]
+    assert "orphan" in lines["ct-" + orphan] and "~$" in lines["ct-" + orphan]
+    assert "in use by lllm2 pid" in lines["ct-" + active]
+    assert "Check current pricing" in result.output
+    rows = {
+        r["container_id"]: r
+        for r in json.loads(invoke("list", "--containers", "--json").output)
+    }
+    assert {c: r["status"] for c, r in rows.items()} == {
+        "ct-" + orphan: "orphan",
+        "ct-" + active: "active",
+        foreign: "unknown",
+        probe: "unknown",
+        download: "unknown",
+    }
+    assert rows["ct-" + orphan]["id"] == orphan
+    # Without the flag the view stays the lllm2 serve calls.
+    assert foreign not in invoke("list").output
+
+
+def test_modal_list_containers_when_nothing_runs(modal_cli):
+    provider, orphan, active = modal_cli
+    for call_id in (orphan, active):
+        provider.cancel(call_id)
+    result = invoke("list", "--containers")
+    assert result.exit_code == 0, result.output
+    assert "Nothing is running on Modal." in result.output
+
+
+def test_modal_list_containers_says_when_the_view_is_partial(modal_cli):
+    """A provider that sees only its serve calls says so instead of guessing."""
+    provider, orphan, active = modal_cli
+    provider.run_foreign("my-batch-job")
+    with patch.object(type(provider), "containers", lambda self: None):
+        result = invoke("list", "--containers")
+        listed = invoke("list", "--containers", "--json")
+    assert result.exit_code == 0, result.output
+    assert "Modal lists only lllm2 serve calls" in result.stderr
+    lines = {line.split("  ")[0]: line for line in result.stdout.splitlines()}
+    assert "lllm2 · serve  FAKE-24" in lines[f"call {orphan}"]
+    assert "orphan" in lines[f"call {orphan}"]
+    assert f"call {active}" in lines
+    # The note goes to stderr, so the JSON on stdout stays parseable.
+    assert {r["container_id"] for r in json.loads(listed.stdout)} == {None}
 
 
 def probe_build(gpu="FAKE-24"):

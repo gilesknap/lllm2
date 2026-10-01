@@ -9,6 +9,7 @@ bench, warm and the harness wrappers use, including ``/props`` and a streamed
 ``/completion`` with a single-slot prompt cache.
 """
 
+import dataclasses
 import json
 import os
 import signal
@@ -28,6 +29,7 @@ from lllm2.remote import (
     GpuProbe,
     ProviderError,
     RemoteCall,
+    RemoteContainer,
     RemoteProvider,
     ServeStatus,
     StoredModel,
@@ -229,7 +231,9 @@ class FakeProvider(RemoteProvider):
     Like a real provider it keeps each call's owner heartbeat in its own state,
     so any machine reading the provider can tell a call a live session drives
     from an abandoned one. ``spawn`` and ``poll`` heartbeat; ``silence`` and a
-    fake clock let a test abandon a call.
+    fake clock let a test abandon a call. ``containers`` lists a container per
+    serve call, plus the containers ``run_foreign`` records for work lllm2
+    does not track.
 
     Attributes:
         probes: The GPU types probed, in order.
@@ -432,6 +436,65 @@ class FakeProvider(RemoteProvider):
             call_id: The call identifier.
         """
         self._edit(call_id, heartbeat=None)
+
+    def containers(self):
+        # A serve call's container reports no GPU, as Modal's listing does;
+        # the call supplies it.
+        found = [
+            RemoteContainer(
+                "ct-" + call.id, "lllm2", "serve", call.id, None, call.started
+            )
+            for call in self.calls()
+        ]
+        for path in sorted(self._foreign().glob("*.json")):
+            try:
+                found.append(RemoteContainer(**json.loads(path.read_text())))
+            except (OSError, ValueError):
+                continue
+        return sorted(found, key=lambda c: (c.started is None, c.started or 0))
+
+    def run_foreign(
+        self, app, *, function=None, call_id=None, gpu=None, started=None, pending=False
+    ):
+        """Record a running container that lllm2 does not track.
+
+        Examples are another tool's job, or an lllm2 probe or download.
+
+        Args:
+            app: The app name, or None when the provider does not report it.
+            function: The function name, or None.
+            call_id: The call it runs, or None.
+            gpu: The GPU type the listing reports, or None.
+            started: The start time, or None for the provider clock's now.
+            pending: True for a container that has not started yet.
+
+        Returns:
+            The container identifier.
+        """
+        container_id = "fx-" + uuid.uuid4().hex[:12]
+        record = RemoteContainer(
+            container_id,
+            app,
+            function,
+            call_id,
+            gpu,
+            None if pending else self.clock() if started is None else started,
+        )
+        path = self._foreign() / f"{container_id}.json"
+        path.write_text(json.dumps(dataclasses.asdict(record)))
+        return container_id
+
+    def stop_container(self, container_id):
+        call_id = container_id.removeprefix("ct-")
+        if container_id.startswith("ct-") and self._record(call_id) is not None:
+            self.cancel(call_id)
+            return
+        (self._foreign() / f"{container_id}.json").unlink(missing_ok=True)
+
+    def _foreign(self):
+        directory = self.root / "containers"
+        directory.mkdir(exist_ok=True)
+        return directory
 
     def _edit(self, call_id, **values):
         with self._lock:

@@ -25,8 +25,9 @@ a `LocalEngine`; any other backend names a provider.
 
 A `RemoteProvider` rents out a GPU. Its interface covers probing a GPU type,
 placing a model in its store, listing and removing stored models, and spawning,
-polling, cancelling and listing serve calls. `RemoteEngine` drives any provider
-through that interface.
+polling, cancelling and listing serve calls. It can also list and stop every
+running container in the account; a provider that cannot keeps the default,
+which says so. `RemoteEngine` drives any provider through that interface.
 
 A provider registers two things under the same name:
 
@@ -117,6 +118,30 @@ download but nothing else.
 `lllm2 modal list` shows orphans, and a new session can adopt or cancel them.
 A live call belongs to its own session: bulk stops skip it, no session may
 adopt it, and only `lllm2 modal stop CALL_ID --force` takes it away.
+
+## Seeing every container
+
+Serve calls are not the only work that bills. A probe, a download, a call from
+another lllm2 version and another tool's job all run containers too. So the
+provider lists containers separately from calls, with `containers()`, and
+`describe_containers` joins the two.
+
+Modal's container list gives a container id, its app and its start time, but
+no function, call or GPU type. Each lllm2 function therefore writes its
+function name and call id under `container:<id>` in the `lllm2-state` Dict
+while it runs. That record is how a serve container finds its call, and so
+its owner, GPU and cost. Every other container is one lllm2 does not track,
+and lllm2 does not guess its GPU or cost.
+
+The Python client has no supported call that lists or stops containers, so
+the provider runs `modal container list --json` and `modal container stop`
+with lllm2's own Python. They read the same credentials and environment as
+the client. A container that runs a known lllm2 call is stopped by cancelling
+that call instead, because Modal does not retry a cancelled call.
+
+A provider that cannot list beyond its own serve calls returns None from
+`containers()`. The panel and `lllm2 modal list --containers` then show the
+serve calls alone and say the view is partial.
 
 See [ADR 3](decisions/0003-tunnel-transport-and-local-proxy.md) for why lllm2
 uses a tunnel and a local proxy.

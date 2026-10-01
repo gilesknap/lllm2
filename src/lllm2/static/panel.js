@@ -748,6 +748,7 @@ async function poll(){
   if(previous.engine?.phase!==s.engine.phase||previous.job?.status!==s.job.status){
    if(s.engine.phase==='idle stopped'&&previous.engine?.phase&&previous.engine.phase!=='idle stopped')message('The remote model stopped after its idle timeout, so it no longer bills.');
    if(remoteBackend(q.backend)&&previous.engine)refreshRemote();
+   if(previous.engine)refreshContainers();
    if(s.job.adopting&&s.job.status==='serving'&&s.engine.settings&&adoptedFill!==s.job.adopting){adoptedFill=s.job.adopting;loadedDefaults={settings:s.engine.settings,mode:'running',source:'Current model settings',notes:['Adopted a running remote call. No saved preferences changed.']};lastBackend=s.engine.settings.backend;fill(s.engine.settings);attempt(inspect);}
   }
   $('app-version').textContent=s.version?`Version ${s.version}`:'';
@@ -793,6 +794,8 @@ $('backend').onchange=()=>attempt(async()=>{
  const model=$('model').value;
  if(remote){$('engine').value='';$('device').replaceChildren(new Option('CUDA0','CUDA0'));gpuOptions(backend,$('gpu_type').value);syncBackend();await refreshRemote();await selectModel(model||'');}
  else{gpuOptions(backend,'');$('engine').value='';$('device').replaceChildren(new Option('Choose device',''));engineOverride=true;syncBackend();await refreshRemote();await selectModel(discovered.models?.some(m=>m.path===model)?model:'');}
+ // The checked providers follow the selected backend.
+ refreshContainers();
 });
 $('load-default').onclick=()=>{$('load-menu').open=false;attempt(()=>loadDefaults('saved'));};
 $('built-in-default').onclick=()=>{$('load-menu').open=false;attempt(()=>loadDefaults('built-in'));};
@@ -1065,7 +1068,7 @@ function renderRemote(){
  $('remote-storage-note').textContent=state?`Models stored in ${label} start without a download. Storage may be billed by ${label}. ${(state.calls||[]).length} lllm2 call${(state.calls||[]).length===1?'':'s'} running.`:`Checking ${label}…`;
  renderMarkup('remote-models',models.map(m=>`<div class="remote-model"><div><b>${esc(m.display_name||m.name)}</b><small>${esc(m.name)} · ${(m.size_bytes/1e9).toFixed(1)} GB${m.in_use.length?' · in use by call '+esc(m.in_use.join(', ')):''}</small></div><button id="remote-store-remove-${esc(encodeURIComponent(m.name))}" data-remote-remove="${esc(m.name)}" ${m.in_use.length?'disabled':''}>Remove…</button></div>`).join('')+(state?.calls||[]).map(c=>`<div class="remote-model"><div><b>Call ${esc(c.id)} · ${esc(c.gpu||'unknown GPU')} · ${esc(c.status)}</b><small>${esc(modelName(c.model))} · running ${clockText(c.elapsed_seconds)} · about ${money(c.estimated_cost_usd)}</small></div></div>`).join('')||(state&&!state.error?`<p class="muted">No models stored in ${esc(label)} yet.</p>`:''));
 }
-$('remote-refresh').onclick=()=>attempt(async()=>{await refreshRemote();await refreshOrphans();});
+$('remote-refresh').onclick=()=>attempt(async()=>{await refreshRemote();await refreshOrphans();await refreshContainers();});
 $('remote-models').onclick=e=>{const b=e.target.closest('[data-remote-remove]');if(b&&!b.disabled)openRemoteRemove(b.dataset.remoteRemove);};
 function openRemoteRemove(name){
  remoteRemoving={backend:currentLaunch()?.backend,name};
@@ -1094,6 +1097,111 @@ $('orphan-banner').onclick=e=>attempt(async()=>{
  try{
   if(adopt){await api('/api/remote/adopt',{backend:b.dataset.provider,call_id:b.dataset.adopt,replace_running:!!statusState.engine?.running});message(`Adopting call ${b.dataset.adopt}. It serves on the usual engine port once ready.`);location.hash='launch';await switchView('launch');}
   else{await api('/api/remote/stop-call',{backend:b.dataset.provider,call_id:b.dataset.stopCall});message(`Stopped remote call ${b.dataset.stopCall}.`);}
- }finally{await refreshOrphans();await poll();refreshRemote();}
+ }finally{await refreshOrphans();await pollThenContainers();refreshRemote();}
 });
-(async()=>{await poll();await scan();refreshOrphans();if(['#find','#experiments'].includes(location.hash))await switchView(location.hash.slice(1));slotNote();setInterval(poll,2500);})();
+// Every running container in the checked providers' accounts, whatever started
+// it. Listing is slower than the status poll, so it refreshes on page load, on a
+// phase change, on demand and every minute while the card is open and the Launch
+// view shows it; never on the status tick. A provider this panel has not used is
+// checked only on request.
+let workspace={providers:[],unchecked:[]},workspaceSequence=0,workspaceChecked=null,workspaceTarget=null;
+const workspaceStopping=new Map(),workspaceForced=new Set(),workspaceInterval=60000,workspaceStopWait=120000;
+const workspaceRows=()=>workspace.providers.flatMap(g=>g.containers.map(r=>({...r,provider:g.provider,label:g.label})));
+const workspaceKey=r=>`${r.provider}:${r.container_id||'call-'+r.id}`;
+// Another session's model and work lllm2 does not track are stopped only after a dialog.
+const needsConfirm=r=>['active','unknown'].includes(r.status);
+const workspaceGpuLess=r=>!r.gpu&&r.function==='download';
+async function refreshContainers(){
+ const n=++workspaceSequence,backend=currentLaunch()?.backend||'';
+ try{const d=await api('/api/remote/containers',{backend,check:[...workspaceForced]});if(n!==workspaceSequence)return;workspace=d;}
+ catch(e){if(n!==workspaceSequence)return;workspace={providers:remoteBackend(backend)?[{provider:backend,label:backendInfo(backend)?.label||backend,caveat:'',complete:false,error:e.message,containers:[]}]:[],unchecked:[]};}
+ workspaceChecked=new Date();renderContainers();
+}
+function workspaceTick(){if($('workspace').open&&!$('workspace').hidden&&!$('launch-view').hidden)refreshContainers();}
+// Refresh the listing after an action, unless the status poll already did.
+async function pollThenContainers(){const before=workspaceSequence;await poll();if(workspaceSequence===before)await refreshContainers();}
+const workspaceTime=()=>workspaceChecked?workspaceChecked.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
+const workspaceOwner=r=>r.owner?` (pid ${r.owner.pid} on ${r.owner.host})`:' on another machine or in another container';
+const workspaceTitle=r=>[r.label,r.app||(r.id?'lllm2':'unknown app'),r.function,r.gpu||(workspaceGpuLess(r)?'no GPU':'unknown GPU')].filter(Boolean).join(' · ');
+function workspaceStatus(r){
+ const model=r.model?` · ${modelName(r.model)}`:'';
+ if(r.status==='owned')return "This session's model"+model;
+ if(r.status==='active')return `Another lllm2 session's model${workspaceOwner(r)}; its heartbeat is fresh`+model;
+ if(r.status==='orphan')return 'Orphan: no live lllm2 session owns it'+model;
+ if(r.function)return `An lllm2 ${r.function} call this panel does not track · stopping it cancels that call`;
+ return 'Not a serve call this panel tracks';
+}
+function workspaceCost(r){
+ const where=r.container_id?`container ${r.container_id}`:`call ${r.id}`;
+ if(r.container_id&&r.started==null)return `Waiting for the container to start · ${where}`;
+ const running=Number.isFinite(r.elapsed_seconds)?`Running ${clockText(r.elapsed_seconds)}`:'Running for an unknown time';
+ if(Number.isFinite(r.estimated_cost_usd))return `${running} · about ${money(r.estimated_cost_usd)} so far at ${hourlyRate(r.usd_per_hour)} · ${where}`;
+ if(workspaceGpuLess(r))return `${running} · no GPU, so no GPU cost · ${where}`;
+ return `${running} · cost not estimated: ${r.gpu?'no price for '+r.gpu:'GPU type unknown'} · ${where}`;
+}
+function renderContainers(){
+ const now=Date.now(),rows=workspaceRows(),keys=new Set(rows.map(workspaceKey));
+ // Modal lists a stopped container for a few seconds, so a stopping row waits.
+ for(const [key,since] of workspaceStopping)if(!keys.has(key)||now-since>workspaceStopWait)workspaceStopping.delete(key);
+ const groups=workspace.providers,unchecked=workspace.unchecked||[],withRows=groups.filter(g=>g.containers.length),empty=groups.filter(g=>!g.containers.length),time=workspaceTime();
+ const quiet=[...empty.map(g=>g.error?`${g.label} could not be checked: ${g.error}`:`Nothing is running in ${g.label}. Checked ${time}.`),...unchecked.map(u=>`${u.label} is not checked while another backend is selected.`)];
+ $('workspace-quiet').hidden=!quiet.length;
+ $('workspace-quiet').classList.toggle('error',empty.some(g=>g.error));
+ $('workspace-quiet-text').textContent=quiet.join(' ');
+ $('workspace-quiet-refresh').textContent=unchecked.length?`Check ${unchecked.map(u=>u.label).join(' and ')}`:'Check again';
+ $('workspace').hidden=!withRows.length;
+ if(!withRows.length)return;
+ const others=rows.filter(r=>r.status!=='owned').length;
+ $('workspace-summary').textContent=`Running in ${withRows.map(g=>g.label).join(' and ')} · ${rows.length} container${rows.length===1?'':'s'}${others?` · ${others} not from this session`:''}`;
+ $('workspace-note').textContent=[`Every running container lllm2 can see, whatever started it. Checked ${time}.`,...withRows.filter(g=>!g.complete&&!g.error).map(g=>`${g.label} lists only lllm2 serve calls, so other work there is not shown.`)].join(' ');
+ $('workspace-error').textContent=withRows.filter(g=>g.error).map(g=>`${g.label} could not list every container: ${g.error}`).join(' ');
+ renderMarkup('workspace-rows',rows.map(r=>{const key=workspaceKey(r),stopping=workspaceStopping.has(key);return `<div class="remote-model workspace-row"><div><b>${esc(workspaceTitle(r))}</b><small>${esc(workspaceStatus(r))}</small><small>${esc(workspaceCost(r))}</small></div><button id="workspace-stop-${esc(key)}" type="button" data-workspace-stop="${esc(key)}" ${stopping?'disabled':''}>${stopping?'Stopping…':needsConfirm(r)?'Stop…':'Stop'}</button></div>`;}).join(''));
+ $('workspace-caveat').textContent=[...new Set(withRows.map(g=>g.caveat).filter(Boolean))].join(' ');
+ const bulk=workspaceBulk(),owned=bulk.some(r=>r.status==='owned'),orphanCount=bulk.filter(r=>r.status==='orphan').length,orphanText=`${orphanCount} orphan${orphanCount===1?'':'s'}`;
+ $('workspace-stop-all').hidden=!bulk.length;
+ $('workspace-stop-all').textContent=owned&&orphanCount?`Stop this session's model and ${orphanText}`:owned?"Stop this session's model":`Stop ${orphanText}`;
+}
+// Stop all covers this session's model and orphans; nothing that needs a dialog.
+const workspaceBulk=()=>workspaceRows().filter(r=>['owned','orphan'].includes(r.status)&&!workspaceStopping.has(workspaceKey(r)));
+async function requestStop(rows,confirm){
+ const merged={stopped:[],skipped:[],failed:[]};
+ for(const r of rows)workspaceStopping.set(workspaceKey(r),Date.now());
+ renderContainers();
+ for(const provider of new Set(rows.map(r=>r.provider))){
+  const group=rows.filter(r=>r.provider===provider);
+  try{const d=await api('/api/remote/stop-containers',{backend:provider,targets:group.map(r=>({container_id:r.container_id,call_id:r.id})),confirm});for(const k of Object.keys(merged))merged[k].push(...d[k].map(t=>({...t,provider})));}
+  catch(e){merged.failed.push(...group.map(r=>({container_id:r.container_id,call_id:r.id,provider,error:e.message})));}
+ }
+ for(const t of [...merged.skipped,...merged.failed])workspaceStopping.delete(workspaceKey({...t,id:t.call_id}));
+ const n=merged.stopped.length,notes=[...merged.skipped.map(t=>t.reason),...merged.failed.map(t=>t.error)];
+ message(`${n?`Stopped ${n} container${n===1?'':'s'}.`:'Nothing was stopped.'}${notes.length?' '+notes.join(' '):''}`,merged.failed.length>0);
+ renderContainers();
+ return merged;
+}
+async function afterStop(){await refreshOrphans();await pollThenContainers();refreshRemote();}
+async function stopContainers(rows,confirm){const merged=await requestStop(rows,confirm);await afterStop();return merged;}
+function openWorkspaceStop(r){
+ workspaceTarget=r;
+ const active=r.status==='active',lllm2=!active&&!!r.function;
+ $('workspace-stop-title').textContent=active?"Stop another session's model?":lllm2?`Stop an lllm2 ${r.function} container?`:'Stop a container lllm2 does not track?';
+ $('workspace-stop-name').textContent=`${workspaceTitle(r)} · ${workspaceCost(r)}`;
+ $('workspace-stop-detail').textContent=active?`Another lllm2 session${workspaceOwner(r)} serves call ${r.id} and keeps its heartbeat fresh. Stopping it leaves that session without its model.`:lllm2?`Stopping cancels this lllm2 ${r.function} call. A model start or store download that uses it, in this panel or another lllm2 session, fails.${r.function==='download'?' The partial download stays in storage, so a retry resumes it.':''}`:`This is not a serve call this panel tracks. Stopping cancels whatever the container runs. If its app retries the work, ${r.label} may start it again in a new container; stop that app from ${r.label}'s own tools to end it for good.`;
+ $('workspace-stop-confirm').textContent=active?'Stop their model':'Stop container';
+ $('workspace-stop-error').textContent='';$('workspace-stop-dialog').showModal();$('workspace-stop-cancel').focus();
+}
+$('workspace-rows').onclick=e=>{
+ const b=e.target.closest('[data-workspace-stop]');if(!b||b.disabled)return;
+ const r=workspaceRows().find(r=>workspaceKey(r)===b.dataset.workspaceStop);if(!r)return;
+ if(needsConfirm(r))openWorkspaceStop(r);else attempt(()=>stopContainers([r],false));
+};
+$('workspace-stop-all').onclick=()=>attempt(()=>stopContainers(workspaceBulk(),false));
+$('workspace-refresh').onclick=()=>attempt(refreshContainers);
+$('workspace-quiet-refresh').onclick=()=>{for(const u of workspace.unchecked||[])workspaceForced.add(u.provider);attempt(refreshContainers);};
+$('workspace-stop-cancel').onclick=()=>$('workspace-stop-dialog').close();
+$('workspace-stop-confirm').onclick=async()=>{
+ $('workspace-stop-confirm').disabled=true;
+ try{const d=await requestStop([workspaceTarget],true);if(d.failed.length||d.skipped.length)$('workspace-stop-error').textContent=[...d.skipped.map(t=>t.reason),...d.failed.map(t=>t.error)].join(' ');else $('workspace-stop-dialog').close();await afterStop();}
+ catch(e){$('workspace-stop-error').textContent=e.message;}
+ finally{$('workspace-stop-confirm').disabled=false;}
+};
+(async()=>{await poll();await scan();refreshOrphans();refreshContainers();if(['#find','#experiments'].includes(location.hash))await switchView(location.hash.slice(1));slotNote();setInterval(poll,2500);setInterval(workspaceTick,workspaceInterval);})();
