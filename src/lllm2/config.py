@@ -21,6 +21,32 @@ ENGINE_ROOTS = [
 ENGINE_PORT = int(os.environ.get("LLLM2_ENGINE_PORT", "1920"))
 
 
+def engine_host(environ=os.environ):
+    """Read the address a local llama-server binds from ``LLLM2_ENGINE_HOST``.
+
+    ``127.0.0.1`` keeps the model API on this machine. ``0.0.0.0`` also serves
+    it on every other interface, for a container whose port a Kubernetes
+    Service or a published port forwards. lllm2 itself still connects through
+    127.0.0.1. A remote backend's local proxy always listens on 127.0.0.1.
+
+    Args:
+        environ: The environment mapping to read.
+
+    Returns:
+        ``"127.0.0.1"`` (the default, also for a blank value) or ``"0.0.0.0"``.
+
+    Raises:
+        ValueError: The variable has any other value.
+    """
+    value = environ.get("LLLM2_ENGINE_HOST", "").strip() or "127.0.0.1"
+    if value not in ("127.0.0.1", "0.0.0.0"):
+        raise ValueError("LLLM2_ENGINE_HOST must be 127.0.0.1 or 0.0.0.0.")
+    return value
+
+
+ENGINE_HOST = engine_host()
+
+
 def update_check_enabled(environ=os.environ):
     """The panel checks GitHub daily for a newer release unless this is 0 or off."""
     value = environ.get("LLLM2_UPDATE_CHECK", "1").strip().lower()
