@@ -615,6 +615,31 @@ def test_a_failed_stop_is_reported_and_the_others_still_stop(app, tmp_path):
         second.close()
 
 
+def test_a_failed_listing_never_reports_a_container_as_ended(app, tmp_path):
+    abandoned, orphan = spawn_orphan(tmp_path, dead_owner())
+    foreign = abandoned.run_foreign("my-batch-job")
+
+    def fail(provider):
+        raise remote.ProviderError("Fake could not list containers")
+
+    try:
+        rows = {row["container_id"]: row for row in running(app)["containers"]}
+        with patch.object(FakeProvider, "containers", fail):
+            result = stop_containers(app, target(rows[foreign]), confirm=True)
+            # Serve calls are listed apart, so an orphan still stops.
+            stopped = stop_containers(app, target(rows["ct-" + orphan]))
+        assert result["stopped"] == result["skipped"] == []
+        (failed,) = result["failed"]
+        assert failed["container_id"] == foreign
+        assert "was not stopped" in failed["error"]
+        assert "Fake could not list containers" in failed["error"]
+        assert stopped["stopped"] == [target(rows["ct-" + orphan])]
+        left = {row["container_id"] for row in running(app)["containers"]}
+        assert left == {foreign}
+    finally:
+        abandoned.close()
+
+
 def test_stop_all_stops_this_sessions_model_and_orphans_only(app, tmp_path):
     use_free_port(app)
     start(app)

@@ -472,6 +472,7 @@ class ModalProvider(RemoteProvider):
         try:
             return subprocess.run(
                 [sys.executable, "-m", "modal", *args],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=CLI_TIMEOUT,

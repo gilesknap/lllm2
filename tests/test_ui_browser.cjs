@@ -583,6 +583,9 @@ const assert=require('node:assert/strict');
  assert.equal(await run('listPosts()-listBefore'),0);
  await run("$('workspace').open=true;workspaceTick();await new Promise(r=>setTimeout(r,50))");
  assert.equal(await run('listPosts()-listBefore'),1);
+ // Nor while another view hides the Launch view and its card.
+ await run("$('launch-view').hidden=true;workspaceTick();await new Promise(r=>setTimeout(r,50));$('launch-view').hidden=false");
+ assert.equal(await run('listPosts()-listBefore'),1);
  // Nothing running is one quiet line, not an empty card.
  await run("fixture.workspace.containers=[];await refreshContainers()");
  assert.equal(await run("$('workspace').hidden"),true);

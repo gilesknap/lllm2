@@ -1098,8 +1098,9 @@ $('orphan-banner').onclick=e=>attempt(async()=>{
 });
 // Every running container in the checked providers' accounts, whatever started
 // it. Listing is slower than the status poll, so it refreshes on page load, on a
-// phase change, on demand and every minute while the card is open; never on the
-// status tick. A provider this panel has not used is checked only on request.
+// phase change, on demand and every minute while the card is open and the Launch
+// view shows it; never on the status tick. A provider this panel has not used is
+// checked only on request.
 let workspace={providers:[],unchecked:[]},workspaceSequence=0,workspaceChecked=null,workspaceTarget=null;
 const workspaceStopping=new Map(),workspaceForced=new Set(),workspaceInterval=60000,workspaceStopWait=120000;
 const workspaceRows=()=>workspace.providers.flatMap(g=>g.containers.map(r=>({...r,provider:g.provider,label:g.label})));
@@ -1113,7 +1114,7 @@ async function refreshContainers(){
  catch(e){if(n!==workspaceSequence)return;workspace={providers:remoteBackend(backend)?[{provider:backend,label:backendInfo(backend)?.label||backend,caveat:'',complete:false,error:e.message,containers:[]}]:[],unchecked:[]};}
  workspaceChecked=new Date();renderContainers();
 }
-function workspaceTick(){if($('workspace').open&&!$('workspace').hidden)refreshContainers();}
+function workspaceTick(){if($('workspace').open&&!$('workspace').hidden&&!$('launch-view').hidden)refreshContainers();}
 // Refresh the listing after an action, unless the status poll already did.
 async function pollThenContainers(){const before=workspaceSequence;await poll();if(workspaceSequence===before)await refreshContainers();}
 const workspaceTime=()=>workspaceChecked?workspaceChecked.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';

@@ -282,12 +282,14 @@ class App:
 
         Returns:
             A dict with ``stopped``, ``skipped`` (with ``reason``) and
-            ``failed`` (with ``error``) lists of targets.
+            ``failed`` (with ``error``) lists of targets. A container the
+            listing does not show is skipped as ended, unless the listing
+            failed: then it is failed, as it may still be running.
 
         Raises:
             ValueError: The request names no valid targets, or confirms more
                 than one.
-            RuntimeError: The provider could not list its containers.
+            RuntimeError: The provider could not list its serve calls.
         """
         targets = data.get("targets")
         if (
@@ -310,7 +312,8 @@ class App:
                 "unrecognised work is never stopped in bulk."
             )
         engine = self.remote_engine(data["backend"])
-        rows = engine.remote_containers()["containers"]
+        view = engine.remote_containers()
+        rows = view["containers"]
         out = {"stopped": [], "skipped": [], "failed": []}
         for target in targets:
             call_id, container_id = target.get("call_id"), target.get("container_id")
@@ -327,6 +330,19 @@ class App:
                 ),
                 None,
             )
+            if row is None and call_id is None and not view["complete"]:
+                # Serve calls are listed apart from containers, so only a
+                # container target is lost when the container listing fails.
+                # It may still be running and billing.
+                out["failed"].append(
+                    key
+                    | {
+                        "error": "Could not check that it is still running, so it "
+                        "was not stopped. "
+                        + (view["error"] or "The provider cannot list containers.")
+                    }
+                )
+                continue
             if row is None:
                 out["skipped"].append(key | {"reason": "It is no longer running."})
                 continue

@@ -753,6 +753,8 @@ def test_cli_runs_the_modal_module_of_this_interpreter(provider, monkeypatch):
     ]
     assert seen["timeout"] == modal_provider.CLI_TIMEOUT
     assert seen["env"]["NO_COLOR"] == "1"
+    # A prompt fails at once instead of waiting for the timeout.
+    assert seen["stdin"] == subprocess.DEVNULL
 
 
 def test_stop_container_cancels_a_known_call_and_stops_other_work(fake, provider):
