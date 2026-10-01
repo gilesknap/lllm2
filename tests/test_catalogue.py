@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from lllm2 import config, downloads
+from lllm2 import config, discovery, downloads
 from lllm2.app import App
 from lllm2.catalogue import Catalogue, Finder, local_paths, suitability, variants
 from lllm2.store import Store
@@ -187,6 +187,69 @@ class CatalogueTests(unittest.TestCase):
         self.assertFalse(any(e["issue"] for e in found.values()))
         info["siblings"].remove({"rfilename": "mmproj-F16.gguf", "size": 1})
         self.assertEqual(variants(info)[0]["mmproj"], "mmproj-BF16.gguf")
+
+    def test_drafters_adapters_tokenizers_and_layer_bundles_are_not_variants(self):
+        # Sidecar filenames found by scanning popular GGUF repositories.
+        sidecars = [
+            "Qwen3.8-Flash-Next-ngram-embeddings.gguf",
+            "eagle3-gpt-oss-120b-Q8_0.gguf",
+            "answerability/granite4.1_8b/lora/Lora-bf16.gguf",
+            "tokenizer.gguf",
+            "generated/llm2vec-text-bundle/tokenizer.gguf",
+            "generated/llm2vec-text-bundle/layer-00.gguf",
+            "layers/layer-00000.gguf",
+            "shared/embeddings.gguf",
+            "shared/output.gguf",
+            "shared/common.gguf",
+            "shared/metadata.gguf",
+            "final-norm.gguf",
+            "embedding.gguf",
+        ]
+        models = [
+            "Qwen3.8-27B-NVFP4-MTP-HIGH.gguf",
+            "gemma-4-26B-A4B-it-MXFP4_MOE.gguf",
+            "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            "Qwen3.8-Flash-Next-Q4_K_M.gguf",
+            "Qwen2.5-VL-7B-Vision-Instruct-Q4_K_M.gguf",
+            "RWKV-v5-Eagle-7B-Q8_0.gguf",
+            "Florakit-7B-Q4_K_M.gguf",
+        ]
+        info = {
+            **self.info(),
+            "siblings": [{"rfilename": f, "size": 1} for f in sidecars + models],
+        }
+        found = variants(info)
+        self.assertEqual(sorted(e["file"] for e in found), sorted(models))
+        self.assertFalse(any(e["issue"] or "mmproj" in e for e in found))
+
+    def test_vision_encoders_are_projectors(self):
+        for encoder in (
+            "DeepSeek-V4-Flash-Vision-Encoder.gguf",
+            "DeepSeek-V4.1-Flash-Vision.gguf",
+            "GLM-5.3-Flash-Vision-Encoder.gguf",
+        ):
+            with self.subTest(encoder=encoder):
+                info = {
+                    **self.info(),
+                    "pipeline_tag": "image-text-to-text",
+                    "siblings": [
+                        {"rfilename": "model-Q8_0.gguf", "size": 600},
+                        {"rfilename": encoder, "size": 50},
+                    ],
+                }
+                (found,) = variants(info)
+                self.assertEqual(found["file"], "model-Q8_0.gguf")
+                self.assertEqual(found["mmproj"], encoder)
+                self.assertEqual(found["issue"], "")
+
+    def test_installed_vision_encoders_are_not_listed_as_models(self):
+        folder = config.MODELS_DIR / "GLM"
+        folder.mkdir(parents=True)
+        for name in ("GLM-Q4_K_M.gguf", "GLM-5.3-Flash-Vision-Encoder.gguf"):
+            (folder / name).write_bytes(b"")
+        with patch.object(discovery, "metadata", return_value={}):
+            names = [m["name"] for m in discovery.models()]
+        self.assertEqual(names, ["GLM/GLM-Q4_K_M.gguf"])
 
     def test_projectors_differing_beyond_precision_stay_ambiguous(self):
         for names in (
