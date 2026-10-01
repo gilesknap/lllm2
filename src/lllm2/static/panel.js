@@ -726,6 +726,18 @@ function edited(key){
  defaultState();slotNote();renderFeatures();launchState();
  editTimer=setTimeout(()=>attempt(inspect),250);finishNavigation();
 }
+// Newer release banner; dismissal is remembered per version in this browser.
+let dismissedVersion=null;
+function dismissedUpdate(){try{return localStorage.getItem('lllm2.dismissedUpdate')||dismissedVersion;}catch{return dismissedVersion;}}
+function renderUpdate(u){
+ const show=!!u&&dismissedUpdate()!==u.version;$('update-banner').hidden=!show;
+ renderMarkup('update-banner',show?`<h2>lllm2 ${esc(u.version)} is available${u.llama_cpp?` (llama.cpp ${esc(u.llama_cpp)})`:''}</h2><p class="muted">This panel runs ${esc(statusState.version)}. To upgrade, run in a terminal, then restart the panel:</p><pre>${esc([u.upgrade_command,u.engine_command].filter(Boolean).join('\n'))}</pre><p class="muted">Installed with pip instead? Run <code>${esc(u.pip_upgrade_command)}</code>.</p><div class="row">${u.url?`<a href="${esc(u.url)}" target="_blank" rel="noopener">Release notes</a>`:''}<button id="dismiss-update" data-version="${esc(u.version)}">Dismiss</button></div>`:'');
+}
+$('update-banner').onclick=e=>{
+ const b=e.target.closest('#dismiss-update');if(!b)return;
+ dismissedVersion=b.dataset.version;try{localStorage.setItem('lllm2.dismissedUpdate',dismissedVersion);}catch{}
+ $('update-banner').hidden=true;
+};
 async function poll(){
  if(pollPending)return;
  pollPending=true;
@@ -737,6 +749,7 @@ async function poll(){
    if(s.job.adopting&&s.job.status==='serving'&&s.engine.settings&&adoptedFill!==s.job.adopting){adoptedFill=s.job.adopting;loadedDefaults={settings:s.engine.settings,mode:'running',source:'Current model settings',notes:['Adopted a running remote call. No saved preferences changed.']};lastBackend=s.engine.settings.backend;fill(s.engine.settings);attempt(inspect);}
   }
   $('app-version').textContent=s.version?`Version ${s.version}`:'';
+  renderUpdate(s.update);
   if(startAttempt&&s.job.request_id===startAttempt.request_id&&['failed','cancelled','serving'].includes(s.job.status))startAttempt=null;
   renderHardware(s.hardware);
   // An endpoint that is up but not ready answers 503, so do not offer it yet.

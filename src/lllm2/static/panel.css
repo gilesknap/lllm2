@@ -1424,6 +1424,25 @@ section[tabindex="-1"], #comparisons {
   font-size: 16px;
 }
 
+.update-banner {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-left-width: 5px;
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.update-banner h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.update-banner pre {
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+
 .orphan-row, .remote-model {
   display: flex;
   flex-wrap: wrap;

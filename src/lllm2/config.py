@@ -21,6 +21,15 @@ ENGINE_ROOTS = [
 ENGINE_PORT = int(os.environ.get("LLLM2_ENGINE_PORT", "1920"))
 
 
+def update_check_enabled(environ=os.environ):
+    """The panel checks GitHub daily for a newer release unless this is 0 or off."""
+    value = environ.get("LLLM2_UPDATE_CHECK", "1").strip().lower()
+    return value not in ("0", "off", "false", "no")
+
+
+UPDATE_CHECK = update_check_enabled()
+
+
 def idle_timeout_minutes(environ=os.environ):
     """Read the default remote idle timeout from ``LLLM2_IDLE_TIMEOUT_MINUTES``.
 
