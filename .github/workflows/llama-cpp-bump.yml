@@ -22,6 +22,11 @@ jobs:
       contents: write       # Push the bump branch.
       pull-requests: write  # Open or update the bump PR.
       actions: write        # Dispatch the engine build on the bump branch.
+    # Only to see whether the GPU smoke test has its Modal secrets, which live
+    # in this environment; the job never uses them.
+    environment:
+      name: modal
+      deployment: false
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,7 +61,8 @@ jobs:
           # starts CI on main) and Modal credentials (so the GPU test runs).
           AUTO_MERGE: >-
             ${{ vars.LLAMA_CPP_AUTO_RELEASE == 'true' &&
-            secrets.LLAMA_CPP_BUMP_TOKEN != '' && secrets.MODAL_TOKEN_ID != '' }}
+            secrets.LLAMA_CPP_BUMP_TOKEN != '' &&
+            secrets.MODAL_TOKEN_ID != '' && secrets.MODAL_SECRET != '' }}
         run: |
           title="Bump llama.cpp to $LATEST"
           git config user.name 'github-actions[bot]'

@@ -625,6 +625,23 @@ def test_serve_call_lifecycle(fake, provider):
     provider.cancel("fc-unknown")
 
 
+def test_a_serve_call_that_cannot_be_recorded_is_cancelled(fake, provider):
+    """An unrecorded call would bill a GPU that no caller can list or stop."""
+    fake.behaviour["serve"] = lambda *args: {"pending": 10**6}
+    put = fake.state.put
+
+    def refuse(key, value, **options):
+        if key.startswith("call:"):
+            raise ModalConnectionError("Dict unavailable")
+        return put(key, value, **options)
+
+    fake.state.put = refuse
+    with pytest.raises(ProviderError, match="Dict unavailable"):
+        provider.spawn("T4", ["/bin/llama-server"], "secret", {}, {})
+    (call,) = fake.calls.values()
+    assert call.cancelled
+
+
 def test_remote_engine_serves_and_stops_a_modal_call(fake, provider, tmp_path):
     """A serve call's tunnel record points the engine proxy at a local server."""
     script = tmp_path / "fake_llama_server.py"
