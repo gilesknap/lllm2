@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from lllm2 import config, downloads
+from lllm2 import config, discovery, downloads
 from lllm2.app import App
 from lllm2.catalogue import Catalogue, Finder, local_paths, suitability, variants
 from lllm2.store import Store
@@ -241,6 +241,15 @@ class CatalogueTests(unittest.TestCase):
                 self.assertEqual(found["file"], "model-Q8_0.gguf")
                 self.assertEqual(found["mmproj"], encoder)
                 self.assertEqual(found["issue"], "")
+
+    def test_installed_vision_encoders_are_not_listed_as_models(self):
+        folder = config.MODELS_DIR / "GLM"
+        folder.mkdir(parents=True)
+        for name in ("GLM-Q4_K_M.gguf", "GLM-5.3-Flash-Vision-Encoder.gguf"):
+            (folder / name).write_bytes(b"")
+        with patch.object(discovery, "metadata", return_value={}):
+            names = [m["name"] for m in discovery.models()]
+        self.assertEqual(names, ["GLM/GLM-Q4_K_M.gguf"])
 
     def test_projectors_differing_beyond_precision_stay_ambiguous(self):
         for names in (
