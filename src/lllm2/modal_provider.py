@@ -648,6 +648,11 @@ class ModalProvider(RemoteProvider):
         Raises:
             ProviderError: The command could not run or timed out.
         """
+        env = {**os.environ, "NO_COLOR": "1", "COLUMNS": "200"}
+        # rich treats either as a terminal, and NO_COLOR keeps bold, so the
+        # ``--json`` output would carry escape codes that break parsing.
+        env.pop("FORCE_COLOR", None)
+        env.pop("TTY_COMPATIBLE", None)
         try:
             return subprocess.run(
                 [sys.executable, "-m", "modal", *args],
@@ -655,7 +660,7 @@ class ModalProvider(RemoteProvider):
                 capture_output=True,
                 text=True,
                 timeout=CLI_TIMEOUT,
-                env={**os.environ, "NO_COLOR": "1", "COLUMNS": "200"},
+                env=env,
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise ProviderError(f"The modal command line failed: {error}") from error

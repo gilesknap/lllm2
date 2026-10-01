@@ -220,13 +220,14 @@ from its call record, so its cost is estimated as usual. Every other row shows
 When nothing runs, the card is replaced by one line: **Nothing is running in
 Modal**, with the time it was checked and **Check again**.
 
-The card lists containers on page load, when the model's phase changes, when
-you click **Refresh**, **Check again** or **Refresh storage and calls**, after
-a stop, and every minute while the card is open. The status poll never lists
-them. The panel asks Modal only when Modal is the selected backend, the panel
-already runs its engine, or this workstation has used Modal: a call record or
-a saved GPU probe names it. Otherwise the line says that Modal is not checked,
-and **Check Modal** checks it on request.
+The card lists containers on page load, when the model's phase or the job's
+status changes, when you change the backend, when you click **Refresh**,
+**Check again** or **Refresh storage and calls**, after a stop, and every
+minute while the card is open. The status poll never lists them. The panel
+asks Modal only when Modal is the selected backend, the panel already runs its
+engine, or this workstation has used Modal: a call record or a saved GPU probe
+names it. Otherwise the line says that Modal is not checked, and **Check
+Modal** checks it on request.
 
 The card covers the Modal environment that lllm2 uses: `MODAL_ENVIRONMENT`, or
 your profile's default. Containers in other environments of the workspace are

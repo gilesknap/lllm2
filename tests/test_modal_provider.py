@@ -1137,6 +1137,8 @@ def test_cli_runs_the_modal_module_of_this_interpreter(provider, monkeypatch):
         return subprocess.CompletedProcess(argv, 0, "[]", "")
 
     monkeypatch.setattr("lllm2.modal_provider.subprocess.run", run)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TTY_COMPATIBLE", "1")
     assert provider.containers() == []
     assert seen["argv"] == [
         sys.executable,
@@ -1148,6 +1150,9 @@ def test_cli_runs_the_modal_module_of_this_interpreter(provider, monkeypatch):
     ]
     assert seen["timeout"] == modal_provider.CLI_TIMEOUT
     assert seen["env"]["NO_COLOR"] == "1"
+    # Either would make rich style the JSON as if writing to a terminal.
+    assert "FORCE_COLOR" not in seen["env"]
+    assert "TTY_COMPATIBLE" not in seen["env"]
     # A prompt fails at once instead of waiting for the timeout.
     assert seen["stdin"] == subprocess.DEVNULL
 
