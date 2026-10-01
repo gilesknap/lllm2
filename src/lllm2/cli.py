@@ -908,7 +908,10 @@ def provider_app(name: str, label: str) -> typer.Typer:
             nonlocal reported
             reported = True
             report(
-                f"Downloading {update.file} inside {label}",
+                f"Another lllm2 session is already downloading {update.file} "
+                f"inside {label}; following its progress."
+                if update.attached
+                else f"Downloading {update.file} inside {label}",
                 update.done_bytes,
                 update.total_bytes,
                 True,

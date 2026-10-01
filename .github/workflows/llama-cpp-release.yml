@@ -29,8 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0  # Read every tag.
+          # Run this workflow's own script from main, not the evaluated commit:
+          # a commit from before the script existed would fail to find it.
+          fetch-depth: 0  # Read every tag and the evaluated commit.
           # A tag pushed with GITHUB_TOKEN does not trigger the tag pipeline.
           token: ${{ secrets.LLAMA_CPP_BUMP_TOKEN || github.token }}
       - name: Choose the release tag

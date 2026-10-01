@@ -1029,7 +1029,10 @@ $('find-table').querySelector('thead').oninput=renderFind;
 $('find-table').querySelector('thead').onclick=e=>{const b=e.target.closest('[data-find-sort]');if(!b)return;const key=b.dataset.findSort;findSort=findSort.key!==key?{key,direction:1}:findSort.direction===1?{key,direction:-1}:{key:null,direction:0};renderFind();};
 $('find-table').querySelector('tbody').onclick=async e=>{
  const b=e.target.closest('[data-find-add]');if(!b||b.disabled)return;b.disabled=true;
- try{await api('/api/catalogue/add',{id:b.dataset.findAdd});await loadCatalogue();}catch(error){$('find-status').textContent=error.message;b.disabled=false;}
+ // Adding reads the file's header from Hugging Face first, which takes a few seconds.
+ const file=(findEntries.find(x=>x.id===b.dataset.findAdd)?.file||'').split('/').pop();
+ $('find-status').textContent=`Reading the start of ${file} from Hugging Face…`;
+ try{await api('/api/catalogue/add',{id:b.dataset.findAdd});await loadCatalogue();$('find-status').textContent=`Added ${file} to My catalogue.`;}catch(error){$('find-status').textContent=error.message;b.disabled=false;}
 };
 $('catalog').onclick=e=>attempt(async()=>{
  const remove=e.target.closest('[data-catalogue-remove]');if(!remove){await downloadClick(e);return;}if(remove.disabled)return;

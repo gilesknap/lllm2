@@ -1,5 +1,5 @@
 // Representative API fixtures for test_ui_browser.cjs.
-window.fixture={saved:null,posts:[],delay:0,disconnected:false,checkError:'',downloads:[],results:[]};
+window.fixture={saved:null,posts:[],delay:0,disconnected:false,checkError:'',downloads:[],results:[],refusals:{}};
 const sample={model:'/models/Qwen3-8B/model.gguf',engine:'/engines/llama-server',backend:'CUDA',device:'CUDA0',context:32768,slots:1,gpu_layers:null,flash:'on',cache:'q8_0',cache_k:null,cache_v:null,speculation:'none',drafter:'',pair_confirmed:false,draft_length:3,effort:'default',draft_cache:'q8_0',chat_template:'',batch_size:null,ubatch_size:null,backend_sampling:false,cuda_graph_opt:'default',cache_ram_mib:null,context_checkpoints:null,lookup_ngram_n:null,lookup_ngram_m:null};
 fixture.settings=sample;
 fixture.catalog=[{id:'qwen3-8b',name:'Qwen3-8B',repo:'Qwen/Qwen3-8B-GGUF',file:'model.gguf',path:'/models/Qwen3-8B/model.gguf',size_gb:5,max_ctx:131072},{id:'dense',name:'Qwen3.8-27B',repo:'unsloth/Qwen3.8-27B-GGUF',file:'dense.gguf',path:'/models/dense/dense.gguf',size_gb:15.36,recommendation:{rank:1,label:'Recommended',description:'Our default starting model.',variant:'UD-Q4_K_S'}},{id:'moe',name:'Qwen3.6-35B-A3B',repo:'unsloth/Qwen3.6-MTP-GGUF',file:'moe.gguf',path:'/models/moe/moe.gguf',size_gb:18.21,recommendation:{rank:2,label:'Faster alternative',description:'Faster generation in our tested RTX 3090 coding workloads.',variant:'MTP build · IQ4_XS'}}];
@@ -15,7 +15,7 @@ window.fetch=async (path,options={})=>{const data=options.body?JSON.parse(option
 case '/api/status':body={token:'test',version:'1.2.3-test',hardware:path.includes('backend=modal')?{source:'modal',gpu_type:'L40S',gpus:[{name:'NVIDIA L40S',used_mib:0,total_mib:45776}],ram:{}}:{gpus:[{name:'RTX A1000',used_mib:2048,total_mib:8192}],ram_gib:62,ram:{total_gib:62,used_gib:18,available_gib:44}},engine:fixture.engine,job:fixture.job||{status:'idle'},downloads:fixture.downloads,endpoint:'http://127.0.0.1:1920/v1',paths:{models:'/models',engines:['/engines']},update:fixture.update||null};break;
 case '/api/catalogue':body={entries:fixture.catalog};break;
 case '/api/models/find':body={entries:fixture.findEntries||[],repositories:2,fetched_at:Date.now()/1000};break;
-case '/api/catalogue/add':fixture.catalog.push(fixture.findEntries.find(e=>e.id===data.id));break;
+case '/api/catalogue/add':if(fixture.refusals[data.id])return {ok:false,status:400,statusText:'Bad Request',json:async()=>({error:fixture.refusals[data.id]})};fixture.catalog.push(fixture.findEntries.find(e=>e.id===data.id));break;
 case '/api/catalogue/removal-preview':body={name:'Test model',paths:['/models/test/model.gguf']};break;
 case '/api/catalogue/remove':fixture.catalog=fixture.catalog.filter(e=>e.id!==data.id);break;
 case '/api/discover':body={models:fixture.models,catalog:fixture.catalog,engines:fixture.engines,backends:fixture.backends};break;

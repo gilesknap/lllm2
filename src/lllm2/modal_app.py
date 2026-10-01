@@ -134,6 +134,16 @@ def meta_key(name: str) -> str:
     return "meta:" + name
 
 
+def lease_key(name: str) -> str:
+    """Return the state key of the lease on a stored model's download."""
+    return "lease:" + name
+
+
+def lease_call_key(owner: str) -> str:
+    """Return the state key where a lease owner names its download call."""
+    return "lease-call:" + owner
+
+
 def deployment_version() -> str:
     """Identify the app code that a deployment must match.
 

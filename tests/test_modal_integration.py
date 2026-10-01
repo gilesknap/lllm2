@@ -1,10 +1,15 @@
 """Opt-in end-to-end test against a real Modal account. It costs money.
 
 Run it with ``LLLM2_MODAL_INTEGRATION=1`` and Modal credentials configured, for
-example through ``MODAL_CONFIG_PATH``. CI never sets the variable, so the test
-is skipped there. ``LLLM2_MODAL_GPU`` (default ``T4``) and
-``LLLM2_MODAL_MODEL`` (a catalogue id, default ``qwen3-8b``) choose what runs.
-The model stays in the Volume afterwards, so a repeat run skips the download.
+example through ``MODAL_CONFIG_PATH``, in a Modal environment of your own.
+``LLLM2_MODAL_GPU`` (default ``T4``) and ``LLLM2_MODAL_MODEL`` (a catalogue id,
+default ``qwen3-8b``) choose what runs. The model stays in the Volume
+afterwards, so a repeat run skips the download.
+
+The ``test`` CI jobs skip it. The ``gpu-smoke`` CI job runs it in the
+``lllm2-ci`` Modal environment (``MODAL_ENVIRONMENT``) on llama.cpp bump PRs,
+PRs that change Modal code and manual runs, with any engine CI built through
+``LLLM2_MODAL_ENGINE_DIR``, then checks that no container is left running.
 """
 
 import json
@@ -48,16 +53,18 @@ def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
     settings = Settings(model=str(config.MODELS_DIR / source.name), context=4096)
     started = time.monotonic()
     arrivals = []
+    call_id = ""
     try:
         engine.start(settings, threading.Event(), timeout=900)
+        call_id = engine.call_id or ""
+        assert call_id
         print(f"Ready after {time.monotonic() - started:.0f} s on {engine.hardware()}")
         # The serve container names its call, so the listing matches it.
         view = engine.remote_containers()
         assert view["complete"], view["error"]
-        (row,) = [r for r in view["containers"] if r["id"] == engine.call_id]
+        (row,) = [r for r in view["containers"] if r["id"] == call_id]
         assert row["container_id"] and row["function"] == "serve"
         assert row["status"] == "owned"
-        call_id = engine.call_id
         final = engine.stream_completion(
             {"prompt": "Count from one to thirty:", "n_predict": 64, "stream": True},
             threading.Event(),
@@ -72,10 +79,15 @@ def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
     finally:
         print("\n".join(engine.logs(40)))
         engine.stop()
+    # ``calls`` lists recorded calls, and stopping drops the record at once, so
+    # also ask Modal whether the serve call itself has ended.
     deadline = time.monotonic() + 60
-    while provider.calls() and time.monotonic() < deadline:
+    while (provider.calls() or provider.poll(call_id).running) and (
+        time.monotonic() < deadline
+    ):
         time.sleep(2)
     assert provider.calls() == []
+    assert not provider.poll(call_id).running
     # Modal lists a stopped container for a few seconds after it is told to stop.
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline and any(

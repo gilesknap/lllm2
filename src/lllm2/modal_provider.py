@@ -23,6 +23,7 @@ import itertools
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -207,8 +208,50 @@ class ModalProvider(RemoteProvider):
 
     @_translated
     def ensure_model(self, source, progress, cancel):
-        if cancel.is_set():
-            raise Cancelled()
+        """Make a model present in the Volume, one download per model at a time.
+
+        A download holds a lease in the state Dict, keyed on the model's store
+        name and claimed with ``put(..., skip_if_exists=True)``, so one caller
+        in the workspace downloads a model at a time. Another caller follows
+        that download's progress, with ``attached`` set, and returns once the
+        model is stored. The owner heartbeats the lease while it drives the
+        download. A follower takes over a lease whose owner stays silent for
+        ``heartbeat_grace``, and downloads what is missing itself.
+        """
+        key = modal_app.lease_key(source.name)
+        while True:
+            if cancel.is_set():
+                raise Cancelled()
+            meta = self._stored(source)
+            if meta is not None:
+                return meta
+            if source.repo is None or not source.files:
+                raise ValueError(
+                    "This model is not in the Modal Volume and has no download source. "
+                    "Choose a catalogue model."
+                )
+            # A first deployment builds the image and can outlast the grace, so
+            # it runs before this caller holds a lease it could not heartbeat.
+            self._ensure_deployed()
+            owner = "lease-" + secrets.token_hex(8)
+            claim = {"owner": owner, "claimed": time.time()}
+            if self._state.put(key, claim, skip_if_exists=True):
+                try:
+                    self._beat(owner)
+                    # Another session may have stored the model since the
+                    # check, for example during a long first deployment.
+                    meta = self._stored(source)
+                    if meta is not None:
+                        return meta
+                    return self._download(source, progress, cancel, owner)
+                finally:
+                    self._release(key, owner)
+            lease = self._state.get(key)
+            if lease is not None:
+                self._follow(source, key, lease, progress, cancel)
+
+    def _stored(self, source):
+        """Return the cached metadata of a completely stored model, or None."""
         sizes = self._sizes()
         cached = self._state.get(modal_app.meta_key(source.name))
         if (
@@ -217,11 +260,14 @@ class ModalProvider(RemoteProvider):
             and all(self._stored_name(source, f) in sizes for f in source.files)
         ):
             return cached["meta"]
-        if source.repo is None or not source.files:
-            raise ValueError(
-                "This model is not in the Modal Volume and has no download source. "
-                "Choose a catalogue model."
-            )
+        return None
+
+    def _download(self, source, progress, cancel, owner):
+        """Download a model under the lease ``owner`` holds.
+
+        Returns:
+            The model's metadata, cached for the next caller.
+        """
         call = self._call(
             "download",
             None,
@@ -233,10 +279,13 @@ class ModalProvider(RemoteProvider):
         errors = self.modal.exception
         finished = False
         try:
+            # Followers find this call's progress through the lease owner.
+            self._state.put(modal_app.lease_call_key(owner), call.object_id)
             while True:
                 if cancel.is_set():
                     raise Cancelled()
                 self._beat(call.object_id)
+                self._beat(owner)
                 try:
                     meta = call.get(timeout=self.poll_interval)
                     finished = True
@@ -266,6 +315,126 @@ class ModalProvider(RemoteProvider):
         size = self._sizes().get(source.name)
         self._state.put(modal_app.meta_key(source.name), {"size": size, "meta": meta})
         return meta
+
+    def _follow(self, source, key, lease, progress, cancel):
+        """Report another session's download of a model until its lease ends.
+
+        Returns when the lease is released or changes hands, or after removing
+        a lease whose owner has been silent for the grace. An unreadable lease
+        goes at once, and so does one whose heartbeat, or claim when it has no
+        heartbeat, is already older than the grace.
+
+        Args:
+            source: The model being downloaded.
+            key: The model's lease key.
+            lease: The lease record as last read.
+            progress: A callable that receives the download's progress.
+            cancel: An event that stops the following when set.
+
+        Raises:
+            Cancelled: The cancel event was set. The other download goes on.
+        """
+        owner = self._lease_owner(lease)
+        if owner is None or (self._lease_age(owner, lease) or 0) > self.heartbeat_grace:
+            self._reclaim(key, owner)
+            return
+        # The watch compares heartbeat values, not clocks, from here on.
+        watch = modal_app.OwnerWatch(self._state, owner, self.heartbeat_grace)
+        call_id = None
+        reported = False
+        while True:
+            if call_id is None:
+                found = self._state.get(modal_app.lease_call_key(owner))
+                call_id = found if isinstance(found, str) else None
+            update = (
+                self._state.get(modal_app.download_key(call_id)) if call_id else None
+            )
+            if update:
+                progress(
+                    DownloadProgress(
+                        update["file"],
+                        update["done_bytes"],
+                        update["total_bytes"],
+                        update.get("retry"),
+                        attached=True,
+                    )
+                )
+                reported = True
+            elif not reported:
+                # Say at once that a download is running, before it reports.
+                progress(DownloadProgress(source.files[0], 0, None, attached=True))
+                reported = True
+            if cancel.wait(self.poll_interval):
+                raise Cancelled()
+            lease = self._state.get(key)
+            if lease is None or self._lease_owner(lease) != owner:
+                return
+            if watch.lost():
+                self._reclaim(key, owner)
+                return
+
+    def _lease_age(self, owner, lease):
+        """Return seconds since a lease's owner last showed it was alive, or None.
+
+        The owner's heartbeat says so, or its claim while it has not beaten
+        yet. Both carry the owner's wall clock, as ``_heartbeat_age`` explains.
+        """
+        age = self._heartbeat_age(owner)
+        claimed = lease.get("claimed")
+        if age is None and isinstance(claimed, int | float):
+            age = max(0.0, time.time() - claimed)
+        return age
+
+    def _drop_lease(self, key, owner):
+        """Remove a lease if ``owner`` holds it, and put back anyone else's.
+
+        The Dict has no compare-and-delete, so a pop that takes another
+        session's lease restores it with ``skip_if_exists``.
+
+        Args:
+            key: The lease key.
+            owner: The owner token, or None to remove an unreadable lease.
+
+        Returns:
+            True when this call removed ``owner``'s lease.
+        """
+        lease = self._state.pop(key, None)
+        if lease is None:
+            return False
+        if self._lease_owner(lease) == owner:
+            return True
+        self._state.put(key, lease, skip_if_exists=True)
+        return False
+
+    def _reclaim(self, key, owner):
+        """Remove a lease whose owner went silent, with what the owner left.
+
+        The owner's download call is left alone, because its container stops
+        itself on the same grace. An owner judged dead by mistake therefore
+        keeps its download, and the cost is a repeated download.
+        """
+        if self._drop_lease(key, owner) and owner is not None:
+            self._forget_lease(owner)
+
+    def _release(self, key, owner):
+        """Give up the lease this caller holds, and its heartbeat."""
+        self._beats.pop(owner, None)
+        try:
+            self._drop_lease(key, owner)
+            self._forget_lease(owner)
+        except Exception:
+            pass  # A lease left behind goes silent, and another session reclaims it.
+
+    def _forget_lease(self, owner):
+        """Remove a lease owner's heartbeat and the name of its download call."""
+        self._state.pop(modal_app.heartbeat_key(owner), None)
+        self._state.pop(modal_app.lease_call_key(owner), None)
+
+    @staticmethod
+    def _lease_owner(lease):
+        """Return a lease record's owner token, or None when it is unreadable."""
+        owner = lease.get("owner") if isinstance(lease, dict) else None
+        return owner if isinstance(owner, str) and owner else None
 
     @_translated
     def stored_metadata(self, name):
@@ -316,10 +485,20 @@ class ModalProvider(RemoteProvider):
                 list(argv), api_key, dict(env), dict(files)
             ),
         )
-        self._state.put(
-            modal_app.call_key(call.object_id), {"gpu": gpu, "started": time.time()}
-        )
-        self._beat(call.object_id)
+        try:
+            self._state.put(
+                modal_app.call_key(call.object_id),
+                {"gpu": gpu, "started": time.time()},
+            )
+            self._beat(call.object_id)
+        except BaseException:
+            # Nothing would know of this call: no caller gets its id and
+            # ``calls`` would not list it. Stop its GPU now.
+            try:
+                call.cancel(terminate_containers=True)
+            except Exception:
+                pass  # The container stops itself once heartbeats cease.
+            raise
         return call.object_id
 
     @_translated

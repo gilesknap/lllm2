@@ -21,7 +21,7 @@ from lllm2.modal_provider import ModalProvider
 from lllm2.remote import GpuProbe, ProbeCache, catalogue_source, companion_names
 from lllm2.settings import Settings
 from lllm2.store import Store
-from test_modal_provider import META, FakeModal
+from test_modal_provider import META, FakeModal, OtherSession
 
 REMOTE_COMMANDS = (
     ["setup"],
@@ -648,6 +648,23 @@ class ModalCliTests(unittest.TestCase):
         self.assertEqual(listed.exit_code, 0, listed.output)
         for path in stored:
             self.assertIn(f"{path}  2.0 GB  {entry['id']}", listed.stdout)
+
+    def test_download_follows_a_download_another_session_runs(self):
+        fake, entry = FakeModal(), COMPANION_ENTRY
+        source = catalogue_source(entry)
+        fake.state = OtherSession(
+            fake, source, script=lambda session: session.reads > 3 and session.finish()
+        )
+        with self.modal_client(fake):
+            result = self.runner.invoke(cli.app, ["modal", "download", entry["id"]])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn(
+            f"Another lllm2 session is already downloading {source.files[0]} "
+            "inside Modal; following its progress.",
+            flat(result.stderr),
+        )
+        self.assertIn(f"Stored {source.name} on Modal.", result.stdout)
+        self.assertEqual(fake.calls, {})
 
     def test_ctrl_c_cancels_the_download_and_keeps_the_partial_file(self):
         fake = FakeModal()

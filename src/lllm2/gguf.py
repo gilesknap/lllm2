@@ -2,8 +2,9 @@
 
 A GGUF carries its metadata and its full tensor list in a header, before any
 weights. That is enough to answer questions the catalogue cannot answer from a
-file size -- currently one question: does this checkpoint carry a multi-token
-prediction head?
+file size or a file name: does this checkpoint carry a multi-token prediction
+head, and is it a model llama-server can serve at all? The second is asked of a
+Hugging Face file before it joins the catalogue -- see :func:`not_a_model`.
 
 Everything here reads the header and stops. An 18 GB checkpoint is inspected in
 tens of milliseconds, because the tokenizer vocabulary is walked as offsets
@@ -24,9 +25,10 @@ what that costs and what invalidates it.
 
 from __future__ import annotations
 
+import re
 import struct
 from pathlib import Path
-from typing import Any, BinaryIO, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 #: GGUF metadata value types, by their on-disk tag.
 (U8, I8, U16, I16, U32, I32, F32, BOOL, STRING, ARRAY, U64, I64, F64) = range(13)
@@ -66,6 +68,19 @@ class Malformed(Exception):
     """This file is not a GGUF, or its header does not parse."""
 
 
+class Readable(Protocol):
+    """What the header parse needs of a file: a seek and a read.
+
+    A local file has both. So does a file on a web server read with range
+    requests, which is how a Hugging Face file is checked before it is added
+    to the catalogue.
+    """
+
+    def seek(self, offset: int, whence: int = 0, /) -> int: ...
+
+    def read(self, size: int, /) -> bytes: ...
+
+
 class _Head:
     """The front of the file in memory, grown forward as the parse walks it.
 
@@ -83,7 +98,7 @@ class _Head:
     -- which is exactly what a re-download does.
     """
 
-    def __init__(self, fh: BinaryIO) -> None:
+    def __init__(self, fh: Readable) -> None:
         self.fh = fh
         self.size = fh.seek(0, 2)
         self.buf = b""
@@ -180,31 +195,36 @@ def _value(head: _Head, pos: int, kind: int) -> tuple[int, Any]:
 def header(path: Path | str) -> tuple[dict[str, Any], list[str]]:
     """A checkpoint's metadata and tensor names, read from its header alone."""
     with open(path, "rb") as raw:
-        head = _Head(raw)
-        if head.size < 24 or head.upto(4)[:4] != b"GGUF":
-            raise Malformed("no GGUF magic; this is not a checkpoint")
-        # Byte 4 is the format version, unused: the layout below is stable
-        # across 2-3.
-        buf = head.upto(24)
-        tensors, pairs = struct.unpack_from("<QQ", buf, 8)
-        pos = 24
-        meta: dict[str, Any] = {}
-        for _ in range(pairs):
-            pos, key = _string_at(head, pos)
-            buf = head.upto(pos + 4)
-            kind = struct.unpack_from("<I", buf, pos)[0]
-            pos, meta[key] = _value(head, pos + 4, kind)
-        names = []
-        for _ in range(tensors):
-            pos, name = _string_at(head, pos)
-            names.append(name)
-            buf = head.upto(pos + 4)
-            dims = struct.unpack_from("<I", buf, pos)[0]
-            # The shape, then the ggml type and the offset into the tensor
-            # blob. None of the three is read; stepping over them is checked
-            # because `dims` came out of the file like everything else.
-            pos += 4 + 8 * dims + 12
-            head.upto(pos)
+        return parse(raw)
+
+
+def parse(fh: Readable) -> tuple[dict[str, Any], list[str]]:
+    """The same, from anything that seeks and reads, such as a remote file."""
+    head = _Head(fh)
+    if head.size < 24 or head.upto(4)[:4] != b"GGUF":
+        raise Malformed("no GGUF magic; this is not a checkpoint")
+    # Byte 4 is the format version, unused: the layout below is stable
+    # across 2-3.
+    buf = head.upto(24)
+    tensors, pairs = struct.unpack_from("<QQ", buf, 8)
+    pos = 24
+    meta: dict[str, Any] = {}
+    for _ in range(pairs):
+        pos, key = _string_at(head, pos)
+        buf = head.upto(pos + 4)
+        kind = struct.unpack_from("<I", buf, pos)[0]
+        pos, meta[key] = _value(head, pos + 4, kind)
+    names = []
+    for _ in range(tensors):
+        pos, name = _string_at(head, pos)
+        names.append(name)
+        buf = head.upto(pos + 4)
+        dims = struct.unpack_from("<I", buf, pos)[0]
+        # The shape, then the ggml type and the offset into the tensor
+        # blob. None of the three is read; stepping over them is checked
+        # because `dims` came out of the file like everything else.
+        pos += 4 + 8 * dims + 12
+        head.upto(pos)
     return meta, names
 
 
@@ -406,3 +426,168 @@ def has_mtp(path: Path | str) -> bool:
     direction is an engine that will not start.
     """
     return facts(path).mtp
+
+
+# Architecture names are llama.cpp's own, from ``LLM_ARCH_NAMES`` in
+# src/llama-arch.cpp at the engine pin (b10850). They are matched exactly, never
+# as substrings: ``pangu-embedded`` is a chat model despite its name.
+
+#: Architectures that turn text into vectors: the BERT family, the embedding
+#: variants of Gemma and Llama, and T5's encoder half on its own.
+ENCODERS = frozenset(
+    {
+        "bert",
+        "modern-bert",
+        "neo-bert",
+        "eurobert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "gemma-embedding",
+        "llama-embed",
+        "t5encoder",
+    }
+)
+#: Speech and audio architectures: a vocoder and two text-to-speech backbones.
+SPEECH = frozenset({"wavtokenizer-dec", "qwen3tts", "pockettts"})
+#: Speculative-decoding drafters, which run only beside the model they draft for.
+DRAFTERS = frozenset({"eagle3", "dflash", "gemma4-assistant"})
+#: Diffusion language models. llama.cpp builds them without a KV cache, and
+#: llama-server answers every completion on such a context with an error
+#: (``tools/server/server-context.cpp`` at b10850: "the current context does
+#: not logits computation").
+DIFFUSION = frozenset({"dream", "llada", "llada-moe", "rnd1"})
+
+#: A block tensor's layer index, as in ``blk.48.attn_k.weight``. Nine digits is
+#: far beyond any real model and keeps ``int()`` cheap on a hostile name.
+_BLOCK = re.compile(r"blk\.([0-9]{1,9})\.")
+
+# Why :func:`not_a_model` refuses a file, in the words the panel shows.
+ADAPTER_REASON = (
+    "This file is an adapter (such as a LoRA), not a model. "
+    "It only changes the base model it is loaded with."
+)
+PROJECTOR_REASON = (
+    "This file is a vision projector, not a model. "
+    "It is loaded beside the model it belongs to."
+)
+IMATRIX_REASON = "This file is importance-matrix data for quantising, not a model."
+NO_ARCHITECTURE_REASON = (
+    "This file does not name a model architecture, "
+    "so the engine cannot load it as a model."
+)
+NO_WEIGHTS_REASON = "This file holds no weights, so it is not a model."
+MTP_REASON = (
+    "This file is a multi-token prediction (MTP) head for speculative decoding, "
+    "not a model on its own."
+)
+DRAFTER_REASON = "This file is a speculative-decoding drafter, not a model on its own."
+RERANKER_REASON = (
+    "This file is a reranking model. "
+    "It scores text for search rather than writing replies."
+)
+EMBEDDING_REASON = (
+    "This file is an embedding or text-encoder model. "
+    "It turns text into vectors rather than writing replies."
+)
+SPEECH_REASON = "This file is a speech or audio model, not a text model."
+DIFFUSION_REASON = (
+    "This file is a diffusion language model, which llama-server cannot serve."
+)
+
+#: ``general.type`` values other than ``model``, from gguf-py's ``GGUFType``.
+_KIND_REASONS = {
+    "adapter": ADAPTER_REASON,
+    "mmproj": PROJECTOR_REASON,
+    "imatrix": IMATRIX_REASON,
+}
+
+#: ``pooling_type`` 4 is RANK in llama.cpp's ``PoolingType``; 1-3 pool an
+#: embedding (mean, CLS, last token).
+_RANK_POOLING = 4
+
+
+def _integer_at(meta: dict[str, Any], key: str) -> int | None:
+    """The integer stored under exactly ``key``, or None.
+
+    Exact rather than by suffix, as :func:`_integer` matches: the key is built
+    from the file's own architecture name, so there is nothing to search for,
+    and a suffix could match another architecture's key.
+    """
+    value = meta.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def not_a_model(meta: dict[str, Any], names: list[str]) -> str | None:
+    """Why this header is not a model llama-server can serve on its own, or None.
+
+    The first rule that matches gives the reason:
+
+    1. ``general.type`` is not ``model``: an adapter, a projector or imatrix
+       data. A file without the key is a model; GGUF v2 files predate it.
+    2. No ``general.architecture``: a later shard of a split, or a table such
+       as an n-gram file, which nothing can load as a model.
+    3. Architecture ``clip``: an older projector written before
+       ``general.type``.
+    4. No tensors in a file that is not split. A split's first shard holds
+       only metadata, so it is not judged on its tensors.
+    5. A multi-token prediction head. llama.cpp's ``--mtp`` export keeps the
+       full model's architecture, adds the head's layers to ``block_count``,
+       writes ``nextn_predict_layers`` and keeps only those last blocks, so a
+       head has no block below ``block_count - nextn_predict_layers``. A full
+       model that carries its own head has every block and passes. The
+       Gemma 4 assistant writes ``nextn_predict_layers = block_count``.
+    6. A speculative-decoding drafter's architecture.
+    7. A reranker: ``pooling_type`` RANK.
+    8. An encoder architecture, or any other ``pooling_type``. llama.cpp's
+       converter writes the pooling type only for sentence-transformers
+       repositories and rerankers, so on a generative architecture such as
+       ``qwen3`` it is the only sign of an embedding model.
+    9. A speech or audio architecture.
+    10. A diffusion language model.
+
+    Args:
+        meta: A parsed GGUF metadata mapping, as :func:`parse` returns.
+        names: The file's tensor names.
+
+    Returns:
+        A plain-English reason for the panel, or None for a model.
+    """
+    kind = meta.get("general.type")
+    if isinstance(kind, str) and kind not in ("", "model"):
+        # The value came from the file, so it is shortened before it is shown.
+        return _KIND_REASONS.get(
+            kind, f"This file is a GGUF of type “{kind[:40]}”, not a model."
+        )
+    arch = meta.get("general.architecture")
+    if not isinstance(arch, str) or not arch:
+        return NO_ARCHITECTURE_REASON
+    if arch == "clip":
+        return PROJECTOR_REASON
+    split = (_integer_at(meta, "split.count") or 0) > 1
+    if not split and not names:
+        return NO_WEIGHTS_REASON
+    blocks = _integer_at(meta, f"{arch}.block_count")
+    heads = _integer_at(meta, f"{arch}.nextn_predict_layers")
+    if blocks is not None and heads is not None and blocks > 0 and heads > 0:
+        trunk = blocks - heads
+        if trunk <= 0:
+            return MTP_REASON
+        layers = (int(m[1]) for m in map(_BLOCK.match, names) if m)
+        # A split's shards each hold some of the blocks, so only a whole file
+        # can show that the trunk is missing.
+        if not split and not any(layer < trunk for layer in layers):
+            return MTP_REASON
+    if arch in DRAFTERS:
+        return DRAFTER_REASON
+    pooling = _integer_at(meta, f"{arch}.pooling_type")
+    if pooling == _RANK_POOLING:
+        return RERANKER_REASON
+    if arch in ENCODERS or (pooling is not None and pooling > 0):
+        return EMBEDDING_REASON
+    if arch in SPEECH:
+        return SPEECH_REASON
+    if arch in DIFFUSION:
+        return DIFFUSION_REASON
+    return None
