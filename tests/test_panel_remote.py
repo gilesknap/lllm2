@@ -547,6 +547,45 @@ def test_download_speed_is_measured_again_for_each_file(tmp_path):
     assert rates[2:] == [0, 0]
 
 
+def test_a_download_another_session_runs_is_reported_and_completes():
+    """A row that follows another session's download says so and completes.
+
+    The follower joins before the other session has reported, then learns
+    that 6 GiB are already stored. That jump is no measure of speed.
+    """
+    downloads, rows = StoreDownloads(), []
+
+    class Following:
+        """A provider whose store another session is already downloading into."""
+
+        name = "fake"
+
+        def ensure_model(self, source, progress, cancel):
+            def step(done, total, retry=None):
+                progress(
+                    remote.DownloadProgress("a.gguf", done, total, retry, attached=True)
+                )
+                rows.append(dict(downloads.rows()[0]))
+                time.sleep(0.05)
+
+            step(0, None)
+            step(6 * 2**30, 8 * 2**30)
+            step(6 * 2**30 + 2 * 2**20, 8 * 2**30)
+            step(6 * 2**30 + 2 * 2**20, 8 * 2**30, "retry 1 after a reset")
+            return dict(META)
+
+    downloads.start(Following(), ENTRY)
+    assert eventually(lambda: downloads.rows()[0]["state"] == "complete")
+    following = "Another lllm2 session is downloading a.gguf inside fake"
+    assert [row["detail"] for row in rows] == [following] * 3 + [
+        following + ": retry 1 after a reset"
+    ]
+    assert [row["rate_mib_s"] for row in rows[:2]] == [0, 0]
+    assert rows[2]["rate_mib_s"] > 1
+    assert rows[1]["percent"] == 75.0
+    assert downloads.rows()[0]["detail"] == "Stored in fake"
+
+
 def test_a_served_model_cannot_be_removed(app):
     use_free_port(app)
     start(app)

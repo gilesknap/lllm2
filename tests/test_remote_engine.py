@@ -23,6 +23,8 @@ from lllm2.remote import (
     OWNER_STALE_SECONDS,
     RECORD_GRACE_SECONDS,
     CallRecords,
+    DownloadProgress,
+    ModelSource,
     RemoteEngine,
     model_source,
     pid_namespace,
@@ -331,6 +333,63 @@ def test_cancel_during_download_spawns_nothing(model, providers, engines):
     # A cancelled start releases the engine port.
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", engine.port))
+
+
+def test_a_provider_without_a_lease_downloads_in_each_caller(providers):
+    """A store with no atomic claim keeps today's behaviour: both download."""
+    a, b = providers(download_seconds=0.3), providers(download_seconds=0.3)
+    source = ModelSource("example/model.gguf")
+    both_downloading = threading.Barrier(2, timeout=10)
+    results = {}
+
+    def run(name, provider):
+        reported = []
+
+        def progress(update):
+            if not reported:
+                reported.append(update)
+                both_downloading.wait()
+
+        results[name] = provider.ensure_model(source, progress, threading.Event())
+
+    threads = [
+        threading.Thread(target=run, args=(name, provider))
+        for name, provider in (("a", a), ("b", b))
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert results["a"] == results["b"] and results["a"]["architecture"]
+    assert a.downloads == b.downloads == [source.name]
+
+
+def test_a_launch_says_when_another_session_is_downloading_its_model(
+    model, providers, engines, monkeypatch
+):
+    provider = providers()
+    engine = engines(provider)
+    downloading, seen = provider.ensure_model, []
+
+    def follow_then_finish(source, progress, cancel):
+        # Another session's download runs first; this caller only follows it.
+        for done in (1000, 2000):
+            progress(DownloadProgress(source.name, done, 3000, attached=True))
+            seen.append(engine.status()["download"])
+        return downloading(source, progress, cancel)
+
+    monkeypatch.setattr(provider, "ensure_model", follow_then_finish)
+    engine.start(Settings(model=model), threading.Event(), timeout=30)
+    assert engine.state()["ready"]
+    assert [line for line in engine.logs() if "Another lllm2 session" in line] == [
+        "Another lllm2 session is already downloading example/model.gguf into "
+        "fake storage; following its progress."
+    ]
+    # The panel reads the same download record as for its own download.
+    assert seen == [
+        {"file": "example/model.gguf", "done_bytes": done, "total_bytes": 3000}
+        for done in (1000, 2000)
+    ]
 
 
 def test_stop_during_load_cancels_the_call(model, providers, engines):
