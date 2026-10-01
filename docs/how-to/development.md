@@ -132,9 +132,11 @@ To enable it, a maintainer:
   test. Without them the GPU test is skipped and auto-merge stays off.
 - Enables **Settings > General > Allow auto-merge**.
 - Protects `main` with a branch protection rule or ruleset that requires the
-  CI checks to pass before merging: `lint`, every `test` matrix entry,
-  `browser`, `docs-build`, `dist` and the GPU smoke test. Without required
-  checks, GitHub refuses to enable auto-merge on a PR that is already mergeable.
+  CI checks to pass before merging: `lint / run`, `test (3.11)` to
+  `test (3.14)`, `browser`, `docs-build`, `dist / build` and the GPU smoke test,
+  `gpu-smoke`. A skipped check counts as passed, so `gpu-smoke` gates only bump
+  PRs. Without required checks, GitHub refuses to enable auto-merge on a PR that
+  is already mergeable.
 - Sets the repository variable `LLAMA_CPP_AUTO_RELEASE` to `true` (**Settings >
   Secrets and variables > Actions > Variables**). Delete it to return to
   merging and tagging by hand.
