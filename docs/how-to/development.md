@@ -200,3 +200,55 @@ still require an NVIDIA GPU; a successful `--help` probe does not test GPU kerne
 On a GPU-less build host, `engine-checks` contains the CUDA driver stub used only
 for linking and smoke tests. It is never included in the release tarball. GPU
 evaluation must use the real NVIDIA driver and omit this stub from the environment.
+
+## GPU smoke test on Modal
+
+CI otherwise proves only that an engine compiles and that `llama-server --help`
+runs against a stub driver. On `bot/llama-cpp-bump` PRs, and when CI is run
+by hand (**Actions > CI > Run workflow**), the `engines` job builds the PR's
+engines and the `gpu-smoke` job runs `tests/test_modal_integration.py` on a
+Modal T4: it deploys the app with this run's engines (`LLLM2_MODAL_ENGINE_DIR`),
+downloads `qwen3-8b` into the Volume (only on the first run), serves it, streams
+a completion and stops the call. Without the `MODAL_TOKEN_ID` secret, as on
+forks, the job reports a notice and passes without touching Modal.
+
+The job runs in its own Modal environment, `lllm2-ci`, so it never touches the
+apps you run yourself. Modal tokens cover the whole workspace; the sweep below
+names the environment on every command and refuses `main`. Do not run anything
+of your own in `lllm2-ci`.
+
+Every run ends with `.github/scripts/modal_sweep.py`, which stops every app
+and container in `lllm2-ci` and then lists the environment again until nothing
+runs, failing the job if anything still does after two minutes. The step uses
+`if: always()`, so it also runs after a failure, a job timeout or a normal
+cancellation; only a force-cancel or a lost runner skips it. Before the test,
+the same sweep stops anything an earlier run left. After a passing test,
+`modal_sweep.py --check` first fails the job if lllm2 left any container
+running, which the final sweep would otherwise hide. The `lllm2` app is stopped
+too; the next run redeploys it.
+
+Set it up once:
+
+```bash
+uv run --extra modal modal environment create lllm2-ci
+```
+
+Create a Modal API token (**Settings > API Tokens** in the Modal dashboard, or
+`modal token new`, which writes it to `~/.modal.toml`), then store it as
+repository secrets:
+
+```bash
+gh secret set MODAL_TOKEN_ID --repo gilesknap/lllm2
+gh secret set MODAL_TOKEN_SECRET --repo gilesknap/lllm2
+```
+
+To run the test by hand against the same environment, set
+`LLLM2_MODAL_INTEGRATION=1 MODAL_ENVIRONMENT=lllm2-ci` and run
+`uv run --extra modal pytest tests/test_modal_integration.py -s`, then
+`uv run --extra modal python .github/scripts/modal_sweep.py lllm2-ci`.
+
+Expected cost: a run holds a T4 (US$0.59 per hour) for about five minutes, for
+the GPU probe, model load and completion, plus CPU time to build the image and,
+on the first run only, to download the 5 GB model. A weekly bump costs well under
+US$1 a month. Each new bump also uploads the two engine tarballs (about 1.8 GB)
+from the runner into the Modal image.
