@@ -94,6 +94,20 @@ rerun an existing tag.
 
 `src/lllm2/engine_release.py` defines the llama.cpp pin and both CUDA image
 versions. Change the pin in a normal PR when panel features need a newer engine.
+
+The `Propose llama.cpp bump` workflow (`.github/workflows/llama-cpp-bump.yml`)
+does this weekly, or on manual dispatch. When upstream llama.cpp has a newer
+release than `LLAMA_CPP_REF`, `.github/scripts/bump_llama_cpp.py` moves the pin
+forward and the workflow force-pushes `bot/llama-cpp-bump` and opens or updates a
+single "Bump llama.cpp to bNNNNN" PR with the upstream compare link. It also
+dispatches the engine workflow on that branch, so both CUDA tracks are built and
+smoke-tested before review. Pushes made with the default `GITHUB_TOKEN` do not
+trigger CI: set a `LLAMA_CPP_BUMP_TOKEN` repository secret (a fine-grained token
+with contents and pull request write access) to run CI on the PR automatically,
+or close and reopen the PR to start it. The repository setting "Allow GitHub
+Actions to create and approve pull requests" must be enabled. Merging the PR
+changes nothing for users until a new lllm2 version is tagged; they then get the
+new engine with `uv tool install --upgrade lllm2`.
 Version-tag CI first looks for matching llama.cpp/CUDA asset names in earlier
 GitHub releases. Each track skips building, downloading and uploading when its exact tarball
 and checksum already exist on a published release; only a missing combination is built in NVIDIA's Rocky Linux 8
