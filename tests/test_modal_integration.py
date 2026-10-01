@@ -1,13 +1,14 @@
 """Opt-in end-to-end test against a real Modal account. It costs money.
 
 Run it with ``LLLM2_MODAL_INTEGRATION=1`` and Modal credentials configured, for
-example through ``MODAL_CONFIG_PATH``. CI never sets the variable, so the test
-is skipped there. ``LLLM2_MODAL_GPU`` (default ``T4``) and
-``LLLM2_MODAL_MODEL`` (a catalogue id, default ``qwen3-8b``) choose what runs.
-The model stays in the Volume afterwards, so a repeat run skips the download.
+example through ``MODAL_CONFIG_PATH``, in a Modal environment of your own.
+``LLLM2_MODAL_GPU`` (default ``T4``) and ``LLLM2_MODAL_MODEL`` (a catalogue id,
+default ``qwen3-8b``) choose what runs. The model stays in the Volume
+afterwards, so a repeat run skips the download.
 
-The ``gpu-smoke`` CI job runs it on llama.cpp bump PRs in the ``lllm2-ci``
-Modal environment (``MODAL_ENVIRONMENT``), with the PR's engine through
+The ``test`` CI jobs skip it. The ``gpu-smoke`` CI job runs it in the
+``lllm2-ci`` Modal environment (``MODAL_ENVIRONMENT``) on llama.cpp bump PRs,
+PRs that change Modal code and manual runs, with any engine CI built through
 ``LLLM2_MODAL_ENGINE_DIR``, then checks that no container is left running.
 """
 

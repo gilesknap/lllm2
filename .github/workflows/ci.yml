@@ -99,35 +99,81 @@ jobs:
     permissions:
       contents: write
 
+  modal-changes:
+    # Says whether a pull request changes the code gpu-smoke covers (PATHS in
+    # .github/scripts/modal_changes.py), so the paid test runs only then.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      modal: ${{ steps.diff.outputs.modal }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2  # The PR merged into its base, and both parents.
+      - name: List the changes that gpu-smoke covers
+        id: diff
+        # HEAD is the PR merged into the tip of its base branch, HEAD^1.
+        run: python3 .github/scripts/modal_changes.py HEAD^1 HEAD
+      - name: Explain why a pull request from a fork skips gpu-smoke
+        if: >-
+          steps.diff.outputs.modal == 'true' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "::notice::This PR changes Modal code, but gpu-smoke runs only for branches of this repository, as forks get no Modal secrets."
+
   gpu-smoke:
     # Real-GPU end-to-end test of the engine on Modal: download a model, serve
     # it on a T4, stream a completion and stop. It runs in the lllm2-ci Modal
-    # environment, kept for CI, and passes without touching Modal when the
-    # MODAL_TOKEN_ID secret is absent (forks and contributors).
-    needs: [engines]
+    # environment, kept for CI, with the secrets of the GitHub environment
+    # modal, and passes without touching Modal when they are absent.
+    #
+    # It runs on manual runs, on llama.cpp bump PRs and on other pull requests
+    # from this repository that change Modal code (modal-changes). It tests the
+    # engines this run built, or else the released engine for the pins. Pushes
+    # to main do not run it: their PR already did, and a failure on main would
+    # stop the bump release, which tags only a green main.
+    needs: [engines, modal-changes]
+    # !cancelled() lets it run when engines or modal-changes was skipped. When
+    # either failed it runs only to fail, at the first step, as a skipped
+    # required check counts as passed; "!= 'false'" covers modal-changes.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.head_ref == 'bot/llama-cpp-bump' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        (github.head_ref == 'bot/llama-cpp-bump' ||
+         needs.modal-changes.outputs.modal != 'false')))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # One run at a time: the sweep stops everything in the environment.
     concurrency:
       group: modal-lllm2-ci
       cancel-in-progress: false
+    # Used only for its secrets, so no GitHub deployment is recorded.
+    environment:
+      name: modal
+      deployment: false
     permissions:
       contents: read
       actions: read
     env:
       MODAL_ENVIRONMENT: lllm2-ci
+      # The Modal client reads MODAL_TOKEN_SECRET; the secret is MODAL_SECRET.
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      HAS_MODAL: ${{ secrets.MODAL_TOKEN_ID != '' }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_SECRET }}
+      HAS_MODAL: ${{ secrets.MODAL_TOKEN_ID != '' && secrets.MODAL_SECRET != '' }}
     steps:
+      - name: Fail when a job this one needs failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          ENGINES: ${{ needs.engines.result }}
+          CHANGES: ${{ needs.modal-changes.result }}
+        run: |
+          echo "::error::engines: $ENGINES, modal-changes: $CHANGES. The GPU smoke test did not run."
+          exit 1
       - name: Skip without Modal credentials
         if: env.HAS_MODAL != 'true'
-        run: echo "::notice::MODAL_TOKEN_ID is not set, so the GPU smoke test did not run."
+        run: echo "::notice::The modal environment has no MODAL_TOKEN_ID and MODAL_SECRET secrets, so the GPU smoke test did not run."
       - uses: actions/checkout@v5
         if: env.HAS_MODAL == 'true'
         with:
@@ -136,7 +182,9 @@ jobs:
         if: env.HAS_MODAL == 'true'
         with:
           python-version: '3.12'
-      - if: env.HAS_MODAL == 'true'
+      - name: Install lllm2 with the Modal client
+        id: sync
+        if: env.HAS_MODAL == 'true'
         run: uv sync --locked --extra modal
       - name: Check for engines built in this run
         id: engines
@@ -169,10 +217,11 @@ jobs:
       - name: Check that lllm2 stopped its own containers
         if: env.HAS_MODAL == 'true'
         run: uv run --locked --extra modal python .github/scripts/modal_sweep.py "$MODAL_ENVIRONMENT" --check
-      # Runs after failures, timeouts and cancellation too. It fails the job if
-      # anything in the environment is still running afterwards.
+      # Runs after failures, timeouts and cancellation too, once the Modal
+      # client is installed. It fails the job if anything in the environment
+      # is still running afterwards.
       - name: Stop every app and container in the CI environment
-        if: ${{ always() && env.HAS_MODAL == 'true' }}
+        if: ${{ always() && steps.sync.outcome == 'success' }}
         timeout-minutes: 5
         run: uv run --locked --extra modal python .github/scripts/modal_sweep.py "$MODAL_ENVIRONMENT"
 

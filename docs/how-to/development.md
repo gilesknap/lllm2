@@ -129,15 +129,17 @@ To enable it, a maintainer:
   CI on `main`, and the release tag must be pushed with it: a tag pushed with
   `GITHUB_TOKEN` does not start the tag pipeline. Grant the fine-grained token
   contents and pull request read and write access to this repository.
-- Adds the `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` secrets for the GPU smoke
-  test. Without them the GPU test is skipped and auto-merge stays off.
+- Adds the `MODAL_TOKEN_ID` and `MODAL_SECRET` secrets to the GitHub
+  environment `modal` for the GPU smoke test (see
+  [GPU smoke test on Modal](#gpu-smoke-test-on-modal)). Without them the GPU
+  test is skipped and auto-merge stays off.
 - Enables **Settings > General > Allow auto-merge**.
 - Protects `main` with a branch protection rule or ruleset that requires the
   CI checks to pass before merging: `lint / run`, `test (3.11)` to
   `test (3.14)`, `browser`, `docs-build`, `dist / build` and the GPU smoke test,
-  `gpu-smoke`. A skipped check counts as passed, so `gpu-smoke` gates only bump
-  PRs. Without required checks, GitHub refuses to enable auto-merge on a PR that
-  is already mergeable.
+  `gpu-smoke`. A skipped check counts as passed, so `gpu-smoke` gates only the
+  PRs it runs on: bump PRs and PRs that change Modal code. Without required
+  checks, GitHub refuses to enable auto-merge on a PR that is already mergeable.
 - Sets the repository variable `LLAMA_CPP_AUTO_RELEASE` to `true` (**Settings >
   Secrets and variables > Actions > Variables**). Delete it to return to
   merging and tagging by hand.
@@ -204,18 +206,44 @@ evaluation must use the real NVIDIA driver and omit this stub from the environme
 ## GPU smoke test on Modal
 
 CI otherwise proves only that an engine compiles and that `llama-server --help`
-runs against a stub driver. On `bot/llama-cpp-bump` PRs, and when CI is run
-by hand (**Actions > CI > Run workflow**), the `engines` job builds the PR's
-engines and the `gpu-smoke` job runs `tests/test_modal_integration.py` on a
-Modal T4: it deploys the app with this run's engines (`LLLM2_MODAL_ENGINE_DIR`),
-downloads `qwen3-8b` into the Volume (only on the first run), serves it, streams
-a completion and stops the call. Without the `MODAL_TOKEN_ID` secret, as on
-forks, the job reports a notice and passes without touching Modal.
+runs against a stub driver. The `gpu-smoke` job runs
+`tests/test_modal_integration.py` on a Modal T4: it deploys the app, downloads
+`qwen3-8b` into the Volume (only on the first run), serves it, streams a
+completion and stops the call. It needs no approval. It runs:
+
+- on `bot/llama-cpp-bump` PRs;
+- on other PRs from branches of this repository that change Modal code;
+- when CI is run by hand (**Actions > CI > Run workflow**), on any branch.
+
+On bump PRs and manual runs, the `engines` job first builds the engines when no
+release has them yet, and the app installs those (`LLLM2_MODAL_ENGINE_DIR`).
+Otherwise the app installs the released engine for the current pins, as a user's
+deployment does.
+
+The `modal-changes` job decides which PRs change Modal code. It lists the files
+the PR changes and looks for those in `PATHS` in
+`.github/scripts/modal_changes.py`: the remote engine (`remote.py`), the engine
+proxy (`proxy.py`), the Modal provider and app, the integration test, the sweep
+and change scripts, and `ci.yml`, which defines the job. Other PRs skip the job
+and spend nothing. So do PRs from forks, which get no secrets; `modal-changes`
+adds a notice when such a PR changes Modal code. Pushes to `main` do not run
+the job: their PR already did, and a Modal failure on `main` would stop the
+bump release, which tags only a commit whose CI passed.
+
+A skipped job counts as a passed check. So when `engines` or `modal-changes`
+fails, `gpu-smoke` fails at once rather than skipping, and a bump PR whose
+engines failed is never merged automatically.
+
+The concurrency group `modal-lllm2-ci` serialises the runs, so two PRs never
+deploy the app or spend at the same time. GitHub keeps only one run waiting:
+when another arrives, it cancels the older waiting run. Re-run that run's
+`gpu-smoke` job.
 
 The job runs in its own Modal environment, `lllm2-ci`, so it never touches the
-apps you run yourself. Modal tokens cover the whole workspace; the sweep below
-names the environment on every command and refuses `main`. Do not run anything
-of your own in `lllm2-ci`.
+apps you run yourself. `lllm2-ci` is reserved for CI: every run stops every app
+and container in it, whoever started them. Modal tokens cover the whole
+workspace; the sweep below names the environment on every command and refuses
+`main`.
 
 Every run ends with `.github/scripts/modal_sweep.py`, which stops every app
 and container in `lllm2-ci` and then lists the environment again until nothing
@@ -225,30 +253,40 @@ cancellation; only a force-cancel or a lost runner skips it. Before the test,
 the same sweep stops anything an earlier run left. After a passing test,
 `modal_sweep.py --check` first fails the job if lllm2 left any container
 running, which the final sweep would otherwise hide. The `lllm2` app is stopped
-too; the next run redeploys it.
+too; the next run redeploys it. The job also has a 60-minute timeout.
 
-Set it up once:
+Set it up once. Create the Modal environment:
 
 ```bash
 uv run --extra modal modal environment create lllm2-ci
 ```
 
 Create a Modal API token (**Settings > API Tokens** in the Modal dashboard, or
-`modal token new`, which writes it to `~/.modal.toml`), then store it as
-repository secrets:
+`modal token new`, which writes it to `~/.modal.toml`). In GitHub, create the
+environment `modal` (**Settings > Environments > New environment**) with no
+protection rules, so runs need no approval. Store the token ID and the token
+secret as its secrets:
 
 ```bash
-gh secret set MODAL_TOKEN_ID --repo gilesknap/lllm2
-gh secret set MODAL_TOKEN_SECRET --repo gilesknap/lllm2
+gh secret set MODAL_TOKEN_ID --env modal --repo gilesknap/lllm2
+gh secret set MODAL_SECRET --env modal --repo gilesknap/lllm2
 ```
 
-To run the test by hand against the same environment, set
-`LLLM2_MODAL_INTEGRATION=1 MODAL_ENVIRONMENT=lllm2-ci` and run
-`uv run --extra modal pytest tests/test_modal_integration.py -s`, then
-`uv run --extra modal python .github/scripts/modal_sweep.py lllm2-ci`.
+The job maps `MODAL_SECRET` to `MODAL_TOKEN_SECRET`, the variable the Modal
+client reads, and sets `MODAL_ENVIRONMENT=lllm2-ci`. It uses the environment
+only for its secrets, so GitHub records no deployment. Without both secrets the
+job reports a notice and passes without touching Modal. The bump workflow reads
+the environment too, only to check that both secrets exist before it turns on
+auto-merge. Anyone who can push a branch to this repository can use the token
+from a PR.
 
-Expected cost: a run holds a T4 (US$0.59 per hour) for about five minutes, for
-the GPU probe, model load and completion, plus CPU time to build the image and,
-on the first run only, to download the 5 GB model. A weekly bump costs well under
-US$1 a month. Each new bump also uploads the two engine tarballs (about 1.8 GB)
-from the runner into the Modal image.
+To test a branch by hand, run CI on it with **Run workflow**. To run the test
+from a checkout instead, use a Modal environment of your own, never `lllm2-ci`,
+where a CI run would stop it part way.
+
+Expected cost: about US$0.05 to US$0.10 per run. A run holds a T4 (US$0.59 per
+hour) for about five minutes, for the GPU probe, model load and completion,
+plus CPU time to build the image and, on the first run only, to download the
+5 GB model. Each push to a PR that changes Modal code runs it again, and a
+weekly bump costs well under US$1 a month. Each new bump also uploads the two
+engine tarballs (about 1.8 GB) from the runner into the Modal image.
