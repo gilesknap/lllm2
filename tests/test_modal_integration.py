@@ -26,10 +26,21 @@ from lllm2 import config
 from lllm2.remote import RemoteEngine, catalogue_source, remote_provider
 from lllm2.settings import Settings
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("LLLM2_MODAL_INTEGRATION") != "1",
-    reason="Set LLLM2_MODAL_INTEGRATION=1 to run against a real Modal account.",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("LLLM2_MODAL_INTEGRATION") != "1",
+        reason="Set LLLM2_MODAL_INTEGRATION=1 to run against a real Modal account.",
+    ),
+    # The Modal client's multipart upload leaves its file handles to the
+    # engine tarballs from LLLM2_MODAL_ENGINE_DIR for the garbage collector.
+    # The pytest setting that turns warnings into errors would then fail a
+    # passing test, so ignore exactly those handles.
+    pytest.mark.filterwarnings(
+        r"ignore:Exception ignored in. <_io\.FileIO name='[^']*/"
+        r"lllm2-engine-[^']*\.tar\.gz'"
+        ":pytest.PytestUnraisableExceptionWarning"
+    ),
+]
 
 
 def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
