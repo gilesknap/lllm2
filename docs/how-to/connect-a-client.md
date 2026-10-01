@@ -2,7 +2,9 @@
 
 Start a model first. OpenAI-compatible clients use
 `http://127.0.0.1:1920/v1`; query `/v1/models` for the served model ID. A model
-[served from Modal](serve-from-modal.md) uses the same URL.
+[served from Modal](serve-from-modal.md) uses the same URL. For a model served
+in a Kubernetes cluster, see
+[Deploy on Kubernetes](deploy-on-kubernetes.md#point-clients-at-the-engine).
 
 For coding agents, the safer starting point is **claude-sandbox**, which runs
 the client in a devcontainer and reduces its access to your host environment.

@@ -16,3 +16,8 @@ Set environment variables before starting the workbench or a client wrapper.
 The panel defaults to `127.0.0.1:8082`. Its controls use `/api/*`; model
 clients connect to the separate llama.cpp server on port 1920. Protocol
 support depends on the selected engine build.
+
+The [container image](../how-to/run-container.md) sets `LLLM2_MODELS_DIR=/models`,
+`LLLM2_STATE_DIR=/data/state`, `LLLM2_ENGINE_HOME=/data/engines`,
+`LLLM2_ENGINE_HOST=0.0.0.0` and `LLLM2_UPDATE_CHECK=0`, and searches
+`/opt/lllm2/engines`, which holds its pinned engine, and `/data/engines`.
