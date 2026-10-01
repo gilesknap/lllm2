@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
-from typing import Any, BinaryIO, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 #: GGUF metadata value types, by their on-disk tag.
 (U8, I8, U16, I16, U32, I32, F32, BOOL, STRING, ARRAY, U64, I64, F64) = range(13)
@@ -66,6 +66,19 @@ class Malformed(Exception):
     """This file is not a GGUF, or its header does not parse."""
 
 
+class Readable(Protocol):
+    """What the header parse needs of a file: a seek and a read.
+
+    A local file has both. So does a file on a web server read with range
+    requests, which is how a Hugging Face file is checked before it is added
+    to the catalogue.
+    """
+
+    def seek(self, offset: int, whence: int = 0, /) -> int: ...
+
+    def read(self, size: int, /) -> bytes: ...
+
+
 class _Head:
     """The front of the file in memory, grown forward as the parse walks it.
 
@@ -83,7 +96,7 @@ class _Head:
     -- which is exactly what a re-download does.
     """
 
-    def __init__(self, fh: BinaryIO) -> None:
+    def __init__(self, fh: Readable) -> None:
         self.fh = fh
         self.size = fh.seek(0, 2)
         self.buf = b""
@@ -180,31 +193,36 @@ def _value(head: _Head, pos: int, kind: int) -> tuple[int, Any]:
 def header(path: Path | str) -> tuple[dict[str, Any], list[str]]:
     """A checkpoint's metadata and tensor names, read from its header alone."""
     with open(path, "rb") as raw:
-        head = _Head(raw)
-        if head.size < 24 or head.upto(4)[:4] != b"GGUF":
-            raise Malformed("no GGUF magic; this is not a checkpoint")
-        # Byte 4 is the format version, unused: the layout below is stable
-        # across 2-3.
-        buf = head.upto(24)
-        tensors, pairs = struct.unpack_from("<QQ", buf, 8)
-        pos = 24
-        meta: dict[str, Any] = {}
-        for _ in range(pairs):
-            pos, key = _string_at(head, pos)
-            buf = head.upto(pos + 4)
-            kind = struct.unpack_from("<I", buf, pos)[0]
-            pos, meta[key] = _value(head, pos + 4, kind)
-        names = []
-        for _ in range(tensors):
-            pos, name = _string_at(head, pos)
-            names.append(name)
-            buf = head.upto(pos + 4)
-            dims = struct.unpack_from("<I", buf, pos)[0]
-            # The shape, then the ggml type and the offset into the tensor
-            # blob. None of the three is read; stepping over them is checked
-            # because `dims` came out of the file like everything else.
-            pos += 4 + 8 * dims + 12
-            head.upto(pos)
+        return parse(raw)
+
+
+def parse(fh: Readable) -> tuple[dict[str, Any], list[str]]:
+    """The same, from anything that seeks and reads, such as a remote file."""
+    head = _Head(fh)
+    if head.size < 24 or head.upto(4)[:4] != b"GGUF":
+        raise Malformed("no GGUF magic; this is not a checkpoint")
+    # Byte 4 is the format version, unused: the layout below is stable
+    # across 2-3.
+    buf = head.upto(24)
+    tensors, pairs = struct.unpack_from("<QQ", buf, 8)
+    pos = 24
+    meta: dict[str, Any] = {}
+    for _ in range(pairs):
+        pos, key = _string_at(head, pos)
+        buf = head.upto(pos + 4)
+        kind = struct.unpack_from("<I", buf, pos)[0]
+        pos, meta[key] = _value(head, pos + 4, kind)
+    names = []
+    for _ in range(tensors):
+        pos, name = _string_at(head, pos)
+        names.append(name)
+        buf = head.upto(pos + 4)
+        dims = struct.unpack_from("<I", buf, pos)[0]
+        # The shape, then the ggml type and the offset into the tensor
+        # blob. None of the three is read; stepping over them is checked
+        # because `dims` came out of the file like everything else.
+        pos += 4 + 8 * dims + 12
+        head.upto(pos)
     return meta, names
 
 
