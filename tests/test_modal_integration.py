@@ -26,10 +26,23 @@ from lllm2 import config
 from lllm2.remote import RemoteEngine, catalogue_source, remote_provider
 from lllm2.settings import Settings
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("LLLM2_MODAL_INTEGRATION") != "1",
-    reason="Set LLLM2_MODAL_INTEGRATION=1 to run against a real Modal account.",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("LLLM2_MODAL_INTEGRATION") != "1",
+        reason="Set LLLM2_MODAL_INTEGRATION=1 to run against a real Modal account.",
+    ),
+    # The Modal client's multipart upload (modal/_utils/blob_utils.py, still
+    # in modal 1.6.0) opens one reader per part of an engine tarball from
+    # LLLM2_MODAL_ENGINE_DIR and never closes them. The pytest setting that
+    # turns warnings into errors would then fail a passing test, so ignore
+    # leaked handles to those tarballs. CPython 3.14 words the message
+    # differently, hence the ".*".
+    pytest.mark.filterwarnings(
+        r"ignore:Exception ignored .*<_io\.FileIO name='[^']*/"
+        r"lllm2-engine-[^']*\.tar\.gz'"
+        ":pytest.PytestUnraisableExceptionWarning"
+    ),
+]
 
 
 def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
