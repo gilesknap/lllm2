@@ -15,7 +15,7 @@ Run `lllm2 COMMAND --help` for all options.
 | `lllm2 modal setup` | Check Modal credentials and deploy the lllm2 app unless this version is already deployed. |
 | `lllm2 modal probe --gpu TYPE [--json]` | Run a short, billed probe container, print the GPU name, memory, engine devices, the engine build (llama.cpp release, CUDA track and compiler) and its sha256, and save the result for later launches. |
 | `lllm2 modal download ID` | Download a catalogue model and its companion files into the Modal Volume, with progress; a stored model downloads nothing. Ctrl-C cancels, and a rerun resumes. |
-| `lllm2 modal list [--json]` | List running lllm2 serve calls with owner, elapsed time and estimated cost. |
+| `lllm2 modal list [--containers] [--json]` | List running lllm2 serve calls with owner, elapsed time and estimated cost; `--containers` lists every running container in the Modal environment, whatever started it. |
 | `lllm2 modal stop [CALL_ID\|--all] [--force]` | Stop one call, or every orphaned call with `--all`; a call whose owner still heartbeats is skipped, and `--force` stops one such call by id. |
 | `lllm2 modal models [--json]` | List models stored in the Modal Volume, with sizes and catalogue ids. |
 | `lllm2 modal remove ID\|NAME` | Delete a stored model, by catalogue id or the name `models` prints, with its companion files, unless a running call serves it. |

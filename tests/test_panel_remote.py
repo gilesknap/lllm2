@@ -12,7 +12,9 @@ import socket
 import sys
 import threading
 import time
-from unittest.mock import patch
+from collections import Counter
+from types import SimpleNamespace
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -23,7 +25,7 @@ from lllm2.bench import Bench
 from lllm2.catalogue import Catalogue
 from lllm2.engine import LocalEngine
 from lllm2.modal_provider import ModalProvider
-from lllm2.remote import CallRecords, StoreDownloads, catalogue_source
+from lllm2.remote import CallRecords, ProbeCache, StoreDownloads, catalogue_source
 from lllm2.settings import Settings
 from lllm2.store import Store
 from test_modal_provider import META, FakeModal
@@ -463,6 +465,227 @@ def test_heartbeat_decides_ownership_across_pid_namespaces():
     assert not remote.owner_process_gone(dict(same_namespace, pid=os.getpid()))
 
 
+def running(app, **data):
+    """List the running containers through the panel and return the fake group."""
+    view = app.action("/api/remote/containers", {"backend": "fake"} | data)
+    (group,) = view["providers"]
+    return group
+
+
+def stop_containers(app, *targets, confirm=False):
+    return app.action(
+        "/api/remote/stop-containers",
+        {"backend": "fake", "targets": list(targets), "confirm": confirm},
+    )
+
+
+def target(row):
+    return {"container_id": row["container_id"], "call_id": row["id"]}
+
+
+def test_running_containers_lists_work_lllm2_did_not_start(app, tmp_path):
+    foreign = FakeProvider(tmp_path / "remote").run_foreign("my-batch-job")
+    group = running(app)
+    assert (group["provider"], group["label"]) == ("fake", "Fake")
+    assert (group["complete"], group["error"]) == (True, None)
+    assert "Check current pricing" in group["caveat"]
+    (row,) = group["containers"]
+    assert (row["container_id"], row["app"], row["status"]) == (
+        foreign,
+        "my-batch-job",
+        "unknown",
+    )
+    # No GPU type in the listing means no price and no cost estimate.
+    assert (row["gpu"], row["usd_per_hour"], row["estimated_cost_usd"]) == (
+        None,
+        None,
+        None,
+    )
+    assert row["elapsed_seconds"] >= 0
+    assert running(app)["containers"] == [row | {"elapsed_seconds": ANY}]
+
+
+def test_running_containers_classifies_every_row(app, tmp_path):
+    use_free_port(app)
+    start(app)
+    assert eventually(lambda: app.bench.snapshot()["status"] == "serving")
+    elsewhere, active = spawn_elsewhere(tmp_path)
+    abandoned, orphan = spawn_orphan(tmp_path, dead_owner())
+    foreign = elsewhere.run_foreign("my-batch-job")
+    try:
+        rows = {row["status"]: row for row in running(app)["containers"]}
+        assert set(rows) == {"owned", "active", "orphan", "unknown"}
+        assert rows["owned"]["id"] == app.engine.state()["call_id"]
+        assert (rows["active"]["id"], rows["orphan"]["id"]) == (active, orphan)
+        assert rows["unknown"]["container_id"] == foreign
+        for status in ("owned", "active", "orphan"):
+            row = rows[status]
+            assert row["container_id"] == "ct-" + row["id"]
+            assert (row["gpu"], row["usd_per_hour"]) == ("FAKE-24", 3.6)
+            assert row["estimated_cost_usd"] is not None
+        assert rows["orphan"]["model"] == model_path()
+    finally:
+        elsewhere.close()
+        abandoned.close()
+
+
+def test_stopping_a_container_needs_confirmation_unless_it_is_ours_or_an_orphan(
+    app, tmp_path
+):
+    elsewhere, active = spawn_elsewhere(tmp_path)
+    abandoned, orphan = spawn_orphan(tmp_path, dead_owner())
+    foreign = elsewhere.run_foreign("my-batch-job")
+    try:
+        rows = {row["status"]: row for row in running(app)["containers"]}
+        listed = lambda: {row["container_id"] for row in running(app)["containers"]}  # noqa: E731
+        # An orphan stops at once.
+        assert stop_containers(app, target(rows["orphan"])) == {
+            "stopped": [target(rows["orphan"])],
+            "skipped": [],
+            "failed": [],
+        }
+        assert all(c.id != orphan for c in elsewhere.calls())
+        # Work lllm2 does not track waits for a confirmation that names it.
+        result = stop_containers(app, target(rows["unknown"]))
+        (skipped,) = result["skipped"]
+        assert foreign in skipped["reason"] and "my-batch-job" in skipped["reason"]
+        assert result["stopped"] == [] and foreign in listed()
+        result = stop_containers(app, target(rows["unknown"]), confirm=True)
+        assert result["stopped"] == [target(rows["unknown"])]
+        assert foreign not in listed()
+        # So does another live session's model.
+        result = stop_containers(app, target(rows["active"]))
+        assert "Another lllm2 session" in result["skipped"][0]["reason"]
+        assert "ct-" + active in listed()
+        assert stop_containers(app, target(rows["active"]), confirm=True)["stopped"]
+        assert elsewhere.calls() == []
+        # A confirmation covers one container, never a bulk stop.
+        with pytest.raises(ValueError, match="one container at a time"):
+            stop_containers(
+                app, target(rows["active"]), target(rows["unknown"]), confirm=True
+            )
+        with pytest.raises(ValueError, match="Choose the containers"):
+            stop_containers(app)
+        with pytest.raises(ValueError, match="Choose the containers"):
+            stop_containers(app, {"container_id": None, "call_id": None})
+        result = stop_containers(app, {"container_id": "ct-gone", "call_id": None})
+        assert result["skipped"] == [
+            {
+                "container_id": "ct-gone",
+                "call_id": None,
+                "reason": "It is no longer running.",
+            }
+        ]
+    finally:
+        elsewhere.close()
+        abandoned.close()
+
+
+def test_a_failed_stop_is_reported_and_the_others_still_stop(app, tmp_path):
+    first, stuck = spawn_orphan(tmp_path, dead_owner())
+    second, orphan = spawn_orphan(tmp_path, dead_owner())
+    foreign = first.run_foreign("my-batch-job")
+    cancel = FakeProvider.cancel
+
+    def refuse(provider, call_id):
+        if call_id == stuck:
+            raise remote.ProviderError("Fake refused to cancel")
+        cancel(provider, call_id)
+
+    try:
+        rows = {row["container_id"]: row for row in running(app)["containers"]}
+        with patch.object(FakeProvider, "cancel", refuse):
+            result = stop_containers(
+                app, target(rows["ct-" + stuck]), target(rows["ct-" + orphan])
+            )
+        assert result["stopped"] == [target(rows["ct-" + orphan])]
+        assert result["failed"] == [
+            target(rows["ct-" + stuck]) | {"error": "Fake refused to cancel"}
+        ]
+        # A provider that cannot stop containers says so in the failed list.
+        with patch.object(
+            FakeProvider, "stop_container", remote.RemoteProvider.stop_container
+        ):
+            result = stop_containers(app, target(rows[foreign]), confirm=True)
+        (failed,) = result["failed"]
+        assert "cannot stop containers that lllm2 did not start" in failed["error"]
+        assert foreign in {row["container_id"] for row in running(app)["containers"]}
+    finally:
+        first.close()
+        second.close()
+
+
+def test_stop_all_stops_this_sessions_model_and_orphans_only(app, tmp_path):
+    use_free_port(app)
+    start(app)
+    assert eventually(lambda: app.bench.snapshot()["status"] == "serving")
+    elsewhere, active = spawn_elsewhere(tmp_path)
+    abandoned, orphan = spawn_orphan(tmp_path, dead_owner())
+    foreign = elsewhere.run_foreign("my-batch-job")
+    try:
+        rows = {row["status"]: row for row in running(app)["containers"]}
+        result = stop_containers(app, target(rows["owned"]), target(rows["orphan"]))
+        assert result["stopped"] == [target(rows["owned"]), target(rows["orphan"])]
+        # This session's model stops as Stop model stops it.
+        assert app.engine.state()["phase"] == "stopped"
+        assert app.bench.snapshot()["status"] == "stopped"
+        left = {
+            row["container_id"]: row["status"] for row in running(app)["containers"]
+        }
+        assert left == {"ct-" + active: "active", foreign: "unknown"}
+    finally:
+        elsewhere.close()
+        abandoned.close()
+
+
+def test_status_poll_makes_no_provider_listing_calls(app):
+    use_free_port(app)
+    start(app)
+    assert eventually(lambda: app.bench.snapshot()["status"] == "serving")
+    app.update_check = SimpleNamespace(notice=lambda: None)
+    provider = app.engine.provider
+    counts: Counter[str] = Counter()
+
+    def counted(name, method):
+        def call(*args, **kwargs):
+            counts[name] += 1
+            return method(*args, **kwargs)
+
+        return call
+
+    for name in ("calls", "containers", "models"):
+        setattr(provider, name, counted(name, getattr(provider, name)))
+    running(app)
+    assert counts["calls"] >= 1 and counts["containers"] == 1
+    listed = dict(counts)
+    for _ in range(10):
+        status = app.status({"backend": "fake", "gpu_type": "FAKE-24"})
+    assert dict(counts) == listed
+    assert status["engine"]["ready"] and status["engine"]["call_id"]
+    json.dumps(status)
+
+
+def test_running_containers_say_when_a_provider_lists_only_its_calls(
+    app, providers, tmp_path
+):
+    class CallsOnly(FakeProvider):
+        def containers(self):
+            return None
+
+    spawner, call_id = spawn_elsewhere(tmp_path)
+    spawner.run_foreign("my-batch-job")
+    try:
+        with patch.dict(
+            remote.PROVIDERS, {"fake": lambda: CallsOnly(tmp_path / "remote")}
+        ):
+            group = running(app)
+    finally:
+        spawner.close()
+    assert (group["complete"], group["error"]) == (False, None)
+    (row,) = group["containers"]
+    assert (row["id"], row["container_id"]) == (call_id, None)
+
+
 def test_volume_models_download_and_remove(app, providers):
     view = app.action("/api/remote", {"backend": "fake"})
     assert (view["error"], view["models"], view["stored_ids"]) == (None, [], [])
@@ -637,6 +860,8 @@ def test_missing_client_or_credentials_give_a_clear_message(app):
         orphans = app.action("/api/remote/orphans", {"backend": "fake"})
         assert orphans["orphans"] == []
         assert "pip install" in orphans["unavailable"][0]["error"]
+        group = running(app)
+        assert "pip install" in group["error"] and group["containers"] == []
         # Validation reports the missing client instead of failing the request.
         check = app.action("/api/launch/check", {"settings": fake_settings()})
         assert not check["valid"] and "pip install" in check["error"]
@@ -706,17 +931,35 @@ def test_orphan_check_contacts_only_selected_or_recorded_providers(app):
         return create
 
     empty = {"orphans": [], "unavailable": []}
+    unchecked = [
+        {"provider": "modal", "label": "Modal"},
+        {"provider": "fake", "label": "Fake"},
+    ]
+
+    def containers(data):
+        view = app.action("/api/remote/containers", data)
+        return [g["provider"] for g in view["providers"]], [
+            u["provider"] for u in view["unchecked"]
+        ]
+
     with patch.dict(
         remote.PROVIDERS, {"fake": provider("fake"), "modal": provider("modal")}
     ):
         # A local session with no call records makes no provider request.
         for data in ({}, {"backend": "CUDA"}, {"backend": ""}):
             assert app.action("/api/remote/orphans", data) == empty
+            view = app.action("/api/remote/containers", data)
+            assert view == {"providers": [], "unchecked": unchecked}
         assert contacted == [] and set(app.engines) == {"local"}
         # Selecting a remote backend checks that provider only.
         orphans = app.action("/api/remote/orphans", {"backend": "modal"})
         assert [u["provider"] for u in orphans["unavailable"]] == ["modal"]
         assert contacted == ["modal"]
+        view = app.action("/api/remote/containers", {"backend": "modal"})
+        (group,) = view["providers"]
+        assert (group["provider"], group["label"]) == ("modal", "Modal")
+        assert group["error"] == "modal contacted" and group["containers"] == []
+        assert view["unchecked"] == unchecked[1:]
         # A local call record can be an orphan, so its provider is checked.
         contacted.clear()
         CallRecords(config.STATE_DIR / "remote-calls.json").put(
@@ -725,6 +968,23 @@ def test_orphan_check_contacts_only_selected_or_recorded_providers(app):
         orphans = app.action("/api/remote/orphans", {"backend": "CUDA"})
         assert [u["provider"] for u in orphans["unavailable"]] == ["fake"]
         assert contacted == ["fake"]
+        assert containers({"backend": "CUDA"}) == (["fake"], ["modal"])
+        # Asking for a provider by name checks it whatever the selection.
+        assert containers({"backend": "CUDA", "check": ["modal"]}) == (
+            ["modal", "fake"],
+            [],
+        )
+        with pytest.raises(ValueError, match="as a list"):
+            app.action("/api/remote/containers", {"check": "modal"})
+        # A saved GPU probe shows this workstation has used the provider, so a
+        # probe container it may have left running is looked for too.
+        contacted.clear()
+        ProbeCache(config.STATE_DIR / "remote-probes.json").put(
+            "modal", "T4", remote.GpuProbe("Tesla T4", 15360, {})
+        )
+        assert containers({"backend": "CUDA"}) == (["modal", "fake"], [])
+        orphans = app.action("/api/remote/orphans", {"backend": "CUDA"})
+        assert [u["provider"] for u in orphans["unavailable"]] == ["modal", "fake"]
 
 
 def test_local_panel_works_without_the_modal_extra(app):
@@ -754,6 +1014,9 @@ def local_panel_without_modal(app, local):
     orphans = app.action("/api/remote/orphans", {"backend": "modal"})
     (unavailable,) = [u for u in orphans["unavailable"] if u["provider"] == "modal"]
     assert "lllm2[modal]" in unavailable["error"]
+    view = app.action("/api/remote/containers", {"backend": "modal"})
+    (group,) = [g for g in view["providers"] if g["provider"] == "modal"]
+    assert "lllm2[modal]" in group["error"] and group["containers"] == []
     assert "lllm2[modal]" in app.action("/api/remote", {"backend": "modal"})["error"]
     # The panel answers a Modal start with a client error naming the extra.
     s = Settings.parse({"model": model_path(), "backend": "modal", "gpu_type": "T4"})

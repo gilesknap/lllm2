@@ -176,6 +176,55 @@ GPU type, model, elapsed time and estimated cost:
   only calls started from this workstation can be adopted.
 - **Stop call** cancels it.
 
+### See everything that bills
+
+The **Running in Modal** card, directly under the launch card, lists every
+running container in your Modal environment, whatever started it: this
+panel's model, another lllm2 session's model, an orphan, an lllm2 probe or
+download container, and another tool's work. Each row shows the app and
+function, the GPU type, the elapsed time and the estimated cost, with the
+pricing caveat under the rows. The card is closed by default; its summary
+says how many containers run and how many are not from this session.
+
+Each row is one of four kinds:
+
+- **This session's model.** **Stop** stops it, as **Stop model** does.
+- **Another lllm2 session's model.** Its owner still heartbeats.
+  **Stop…** asks first and names that session, because stopping it leaves
+  that session without its model.
+- **Orphan.** No live lllm2 session owns it. **Stop** cancels it at once.
+- **Not tracked.** lllm2 tracks no serve call for it: an lllm2 probe or
+  download, a call from an lllm2 version before this one, or another tool's
+  work. **Stop…** asks first and names the container, its app and what it
+  cancels. Stopping an lllm2 probe or download fails the start or download
+  that uses it. Modal may start another app's stopped work again in a new
+  container; to end that for good, stop the app with `modal app stop`.
+
+A button under the rows, such as **Stop this session's model and 1 orphan**,
+stops those two kinds in one go. It never stops another session's model or a
+container lllm2 does not track.
+
+Modal's container list does not report GPU types. A serve call's GPU comes
+from its call record, so its cost is estimated as usual. Every other row shows
+**unknown GPU** and no cost estimate, and a download container shows
+**no GPU**. lllm2 never guesses a GPU type.
+
+When nothing runs, the card is replaced by one line: **Nothing is running in
+Modal**, with the time it was checked and **Check again**.
+
+The card lists containers on page load, when the model's phase changes, when
+you click **Refresh**, **Check again** or **Refresh storage and calls**, after
+a stop, and every minute while the card is open. The status poll never lists
+them. The panel asks Modal only when Modal is the selected backend, the panel
+already runs its engine, or this workstation has used Modal: a call record or
+a saved GPU probe names it. Otherwise the line says that Modal is not checked,
+and **Check Modal** checks it on request.
+
+The card covers the Modal environment that lllm2 uses: `MODAL_ENVIRONMENT`, or
+your profile's default. Containers in other environments of the workspace are
+not listed. A serve call started by an lllm2 version before this one shows as
+a container lllm2 does not track, beside its call row, until it ends.
+
 ## Connect claude-sandbox
 
 A Modal model serves on the same local port as a local one, so
@@ -277,6 +326,18 @@ lllm2 modal stop --all
 skips a call in use and tells you where it runs; adding `--force` stops it
 anyway, which leaves that session without its model, so stop it from that
 session where you can. `--force` works on one call id, not with `--all`.
+
+To see every running container in the Modal environment, not only lllm2 serve
+calls, add `--containers`:
+
+```bash
+lllm2 modal list --containers
+```
+
+This also lists lllm2 probe and download containers and other tools' work,
+with **unknown GPU** and no cost estimate where Modal does not report the GPU
+type. Stop such a container from the panel's **Running in Modal** card, or
+with Modal's own tools.
 
 Stored models incur Modal storage charges. List and remove them:
 

@@ -526,8 +526,77 @@ const assert=require('node:assert/strict');
  assert.match(await run("$('orphan-banner').textContent"),/at an unknown hourly rate/);
  await run("$('stop-call-call-1').click();await new Promise(r=>setTimeout(r,100))");
  assert.equal(await run("$('orphan-banner').hidden"),true);
+ // Every running container in the account: classes, costs, confirmation and the polling contract.
+ const row={adoptable:false,owner:null,model:null,heartbeat_age:null,app:'lllm2',function:'serve'};
+ const containers=[{...row,id:'fc-own',container_id:'ta-own',gpu:'L40S',started:1,elapsed_seconds:300,usd_per_hour:1.951,estimated_cost_usd:0.16,model:'/models/dense/dense.gguf',heartbeat_age:2,status:'owned'},{...row,id:'fc-act',container_id:'ta-act',gpu:'T4',started:2,elapsed_seconds:200,usd_per_hour:0.59,estimated_cost_usd:0.03,heartbeat_age:3,owner:{pid:42,host:'box',heartbeat:1},status:'active'},{...row,id:'fc-orph',container_id:'ta-orph',gpu:'T4',started:3,elapsed_seconds:100,usd_per_hour:0.59,estimated_cost_usd:0.02,heartbeat_age:400,adoptable:true,status:'orphan'},{...row,id:null,container_id:'ta-other',app:'my-batch-job',function:null,gpu:null,started:4,elapsed_seconds:11400,usd_per_hour:null,estimated_cost_usd:null,status:'unknown'}];
+ await run(`fixture.workspace.containers=${JSON.stringify(containers)};await refreshContainers()`);
+ assert.equal(await run("$('workspace').hidden"),false);
+ assert.equal(await run("$('workspace-quiet').hidden"),true);
+ assert.equal(await run("$('workspace-summary').textContent"),'Running in Modal · 4 containers · 3 not from this session');
+ await run("$('workspace').open=true");
+ const workspaceText=await run("$('workspace-rows').textContent");
+ for(const pattern of [/This session's model · Qwen3\.8-27B/,/Another lllm2 session's model \(pid 42 on box\); its heartbeat is fresh/,/Orphan: no live lllm2 session owns it/,/Modal · my-batch-job · unknown GPU/,/Running 3:10:00 · cost not estimated: GPU type unknown · container ta-other/,/Running 5:00 · about \$0\.16 so far at ~\$1\.95\/hour · container ta-own/])assert.match(workspaceText,pattern);
+ assert.match(await run("$('workspace-caveat').textContent"),/Check current Modal pricing/);
+ assert.equal(await run("$('workspace-stop-all').textContent"),"Stop this session's model and 1 orphan");
+ assert.deepEqual(await run("['ta-own','ta-act','ta-orph','ta-other'].map(id=>$('workspace-stop-modal:'+id).textContent)"),['Stop','Stop…','Stop','Stop…']);
+ assert.equal(await run("new Set([...document.querySelectorAll('[id]')].map(e=>e.id)).size===document.querySelectorAll('[id]').length"),true);
+ for(const width of [1440,390]){
+  await p.call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width===390});
+  assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true,`workspace overflow ${width}`);
+  await p.shot(`${artifacts}/workspace-${width}.png`);
+ }
+ await p.call('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+ // Work lllm2 does not track asks first and names what it cancels.
+ await run("window.stopPosts=()=>fixture.posts.filter(p=>p.path==='/api/remote/stop-containers');$('workspace-stop-modal:ta-other').click()");
+ assert.equal(await run("$('workspace-stop-dialog').open"),true);
+ assert.equal(await run("$('workspace-stop-name').textContent"),'Modal · my-batch-job · unknown GPU · Running 3:10:00 · cost not estimated: GPU type unknown · container ta-other');
+ assert.match(await run("$('workspace-stop-detail').textContent"),/may start it again in a new container/);
+ await run("$('workspace-stop-cancel').click()");
+ assert.equal(await run("$('workspace-stop-dialog').open"),false);
+ assert.equal(await run('stopPosts().length'),0);
+ await run("$('workspace-stop-modal:ta-other').click();$('workspace-stop-confirm').click();await new Promise(r=>setTimeout(r,150))");
+ assert.deepEqual(await run('stopPosts().at(-1).data'),{backend:'modal',targets:[{container_id:'ta-other',call_id:null}],confirm:true});
+ assert.equal(await run("$('workspace-stop-dialog').open"),false);
+ assert.equal(await run("!!$('workspace-stop-modal:ta-other')"),false);
+ // Another session's model asks first and names that session.
+ await run("$('workspace-stop-modal:ta-act').click()");
+ assert.match(await run("$('workspace-stop-detail').textContent"),/pid 42 on box\) serves call fc-act/);
+ assert.equal(await run("$('workspace-stop-confirm').textContent"),'Stop their model');
+ await run("$('workspace-stop-cancel').click()");
+ // An orphan stops without a dialog.
+ await run("$('workspace-stop-modal:ta-orph').click();await new Promise(r=>setTimeout(r,150))");
+ assert.equal(await run("$('workspace-stop-dialog').open"),false);
+ assert.deepEqual(await run('stopPosts().at(-1).data'),{backend:'modal',targets:[{container_id:'ta-orph',call_id:'fc-orph'}],confirm:false});
+ // Stop all sends this session's model and the orphans, nothing that needs a dialog.
+ await run(`fixture.workspace.containers.push(${JSON.stringify({...containers[2],id:'fc-orph2',container_id:'ta-orph2'})});await refreshContainers()`);
+ await run("$('workspace-stop-all').click();await new Promise(r=>setTimeout(r,150))");
+ assert.deepEqual(await run('stopPosts().at(-1).data'),{backend:'modal',targets:[{container_id:'ta-own',call_id:'fc-own'},{container_id:'ta-orph2',call_id:'fc-orph2'}],confirm:false});
+ assert.equal(await run("$('workspace-summary').textContent"),'Running in Modal · 1 container · 1 not from this session');
+ assert.equal(await run("$('workspace-stop-all').hidden"),true);
+ // The status poll never lists containers; a phase change lists them once.
+ await run("$('workspace').open=false;window.listPosts=()=>fixture.posts.filter(p=>p.path==='/api/remote/containers').length;await new Promise(r=>setTimeout(r,100));window.listBefore=listPosts();await poll();await poll();await poll()");
+ assert.equal(await run('listPosts()-listBefore'),0);
+ await run("fixture.engine={...fixture.engine,phase:'exited'};for(let i=0;i<50&&listPosts()===listBefore;i++){await poll();await new Promise(r=>setTimeout(r,20));}await new Promise(r=>setTimeout(r,100))");
+ assert.equal(await run('listPosts()-listBefore'),1);
+ // The slow refresh lists only while the card is open.
+ await run("window.listBefore=listPosts();workspaceTick();await new Promise(r=>setTimeout(r,50))");
+ assert.equal(await run('listPosts()-listBefore'),0);
+ await run("$('workspace').open=true;workspaceTick();await new Promise(r=>setTimeout(r,50))");
+ assert.equal(await run('listPosts()-listBefore'),1);
+ // Nothing running is one quiet line, not an empty card.
+ await run("fixture.workspace.containers=[];await refreshContainers()");
+ assert.equal(await run("$('workspace').hidden"),true);
+ assert.equal(await run("$('workspace-quiet').hidden"),false);
+ assert.match(await run("$('workspace-quiet-text').textContent"),/^Nothing is running in Modal\. Checked /);
+ assert.equal(await run("$('workspace-quiet-refresh').textContent"),'Check again');
  await run("fixture.engine={running:false,ready:false};fixture.job={status:'idle'};$('backend').value='CUDA';$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200));customize(false)");
  assert.equal(await run('settings().gpu_type'),'');
+ // A local selection does not contact Modal, but says so and offers to check.
+ assert.equal(await run("$('workspace-quiet-text').textContent"),'Modal is not checked while another backend is selected.');
+ assert.equal(await run("$('workspace-quiet-refresh').textContent"),'Check Modal');
+ await run("$('workspace-quiet-refresh').click();await new Promise(r=>setTimeout(r,100))");
+ assert.deepEqual(await run("fixture.posts.filter(p=>p.path==='/api/remote/containers').at(-1).data"),{backend:'CUDA',check:['modal']});
+ assert.match(await run("$('workspace-quiet-text').textContent"),/^Nothing is running in Modal\./);
  // Update banner: shows the release, upgrade commands and stays dismissed for that version.
  // Poll until the banner state settles, since a background poll may already be in flight.
  const pollUntil=hidden=>run(`for(let i=0;i<50&&$('update-banner').hidden!==${hidden};i++){await poll();await new Promise(r=>setTimeout(r,20));}return $('update-banner').hidden`);
@@ -545,6 +614,6 @@ const assert=require('node:assert/strict');
  console.log('Experiment controls passed: visible controls, reactive estimates, keyboard add, independent combinations, empty selection guard, mocked submission and responsive layouts.');
  console.log('Results checks passed: sorting, zero/missing metrics, modes, expansion/focus across refresh, eligibility, CSV quoting, multiline clipboard fallback, full JSON, skip links and unchanged drafts/defaults.');
  console.log('Artifacts: '+artifacts);
- console.log('Browser checks passed: toolbar, settings recovery, zero/Auto, separate drafts, stale response, download focus/completion, running context, clipboard fallback, disconnect, errors, unique IDs, 36 rendered state/theme/viewport combinations.');
+ console.log('Browser checks passed: toolbar, settings recovery, zero/Auto, separate drafts, stale response, download focus/completion, running context, clipboard fallback, disconnect, errors, unique IDs, 36 rendered state/theme/viewport combinations, running containers.');
 }finally{b.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
 setTimeout(()=>{b.close();process.exit(2);},60000).unref();

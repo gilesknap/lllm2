@@ -82,6 +82,9 @@ and the time left until the idle stop. Watch that line.
   after (minutes)** and click **Apply to running model**; blank means it runs,
   and bills, until you stop it.
 - Closing the panel with Ctrl-C stops every call it owns.
+- The **Running in Modal** card under the launch card lists everything that
+  bills in your Modal environment, including probe containers and other
+  tools' work. Open it to check that nothing you forgot is still running.
 
 Stored models still cost a little while they sit in the Volume. Use
 **Remove from Modal…** in the model list, and see
