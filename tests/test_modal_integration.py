@@ -31,12 +31,14 @@ pytestmark = [
         os.environ.get("LLLM2_MODAL_INTEGRATION") != "1",
         reason="Set LLLM2_MODAL_INTEGRATION=1 to run against a real Modal account.",
     ),
-    # The Modal client's multipart upload leaves its file handles to the
-    # engine tarballs from LLLM2_MODAL_ENGINE_DIR for the garbage collector.
-    # The pytest setting that turns warnings into errors would then fail a
-    # passing test, so ignore exactly those handles.
+    # The Modal client's multipart upload (modal/_utils/blob_utils.py, still
+    # in modal 1.6.0) opens one reader per part of an engine tarball from
+    # LLLM2_MODAL_ENGINE_DIR and never closes them. The pytest setting that
+    # turns warnings into errors would then fail a passing test, so ignore
+    # leaked handles to those tarballs. CPython 3.14 words the message
+    # differently, hence the ".*".
     pytest.mark.filterwarnings(
-        r"ignore:Exception ignored in. <_io\.FileIO name='[^']*/"
+        r"ignore:Exception ignored .*<_io\.FileIO name='[^']*/"
         r"lllm2-engine-[^']*\.tar\.gz'"
         ":pytest.PytestUnraisableExceptionWarning"
     ),
