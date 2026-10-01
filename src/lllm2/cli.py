@@ -391,6 +391,8 @@ def workbench(
 
     Model and engine locations can be set with LLLM2_MODELS_DIR,
     LLLM2_ENGINE_HOME and LLLM2_ENGINE_ROOTS (colon-separated search paths).
+    The panel checks GitHub daily for a newer lllm2 release; set
+    LLLM2_UPDATE_CHECK=0 to turn that off.
     """
     if ctx.invoked_subcommand is None:
         _serve(host, port)

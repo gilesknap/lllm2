@@ -31,6 +31,11 @@ lllm2
 
 Open <http://127.0.0.1:8082>. Keep the panel running.
 
+When a newer lllm2 release is published, the panel shows a banner with the
+commands to upgrade: `uv tool upgrade lllm2`, then `lllm2 engines install cuda`
+when the release brings a new llama.cpp build. Restart the panel afterwards.
+Set `LLLM2_UPDATE_CHECK=0` to turn the daily check off.
+
 ## 1. Download a model
 
 Scroll to **My catalogue** on **Launch model** and click **Queue download**

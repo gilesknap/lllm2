@@ -39,6 +39,7 @@ from .settings import (
     default_key,
 )
 from .store import Store
+from .update_check import UpdateCheck
 
 
 def measured(result):
@@ -64,6 +65,7 @@ class App:
         self.token = secrets.token_urlsafe(32)
         self.start_requests = {}
         self.store_downloads = StoreDownloads()
+        self.update_check = UpdateCheck(self.store)
 
     @property
     def engine(self):
@@ -852,6 +854,7 @@ def serve(host="127.0.0.1", port=8082):
                     {
                         "token": app.token,
                         "version": __version__,
+                        "update": app.update_check.notice(),
                         "engine": app.engine.state(),
                         "job": app.bench.snapshot(),
                         "hardware": app.selected_hardware(query),

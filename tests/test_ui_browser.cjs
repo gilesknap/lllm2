@@ -520,6 +520,20 @@ const assert=require('node:assert/strict');
  assert.equal(await run("$('orphan-banner').hidden"),true);
  await run("fixture.engine={running:false,ready:false};fixture.job={status:'idle'};$('backend').value='CUDA';$('backend').dispatchEvent(new Event('change'));await new Promise(r=>setTimeout(r,200));customize(false)");
  assert.equal(await run('settings().gpu_type'),'');
+ // Update banner: shows the release, upgrade commands and stays dismissed for that version.
+ // Poll until the banner state settles, since a background poll may already be in flight.
+ const pollUntil=hidden=>run(`for(let i=0;i<50&&$('update-banner').hidden!==${hidden};i++){await poll();await new Promise(r=>setTimeout(r,20));}return $('update-banner').hidden`);
+ assert.equal(await run("$('update-banner').hidden"),true);
+ await run("fixture.update={version:'9.0.0',url:'https://github.com/gilesknap/lllm2/releases/tag/9.0.0',llama_cpp:'b99999',upgrade_command:'uv tool upgrade lllm2',pip_upgrade_command:'pip install --upgrade lllm2',engine_command:'lllm2 engines install cuda'}");
+ assert.equal(await pollUntil(false),false);
+ assert.match(await run("$('update-banner').textContent"),/lllm2 9\.0\.0 is available \(llama\.cpp b99999\)/);
+ assert.match(await run("$('update-banner').textContent"),/uv tool upgrade lllm2\nlllm2 engines install cuda/);
+ await run("$('dismiss-update').click();await poll()");
+ assert.equal(await run("$('update-banner').hidden"),true);
+ await run("fixture.update={...fixture.update,version:'9.0.1'}");
+ assert.equal(await pollUntil(false),false);
+ await run("fixture.update=null");
+ assert.equal(await pollUntil(true),true);
  console.log('Experiment controls passed: visible controls, reactive estimates, keyboard add, independent combinations, empty selection guard, mocked submission and responsive layouts.');
  console.log('Results checks passed: sorting, zero/missing metrics, modes, expansion/focus across refresh, eligibility, CSV quoting, multiline clipboard fallback, full JSON, skip links and unchanged drafts/defaults.');
  console.log('Artifacts: '+artifacts);
