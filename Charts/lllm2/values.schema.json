@@ -1,0 +1,204 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "lllm2 Helm chart",
+    "description": "Helm chart for the lllm2 workbench on a Kubernetes GPU node",
+    "type": "object",
+    "properties": {
+        "env": {
+            "description": "Extra environment variables, such as HTTPS_PROXY or LLLM2_IDLE_TIMEOUT_MINUTES.",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    },
+                    "valueFrom": {
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "global": {
+            "description": "Global values shared between all subcharts",
+            "$comment": "Added automatically by 'helm schema' to allow this chart to be used as a Helm dependency, as the `additionalProperties` setting would otherwise collide with Helm's special 'global' values key.",
+            "type": [
+                "object",
+                "null"
+            ]
+        },
+        "image": {
+            "type": "object",
+            "properties": {
+                "pullPolicy": {
+                    "description": "When the kubelet pulls the image. Empty pulls the moving tags main and latest every start and others only once.",
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "Always",
+                        "IfNotPresent",
+                        "Never"
+                    ]
+                },
+                "repository": {
+                    "description": "Image repository. Use a mirror for an air-gapped cluster.",
+                    "type": "string"
+                },
+                "tag": {
+                    "description": "Image tag. Empty uses the chart's appVersion, the lllm2 release.",
+                    "type": "string"
+                }
+            },
+            "additionalProperties": false
+        },
+        "imagePullSecrets": {
+            "description": "Secrets for pulling the image from a private registry.",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "nodeSelector": {
+            "description": "Node labels the pod must match, such as a GPU product label.",
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "panel": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "description": "Address the panel listens on. It has no login and runs any engine path it is given, so 127.0.0.1 keeps it to kubectl port-forward. 0.0.0.0 adds it to the Service on port 8082 for an authenticating proxy.",
+                    "type": "string",
+                    "enum": [
+                        "127.0.0.1",
+                        "0.0.0.0"
+                    ]
+                }
+            },
+            "additionalProperties": false
+        },
+        "persistence": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "existingClaim": {
+                            "description": "Mount this existing claim at /data, for state and extra engines, instead of creating one.",
+                            "type": "string"
+                        },
+                        "size": {
+                            "description": "Size of the data claim the chart creates. Helm keeps it on uninstall.",
+                            "type": "string"
+                        },
+                        "storageClassName": {
+                            "description": "Storage class of the data claim. Empty uses the cluster default.",
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "models": {
+                    "type": "object",
+                    "properties": {
+                        "existingClaim": {
+                            "description": "Mount this existing claim at /models instead of creating one.",
+                            "type": "string"
+                        },
+                        "size": {
+                            "description": "Size of the models claim the chart creates. Helm keeps it on uninstall.",
+                            "type": "string"
+                        },
+                        "storageClassName": {
+                            "description": "Storage class of the models claim. Empty uses the cluster default.",
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "podSecurityContext": {
+            "description": "The pod's security context. The defaults run the image as user and group 1000.",
+            "type": "object",
+            "properties": {
+                "fsGroup": {
+                    "type": "integer"
+                },
+                "fsGroupChangePolicy": {
+                    "type": "string"
+                },
+                "runAsGroup": {
+                    "type": "integer"
+                },
+                "runAsNonRoot": {
+                    "type": "boolean"
+                },
+                "runAsUser": {
+                    "type": "integer"
+                }
+            },
+            "additionalProperties": true
+        },
+        "resources": {
+            "type": "object",
+            "properties": {
+                "limits": {
+                    "description": "CPU and memory limits. The chart adds nvidia.com/gpu: 1 unless this sets it.",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "requests": {
+                    "description": "CPU and memory requests. Set them so the kubelet does not evict the pod first under memory pressure.",
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": false
+        },
+        "runtimeClassName": {
+            "description": "RuntimeClass of the NVIDIA container runtime, such as nvidia. Empty uses the node's default runtime.",
+            "type": "string"
+        },
+        "tolerations": {
+            "description": "Tolerations for taints on the GPU nodes.",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "effect": {
+                        "type": "string"
+                    },
+                    "key": {
+                        "type": "string"
+                    },
+                    "operator": {
+                        "type": "string"
+                    },
+                    "tolerationSeconds": {
+                        "type": "integer"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    },
+    "additionalProperties": false
+}

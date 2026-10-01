@@ -1,0 +1,26 @@
+{{- $name := include "lllm2.fullname" . }}
+{{- if include "lllm2.panelExposed" . }}
+The panel listens on the pod address and on the {{ $name }} Service, port
+8082. It has no login or TLS, and anyone who reaches it can run programs in
+the pod, so put an authenticating proxy in front of it. You can still reach
+it from your workstation with:
+{{- else }}
+The panel has no login or TLS, so it listens only inside the pod. Reach it
+from your workstation with:
+{{- end }}
+
+  kubectl port-forward -n {{ .Release.Namespace }} deploy/{{ $name }} 8082:8082
+
+then open http://127.0.0.1:8082. Keep local port 8082: the panel accepts
+only its own port in the browser's address.
+
+Clients in the cluster reach the model API, which has no API key, at:
+
+  http://{{ $name }}.{{ .Release.Namespace }}.svc.cluster.local:1920/v1
+{{- if has (include "lllm2.tag" .) (list "main" "latest") }}
+
+The image tag {{ include "lllm2.tag" . }} moves, so the pod pulls it each time it
+starts. Restart it to run a newer build:
+
+  kubectl rollout restart -n {{ .Release.Namespace }} deploy/{{ $name }}
+{{- end }}

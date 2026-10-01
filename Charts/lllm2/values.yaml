@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=values.schema.json
+
+image:
+  # @schema description: Image repository. Use a mirror for an air-gapped cluster.
+  repository: ghcr.io/gilesknap/lllm2
+  # @schema description: Image tag. Empty uses the chart's appVersion, the lllm2 release.
+  tag: ""
+  # @schema enum: ["", Always, IfNotPresent, Never]; description: When the kubelet pulls the image. Empty pulls the moving tags main and latest every start and others only once.
+  pullPolicy: ""
+
+# @schema item: object; itemProperties: {name: {type: string}}; description: Secrets for pulling the image from a private registry.
+imagePullSecrets: []
+
+# @schema description: RuntimeClass of the NVIDIA container runtime, such as nvidia. Empty uses the node's default runtime.
+runtimeClassName: ""
+
+# @schema additionalProperties: {type: string}; description: Node labels the pod must match, such as a GPU product label.
+nodeSelector: {}
+
+# @schema item: object; itemProperties: {key: {type: string}, operator: {type: string}, value: {type: string}, effect: {type: string}, tolerationSeconds: {type: integer}}; description: Tolerations for taints on the GPU nodes.
+tolerations: []
+
+resources:
+  # @schema additionalProperties: true; description: CPU and memory requests. Set them so the kubelet does not evict the pod first under memory pressure.
+  requests: {}
+  # @schema additionalProperties: true; description: CPU and memory limits. The chart adds nvidia.com/gpu: 1 unless this sets it.
+  limits: {}
+
+# @schema additionalProperties: true; description: The pod's security context. The defaults run the image as user and group 1000.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+
+# @schema item: object; itemProperties: {name: {type: string}, value: {type: string}, valueFrom: {type: object, additionalProperties: true}}; description: Extra environment variables, such as HTTPS_PROXY or LLLM2_IDLE_TIMEOUT_MINUTES.
+env: []
+
+panel:
+  # @schema enum: [127.0.0.1, 0.0.0.0]; description: Address the panel listens on. It has no login and runs any engine path it is given, so 127.0.0.1 keeps it to kubectl port-forward. 0.0.0.0 adds it to the Service on port 8082 for an authenticating proxy.
+  host: 127.0.0.1
+
+persistence:
+  models:
+    # @schema description: Mount this existing claim at /models instead of creating one.
+    existingClaim: ""
+    # @schema description: Size of the models claim the chart creates. Helm keeps it on uninstall.
+    size: 200Gi
+    # @schema description: Storage class of the models claim. Empty uses the cluster default.
+    storageClassName: ""
+  data:
+    # @schema description: Mount this existing claim at /data, for state and extra engines, instead of creating one.
+    existingClaim: ""
+    # @schema description: Size of the data claim the chart creates. Helm keeps it on uninstall.
+    size: 10Gi
+    # @schema description: Storage class of the data claim. Empty uses the cluster default.
+    storageClassName: ""

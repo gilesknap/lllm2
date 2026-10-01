@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lllm2.fullname" . }}
+  labels:
+    {{- include "lllm2.labels" . | nindent 4 }}
+spec:
+  # The panel locks its state directory and owns the whole GPU, so the old
+  # pod must stop before a new one starts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lllm2.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lllm2.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: lllm2
+          image: "{{ .Values.image.repository }}:{{ include "lllm2.tag" . }}"
+          imagePullPolicy: {{ include "lllm2.pullPolicy" . }}
+          # The panel has no login, so by default it listens only inside the
+          # pod: reach it with kubectl port-forward, which needs rights in this
+          # namespace.
+          args: [panel, --host, {{ .Values.panel.host | quote }}, --port, "8082"]
+          env:
+            # The Service reaches the model API on the pod address.
+            - name: LLLM2_ENGINE_HOST
+              value: 0.0.0.0
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: engine
+              containerPort: 1920
+            {{- if include "lllm2.panelExposed" . }}
+            - name: panel
+              containerPort: 8082
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            # One whole GPU: lllm2 plans and serves a model on a single card.
+            limits:
+              {{- merge (deepCopy .Values.resources.limits) (dict "nvidia.com/gpu" 1) | toYaml | nindent 14 }}
+            {{- with .Values.resources.requests }}
+            requests:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ include "lllm2.claimName" (dict "root" . "name" "models") }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "lllm2.claimName" (dict "root" . "name" "data") }}

@@ -1,0 +1,24 @@
+{{- range $name := list "models" "data" }}
+{{- $claim := index $.Values.persistence $name }}
+{{- if not $claim.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "lllm2.claimName" (dict "root" $ "name" $name) }}
+  labels:
+    {{- include "lllm2.labels" $ | nindent 4 }}
+  # Downloaded models and saved results outlive the release.
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $claim.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $claim.size | quote }}
+{{- end }}
+{{- end }}

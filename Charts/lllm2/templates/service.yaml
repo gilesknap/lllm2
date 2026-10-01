@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lllm2.fullname" . }}
+  labels:
+    {{- include "lllm2.labels" . | nindent 4 }}
+spec:
+  # The model API, for clients inside the cluster. It has no API key.
+  type: ClusterIP
+  selector:
+    {{- include "lllm2.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: engine
+      port: 1920
+      targetPort: engine
+    {{- if include "lllm2.panelExposed" . }}
+    # The panel has no login and refuses a Host header other than its own
+    # address, so it suits only a proxy that authenticates and sends one.
+    - name: panel
+      port: 8082
+      targetPort: panel
+    {{- end }}
