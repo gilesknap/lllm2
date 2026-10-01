@@ -110,12 +110,15 @@ class DownloadProgress:
         done_bytes: Bytes the store holds, never bytes still in flight.
         total_bytes: The file size, or None when unknown.
         retry: A note about a retry in progress, or None while bytes flow.
+        attached: True when another lllm2 session runs this download and this
+            caller only follows its progress.
     """
 
     file: str
     done_bytes: int
     total_bytes: int | None
     retry: str | None = None
+    attached: bool = False
 
 
 @dataclass(frozen=True)
@@ -248,11 +251,20 @@ class RemoteProvider(abc.ABC):
     ) -> dict:
         """Make a model present in the store, downloading what is missing.
 
+        A provider whose store offers an atomic claim downloads a model in one
+        caller at a time. A concurrent caller reports the running download's
+        progress with ``attached`` set and returns once the model is stored.
+        It takes the download over when the owner's heartbeat has been silent
+        for ``heartbeat_grace``. A provider without such a primitive downloads
+        in every caller.
+
         Args:
             source: The model to place in the store.
             progress: A callable that receives download progress.
             cancel: An event that aborts the download when set. Partial files
-                stay in the store so a later call can resume.
+                stay in the store so a later call can resume. Cancelling a
+                caller that only follows another session's download stops the
+                following, not the download.
 
         Returns:
             The GGUF metadata record in the ``discovery.metadata()`` shape.

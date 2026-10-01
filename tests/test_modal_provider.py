@@ -81,9 +81,16 @@ class InputCancellation(BaseException):
 
 
 class FakeDict(dict):
+    """A Modal Dict whose ``put(..., skip_if_exists=True)`` claims atomically."""
+
+    _lock = threading.Lock()
+
     def put(self, key, value, *, skip_if_exists=False):
-        self[key] = value
-        return True
+        with self._lock:
+            if skip_if_exists and key in self:
+                return False
+            self[key] = value
+            return True
 
 
 class FakeQueue:
@@ -411,6 +418,8 @@ def test_download_reports_progress_then_reuses_the_stored_model(fake, provider):
     assert provider.ensure_model(source, updates.append, threading.Event()) == META
     assert updates == [DownloadProgress("Qwen3-8B-Q4_K_M.gguf", 500, 1000)] * 2
     assert provider.models() == [StoredModel(source.name, 1000)]
+    # The download released its lease, with the lease's heartbeat.
+    assert not any(str(key).startswith(("lease", "heartbeat:")) for key in fake.state)
     assert provider.model_path(source.name) == "/models/" + source.name
     # The second launch reads cached metadata without starting a container.
     assert provider.ensure_model(source, updates.append, threading.Event()) == META
@@ -427,7 +436,376 @@ def test_cancelling_a_download_cancels_the_call(fake, provider):
     with pytest.raises(Cancelled):
         provider.ensure_model(source, lambda update: None, cancel)
     assert [call.cancelled for call in fake.calls.values()] == [True]
-    assert not any(str(key).startswith("heartbeat:") for key in fake.state)
+    assert not any(str(key).startswith(("lease", "heartbeat:")) for key in fake.state)
+
+
+LEASED = ModelSource("M/m.gguf", "org/repo", ("m.gguf",))
+LEASE = modal_app.lease_key(LEASED.name)
+
+
+class OtherSession(FakeDict):
+    """State in which another lllm2 session holds a model's download lease.
+
+    Each read of the lease stands for one poll of the other session: a live
+    session heartbeats then, and ``script`` may change what it does next, by
+    finishing, giving up or handing the lease to a third session.
+
+    Attributes:
+        reads: How often the lease was read while its owner held it.
+        read_keys: Every key read, in order.
+    """
+
+    def __init__(
+        self,
+        fake,
+        source=LEASED,
+        *,
+        live=True,
+        call="fc-other",
+        retry=None,
+        script=None,
+    ):
+        super().__init__()
+        self.fake, self.source, self.live = fake, source, live
+        self.script = script or (lambda session: None)
+        self.lease = modal_app.lease_key(source.name)
+        self.started = time.monotonic()
+        self.reads, self.read_keys = 0, []
+        self.owner = self.call = None
+        self.take("lease-other", call, retry=retry)
+
+    def take(self, owner, call, done_bytes=6 * 10**9, retry=None):
+        """Hold the lease as ``owner``, downloading through ``call``.
+
+        A ``call`` of None stands for an owner that has not spawned it yet.
+        """
+        if self.owner:
+            self.give_up()
+        self.owner, self.call = owner, call
+        self[self.lease] = {"owner": owner, "claimed": time.time()}
+        self[modal_app.heartbeat_key(owner)] = (time.time(), 0)
+        if call:
+            self[modal_app.lease_call_key(owner)] = call
+            record = {
+                "file": self.source.files[0],
+                "done_bytes": done_bytes,
+                "total_bytes": 8 * 10**9,
+            }
+            if retry:
+                record["retry"] = retry
+            self[modal_app.download_key(call)] = record
+
+    def finish(self):
+        """Store the model, then release the lease as an owner does."""
+        directory = modal_app.store_directory(self.source.name, self.source.files)
+        for file in self.source.files:
+            self.fake.store.files[str(directory / file)] = 8 * 10**9
+        self[modal_app.meta_key(self.source.name)] = {
+            "size": 8 * 10**9,
+            "meta": dict(META),
+        }
+        self.give_up()
+
+    def give_up(self):
+        """Release the lease without storing the model, as a cancelled owner does."""
+        self.pop(self.lease, None)
+        self.pop(modal_app.heartbeat_key(self.owner), None)
+        self.pop(modal_app.lease_call_key(self.owner), None)
+        if self.call:
+            self.pop(modal_app.download_key(self.call), None)
+        self.owner = self.call = None
+
+    def elapsed(self):
+        """Return the seconds since the other session's download started."""
+        return time.monotonic() - self.started
+
+    def get(self, key, default=None):
+        self.read_keys.append(key)
+        lease = super().get(self.lease)
+        if (
+            key == self.lease
+            and isinstance(lease, dict)
+            and lease["owner"] == self.owner
+        ):
+            self.reads += 1
+            if self.live:
+                self[modal_app.heartbeat_key(self.owner)] = (time.time(), self.reads)
+            self.script(self)
+        return super().get(key, default)
+
+
+def leasing(fake, grace=None, **options):
+    """Create a provider that polls every 10 ms, with an optional short grace."""
+    provider = ModalProvider(
+        fake, **({"poll_interval": 0.01, "deploy": lambda: None} | options)
+    )
+    if grace is not None:
+        provider.heartbeat_grace = grace
+    return provider
+
+
+def completes(fake):
+    """Make the next download call report its bytes, store the model and end."""
+
+    def poll(call):
+        fake.state.put(
+            modal_app.download_key(call.object_id),
+            {"file": "m.gguf", "done_bytes": 1000, "total_bytes": 1000},
+        )
+        fake.store.files[LEASED.name] = 1000
+
+    fake.behaviour["download"] = lambda *_args: {
+        "pending": 1,
+        "result": dict(META),
+        "on_poll": poll,
+    }
+
+
+def no_lease_left(state):
+    return not any(str(key).startswith(("lease", "heartbeat:")) for key in state)
+
+
+def test_a_second_session_follows_a_running_download_instead_of_repeating_it(fake):
+    fake.state = OtherSession(
+        fake,
+        retry="retry 1 after a reset",
+        script=lambda session: session.elapsed() > 0.3 and session.finish(),
+    )
+    provider = leasing(fake, grace=0.05)
+    updates = []
+    assert provider.ensure_model(LEASED, updates.append, threading.Event()) == META
+    assert fake.calls == {}
+    # The first report is the running download's own, so a panel that joins
+    # at 6 GB does not read a jump from zero as a speed.
+    running = DownloadProgress(
+        "m.gguf", 6 * 10**9, 8 * 10**9, "retry 1 after a reset", attached=True
+    )
+    assert updates[0] == running and set(updates) == {running}
+    # A live owner keeps its lease for many times the grace.
+    assert fake.state.elapsed() > 6 * provider.heartbeat_grace
+    assert no_lease_left(fake.state)
+
+
+def test_two_concurrent_downloads_of_one_model_start_one_download_call(fake):
+    finish = threading.Event()
+
+    def download(name, repo, files, revision):
+        def poll(call):
+            time.sleep(0.005)
+            fake.state.put(
+                modal_app.download_key(call.object_id),
+                {"file": files[0], "done_bytes": 500, "total_bytes": 1000},
+            )
+            if finish.is_set():
+                fake.store.files[name] = 1000
+            else:
+                call.pending = 1
+
+        return {"pending": 1, "result": dict(META), "on_poll": poll}
+
+    fake.behaviour["download"] = download
+    a = leasing(fake, grace=0.5, heartbeat=0)
+    b = leasing(fake, grace=0.5, heartbeat=0)
+    results, updates = {}, {"a": [], "b": []}
+
+    def run(name, provider):
+        results[name] = provider.ensure_model(
+            LEASED, updates[name].append, threading.Event()
+        )
+
+    threads = [threading.Thread(target=run, args=("a", a))]
+    threads[0].start()
+    deadline = time.monotonic() + 10
+    while LEASE not in fake.state and time.monotonic() < deadline:
+        time.sleep(0.005)
+    threads.append(threading.Thread(target=run, args=("b", b)))
+    threads[1].start()
+    while time.monotonic() < deadline and not any(
+        update.done_bytes == 500 for update in updates["b"]
+    ):
+        time.sleep(0.005)
+    # Follow for more than twice the grace: a live owner keeps its lease.
+    time.sleep(1.2)
+    finish.set()
+    for thread in threads:
+        thread.join(10)
+    assert results == {"a": META, "b": META}
+    assert [call.function for call in fake.calls.values()] == ["download"]
+    assert updates["a"] and not any(update.attached for update in updates["a"])
+    assert DownloadProgress("m.gguf", 500, 1000, attached=True) in updates["b"]
+    assert all(update.attached for update in updates["b"])
+    assert no_lease_left(fake.state)
+
+
+@pytest.mark.parametrize("heartbeat", ["frozen", "missing"])
+def test_a_lease_whose_owner_went_silent_is_reclaimed_within_the_grace(fake, heartbeat):
+    dead = FakeCall(fake, "download", None, (), pending=10**6)
+    fake.state = OtherSession(fake, call=dead.object_id, live=False)
+    if heartbeat == "missing":
+        fake.state.pop(modal_app.heartbeat_key("lease-other"))
+    completes(fake)
+    provider = leasing(fake, grace=0.3)
+    updates = []
+    started = time.monotonic()
+    assert provider.ensure_model(LEASED, updates.append, threading.Event()) == META
+    assert 0.3 <= time.monotonic() - started < 10
+    assert updates[0].attached and not updates[-1].attached
+    # This provider downloaded the rest itself. The dead owner's call stops
+    # itself on the same grace, so the follower leaves it alone.
+    assert [call.function for call in fake.calls.values()] == ["download"] * 2
+    assert not dead.cancelled
+    assert no_lease_left(fake.state)
+
+
+@pytest.mark.parametrize(
+    "lease", ["unreadable", "beat 4 minutes ago", "claimed 4 minutes ago"]
+)
+def test_a_lease_silent_for_longer_than_the_grace_is_reclaimed_at_once(fake, lease):
+    fake.state = OtherSession(fake, live=False)
+    beat = modal_app.heartbeat_key("lease-other")
+    if lease == "unreadable":
+        fake.state[LEASE] = "garbage"
+    elif lease == "beat 4 minutes ago":
+        fake.state[beat] = (time.time() - 240, 3)
+    else:
+        # The owner died between its claim and its first heartbeat.
+        fake.state[LEASE] = {"owner": "lease-other", "claimed": time.time() - 240}
+        fake.state.pop(beat)
+    completes(fake)
+    provider = leasing(fake)
+    assert provider.heartbeat_grace == modal_app.OWNER_GRACE_SECONDS
+    cancel = threading.Event()
+    # A regression waits the full grace; fail it instead of hanging.
+    guard = threading.Timer(10, cancel.set)
+    guard.start()
+    started = time.monotonic()
+    try:
+        assert provider.ensure_model(LEASED, lambda _update: None, cancel) == META
+    finally:
+        guard.cancel()
+    assert time.monotonic() - started < 5
+    assert [call.function for call in fake.calls.values()] == ["download"]
+    assert LEASE not in fake.state
+
+
+def test_a_follower_takes_the_download_over_when_its_owner_gives_up(fake):
+    fake.state = OtherSession(
+        fake, script=lambda session: session.reads > 3 and session.give_up()
+    )
+    completes(fake)
+    updates = []
+    assert leasing(fake).ensure_model(LEASED, updates.append, threading.Event()) == META
+    assert updates[0].attached and not updates[-1].attached
+    assert [call.function for call in fake.calls.values()] == ["download"]
+    assert no_lease_left(fake.state)
+
+
+def test_a_follower_follows_whichever_session_takes_the_lease_over(fake):
+    def script(session):
+        if session.owner == "lease-other" and session.reads >= 3:
+            session.take("lease-third", "fc-third", done_bytes=7 * 10**9)
+        elif session.reads >= 6:
+            session.finish()
+
+    fake.state = OtherSession(fake, script=script)
+    updates = []
+    assert leasing(fake).ensure_model(LEASED, updates.append, threading.Event()) == META
+    assert fake.calls == {}
+    assert [update.done_bytes for update in dict.fromkeys(updates)] == [
+        6 * 10**9,
+        7 * 10**9,
+    ]
+    assert all(update.attached for update in updates)
+
+
+def test_a_follower_says_a_download_runs_before_it_reports(fake):
+    fake.state = OtherSession(
+        fake, call=None, script=lambda session: session.reads > 3 and session.finish()
+    )
+    updates = []
+    assert leasing(fake).ensure_model(LEASED, updates.append, threading.Event()) == META
+    assert updates == [DownloadProgress("m.gguf", 0, None, attached=True)]
+    assert fake.calls == {}
+    assert not any(key.startswith("download:") for key in fake.state.read_keys)
+
+
+def test_cancelling_a_follower_leaves_the_other_download_alone(fake):
+    fake.state = OtherSession(fake)
+    before = dict(fake.state)
+    cancel = threading.Event()
+    with pytest.raises(Cancelled):
+        leasing(fake).ensure_model(LEASED, lambda _update: cancel.set(), cancel)
+    for key in (
+        LEASE,
+        modal_app.lease_call_key("lease-other"),
+        modal_app.download_key("fc-other"),
+    ):
+        assert fake.state[key] == before[key]
+    assert fake.calls == {}
+
+
+def test_a_session_never_removes_a_lease_another_session_took_over(fake):
+    newer = {"owner": "lease-newer", "claimed": time.time()}
+
+    def download(*_args):
+        def poll(call):
+            # Another session judged this one dead, as after a long network
+            # partition, and took the lease over.
+            fake.state[LEASE] = newer
+            fake.store.files[LEASED.name] = 1000
+
+        return {"pending": 1, "result": dict(META), "on_poll": poll}
+
+    fake.behaviour["download"] = download
+    assert (
+        leasing(fake).ensure_model(LEASED, lambda _u: None, threading.Event()) == META
+    )
+    assert fake.state[LEASE] == newer
+    assert not any(str(key).startswith(("lease-", "heartbeat:")) for key in fake.state)
+
+
+def test_a_model_stored_during_the_first_deploy_is_not_downloaded(fake):
+    def deploy():
+        # Another session finishes the download while this one deploys.
+        fake.store.files[LEASED.name] = 1000
+        fake.state.put(
+            modal_app.meta_key(LEASED.name), {"size": 1000, "meta": dict(META)}
+        )
+
+    provider = ModalProvider(fake, poll_interval=0, deploy=deploy)
+    assert provider.ensure_model(LEASED, lambda _u: None, threading.Event()) == META
+    assert fake.calls == {}
+    assert no_lease_left(fake.state)
+
+
+@pytest.mark.parametrize("outcome", ["stored", "cancelled"])
+def test_a_lease_that_cannot_be_released_does_not_hide_the_outcome(
+    fake, monkeypatch, outcome
+):
+    cancel = threading.Event()
+    if outcome == "stored":
+        completes(fake)
+    else:
+        fake.behaviour["download"] = lambda *_args: {
+            "pending": 100,
+            "on_poll": lambda call: cancel.set(),
+        }
+    popping = fake.state.pop
+
+    def pop(key, *default):
+        if key == LEASE:
+            raise ModalConnectionError("network down")
+        return popping(key, *default)
+
+    monkeypatch.setattr(fake.state, "pop", pop)
+    provider = leasing(fake)
+    if outcome == "stored":
+        assert provider.ensure_model(LEASED, lambda _u: None, cancel) == META
+    else:
+        with pytest.raises(Cancelled):
+            provider.ensure_model(LEASED, lambda _u: None, cancel)
+    # The lease stays behind and goes silent, so another session reclaims it.
+    assert fake.state[LEASE]["owner"].startswith("lease-")
 
 
 def test_polling_keeps_a_call_alive_and_silence_ends_it(fake):
@@ -1362,6 +1740,7 @@ def test_only_a_bare_not_ready_timeout_keeps_a_download_polling(fake, provider):
             provider.ensure_model(source, lambda _update: None, threading.Event())
         assert str(error) in str(raised.value)
         assert fake.calls[f"fc-{len(fake.calls)}"].cancelled
+        assert modal_app.lease_key(source.name) not in fake.state
     # A bare timeout, whichever class carries it, only means "not ready yet".
     for pending in (ModalTimeoutError(), TimeoutError()):
         fake.behaviour["download"] = lambda *_args, pending=pending: {
@@ -1371,5 +1750,6 @@ def test_only_a_bare_not_ready_timeout_keeps_a_download_polling(fake, provider):
             "timeout_error": pending,
         }
         assert provider.ensure_model(source, lambda _u: None, threading.Event()) == META
+        assert modal_app.lease_key(source.name) not in fake.state
         fake.store.files.clear()
         fake.state.pop(modal_app.meta_key(source.name), None)

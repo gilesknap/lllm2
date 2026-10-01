@@ -4,7 +4,8 @@ A child process owns a ``RemoteEngine`` over the Modal provider and a fake
 ``modal`` module. This process runs the Modal serve function with a short
 owner grace period. Both sides share the Modal Dict through a file, as the
 real ones share it through Modal, so the serve side sees the owner's
-heartbeats and their absence.
+heartbeats and their absence. A hard-killed download owner likewise loses its
+lease on the model to a session that follows it.
 """
 
 import contextlib
@@ -21,7 +22,9 @@ from types import SimpleNamespace
 
 from fake_remote import free_port
 from lllm2 import modal_app
-from test_modal_provider import FakeQueue
+from lllm2.modal_provider import ModalProvider
+from lllm2.remote import DownloadProgress
+from test_modal_provider import LEASED, META, FakeModal, FakeQueue
 
 TESTS = Path(__file__).parent
 GRACE = 1.0
@@ -180,5 +183,103 @@ def test_serve_side_stops_after_its_owner_is_killed(tmp_path):
             child.kill()
             child.wait(10)
         for stream in (child.stdout, child.stderr):
+            if stream:
+                stream.close()
+
+
+DOWNLOADER = r"""
+import sys, threading, time
+sys.path.insert(0, sys.argv[1])
+from test_modal_provider import LEASED, FakeModal
+from test_remote_hard_kill import FileDict
+from lllm2 import modal_app
+from lllm2.modal_provider import ModalProvider
+
+fake = FakeModal()
+fake.state = FileDict(sys.argv[2])
+
+
+def download(*_args):
+    # A download that never ends, reporting what the store holds.
+    def poll(call):
+        record = {"file": "m.gguf", "done_bytes": 500, "total_bytes": 1000}
+        fake.state.put(modal_app.download_key(call.object_id), record)
+        time.sleep(0.02)
+
+    return {"pending": 10**9, "on_poll": poll}
+
+
+fake.behaviour["download"] = download
+provider = ModalProvider(fake, poll_interval=0.02, deploy=lambda: None, heartbeat=0.1)
+reported = threading.Event()
+
+
+def progress(update):
+    if not reported.is_set():
+        reported.set()
+        print("downloading", flush=True)
+
+
+provider.ensure_model(LEASED, progress, threading.Event())
+"""
+
+
+def test_a_download_lease_is_reclaimed_after_its_owner_is_killed(tmp_path):
+    """A second session follows a live download, then takes over a dead one."""
+    state = FileDict(tmp_path / "state.json")
+    owner = subprocess.Popen(
+        [sys.executable, "-c", DOWNLOADER, str(TESTS), str(state.path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        line = owner.stdout.readline() if owner.stdout else ""
+        assert line.startswith("downloading"), (
+            owner.stderr.read() if owner.stderr else ""
+        )
+        fake = FakeModal()
+        fake.state = state
+
+        def poll(call):
+            record = {"file": "m.gguf", "done_bytes": 1000, "total_bytes": 1000}
+            state.put(modal_app.download_key(call.object_id), record)
+            fake.store.files[LEASED.name] = 1000
+
+        fake.behaviour["download"] = lambda *_args: {
+            "pending": 1,
+            "result": dict(META),
+            "on_poll": poll,
+        }
+        provider = ModalProvider(fake, poll_interval=0.02, deploy=lambda: None)
+        provider.heartbeat_grace = GRACE
+        updates, result = [], {}
+        follower = threading.Thread(
+            target=lambda: result.update(
+                meta=provider.ensure_model(LEASED, updates.append, threading.Event())
+            ),
+            daemon=True,
+        )
+        follower.start()
+        # The live owner's heartbeats keep its lease past the grace.
+        time.sleep(GRACE * 3)
+        assert follower.is_alive() and fake.calls == {}
+        assert DownloadProgress("m.gguf", 500, 1000, attached=True) in updates
+
+        # SIGKILL skips every ``finally``, as a crash or power loss does.
+        owner.send_signal(signal.SIGKILL)
+        owner.wait(10)
+        killed = time.monotonic()
+        follower.join(GRACE * 10)
+        assert result == {"meta": META}
+        assert time.monotonic() - killed < GRACE * 10
+        assert [call.function for call in fake.calls.values()] == ["download"]
+        assert updates[-1] == DownloadProgress("m.gguf", 1000, 1000)
+        assert modal_app.lease_key(LEASED.name) not in state
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+            owner.wait(10)
+        for stream in (owner.stdout, owner.stderr):
             if stream:
                 stream.close()
