@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from . import config, gguf
+from .catalogue import is_projector
 
 CATALOG = json.loads(Path(__file__).with_name("models.json").read_text())
 
@@ -238,7 +239,7 @@ def models():
     if config.MODELS_DIR.exists():
         for p in sorted(config.MODELS_DIR.rglob("*.gguf")):
             shard = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", p.name)
-            if p.name.startswith("mmproj") or (shard and int(shard.group(1)) != 1):
+            if is_projector(p.name) or (shard and int(shard.group(1)) != 1):
                 continue
             info = identity(p)
             m = metadata(p)
