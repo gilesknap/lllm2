@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -488,6 +489,11 @@ def invoke(*args):
     return CliRunner().invoke(cli.app, ["modal", *args])
 
 
+def plain(text):
+    """Remove the ANSI styling Typer forces on help when GITHUB_ACTIONS is set."""
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+
 def test_a_cli_probe_feeds_later_validation_without_a_container(
     provider, engines, no_local_gpu
 ):
@@ -570,7 +576,7 @@ def test_modal_list_containers_shows_work_lllm2_did_not_start(modal_cli):
     foreign = provider.run_foreign("my-batch-job")
     probe = provider.run_foreign("lllm2", function="probe", call_id="fc-probe")
     download = provider.run_foreign("lllm2", function="download", call_id="fc-dl")
-    assert "--containers" in invoke("list", "--help").output
+    assert "--containers" in plain(invoke("list", "--help").output)
     result = invoke("list", "--containers")
     assert result.exit_code == 0, result.output
     lines = {line.split("  ")[0]: line for line in result.output.splitlines()}
