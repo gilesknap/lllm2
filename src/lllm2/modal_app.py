@@ -11,7 +11,10 @@ reveal only that the server is up.
 The functions do their work in plain functions (``probe_container``,
 ``fetch_model`` and ``run_server``) that receive every Modal object they use,
 so tests run them without Modal. The module imports without the ``modal``
-package; it defines ``app`` only when the package is installed.
+package; it defines ``app`` only when the package is installed. While it runs,
+each function names itself and its call under ``container_key`` (see
+``announce``), so the provider can tell lllm2's containers apart in Modal's
+container listing.
 
 Engine selection: the image installs both CUDA engine tarballs that
 ``lllm2 engine install`` can choose for this lllm2 version's llama.cpp and CUDA
@@ -34,6 +37,7 @@ the same checks, instead of from a published release. Only CI sets it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import subprocess
@@ -41,7 +45,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -625,6 +629,44 @@ class OwnerWatch:
         return now - self._changed > self.grace
 
 
+def container_key(task_id: str) -> str:
+    """Return the state key where a container names the function and call it runs."""
+    return "container:" + task_id
+
+
+@contextlib.contextmanager
+def announce(
+    state: Any, function: str, call_id: str | None, task_id: str | None = None
+) -> Iterator[None]:
+    """Name this container's function and call in the state while the body runs.
+
+    Modal's container listing reports a container id, its app and its start
+    time, but not the function or the call. Each lllm2 function publishes them
+    under ``container_key`` so the provider can match a serve container to its
+    call and name its probe and download containers. A failed write only loses
+    that match, so it never stops the work.
+
+    Args:
+        state: A dict-like store with ``put`` and ``pop``.
+        function: The app function name: ``"probe"``, ``"download"`` or ``"serve"``.
+        call_id: The function call id, or None when Modal reports none.
+        task_id: The container id, or None to read ``MODAL_TASK_ID``.
+    """
+    task_id = task_id or os.environ.get("MODAL_TASK_ID")
+    key = container_key(task_id) if task_id else None
+    if key is not None:
+        try:
+            state.put(key, {"function": function, "call_id": call_id})
+        except Exception as error:
+            print(f"lllm2: could not publish the container record: {error}", flush=True)
+    try:
+        yield
+    finally:
+        if key is not None:
+            with contextlib.suppress(Exception):
+                state.pop(key, None)
+
+
 class LogPump(threading.Thread):
     """Copy a process's output lines to the container log and a log queue.
 
@@ -874,7 +916,8 @@ if modal is not None:
     )
     def probe() -> dict:
         """Inspect the GPU and engine; the caller picks the GPU type."""
-        return probe_container()
+        with announce(_state(), "probe", modal.current_function_call_id()):
+            return probe_container()
 
     @app.function(
         image=image,
@@ -884,16 +927,18 @@ if modal is not None:
     )
     def download(name: str, repo: str, files: list[str], revision: str | None) -> dict:
         """Download a model into the Volume and publish progress."""
-        return run_download(
-            name,
-            repo,
-            files,
-            revision,
-            call_id=modal.current_function_call_id() or "unknown",
-            state=_state(),
-            commit=volume.commit,
-            reload=volume.reload,
-        )
+        state, call_id = _state(), modal.current_function_call_id()
+        with announce(state, "download", call_id):
+            return run_download(
+                name,
+                repo,
+                files,
+                revision,
+                call_id=call_id or "unknown",
+                state=state,
+                commit=volume.commit,
+                reload=volume.reload,
+            )
 
     @app.function(
         image=image,
@@ -906,13 +951,15 @@ if modal is not None:
         argv: list[str], api_key: str, env: dict[str, str], files: dict[str, str]
     ) -> dict:
         """Run llama-server behind a tunnel until cancelled."""
-        return run_server(
-            argv,
-            api_key,
-            env,
-            files,
-            call_id=modal.current_function_call_id() or "unknown",
-            state=_state(),
-            logs=modal.Queue.from_name(LOG_QUEUE_NAME, create_if_missing=True),
-            forward=modal.forward,
-        )
+        state, call_id = _state(), modal.current_function_call_id()
+        with announce(state, "serve", call_id):
+            return run_server(
+                argv,
+                api_key,
+                env,
+                files,
+                call_id=call_id or "unknown",
+                state=state,
+                logs=modal.Queue.from_name(LOG_QUEUE_NAME, create_if_missing=True),
+                forward=modal.forward,
+            )

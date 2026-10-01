@@ -170,6 +170,31 @@ class RemoteCall:
     heartbeat_age: float | None = None
 
 
+@dataclass(frozen=True)
+class RemoteContainer:
+    """A running container in the provider account, whatever started it.
+
+    Attributes:
+        id: The provider's container identifier.
+        app: The name of the app or project that runs it, or None when unknown.
+        function: The function it runs, or None when the provider cannot tell.
+            lllm2's own containers report ``"probe"``, ``"download"`` (which
+            holds no GPU) or ``"serve"``.
+        call_id: The lllm2 call it runs, or None. A serve container's call id
+            matches a ``RemoteCall.id`` from ``RemoteProvider.calls``.
+        gpu: The GPU type as the provider's GPU table names it, or None when
+            the provider does not report it.
+        started: The start time as Unix seconds, or None while it is pending.
+    """
+
+    id: str
+    app: str | None = None
+    function: str | None = None
+    call_id: str | None = None
+    gpu: str | None = None
+    started: float | None = None
+
+
 class ProviderError(RuntimeError):
     """A provider failure with a message the user can act on.
 
@@ -364,6 +389,46 @@ class RemoteProvider(abc.ABC):
         Returns:
             The running calls, including ones this process did not start.
         """
+
+    def containers(self) -> list[RemoteContainer] | None:
+        """List every running container in the provider account, whatever started it.
+
+        The listing covers work lllm2 did not start, such as another tool's
+        jobs, and lllm2's own probe and download containers, so a caller can
+        show everything that bills. Listing changes nothing and starts nothing,
+        but it can be slower than ``calls``, so callers must not poll it on a
+        short interval.
+
+        Providers that can see only their own serve calls keep this default.
+        Callers then show the ``calls`` rows alone and say the view is partial.
+
+        Returns:
+            The running containers, oldest first and pending ones last, or None
+            when the provider cannot enumerate beyond its own serve calls.
+
+        Raises:
+            ProviderError: The listing failed. Callers may still show ``calls``.
+        """
+        return None
+
+    def stop_container(self, container_id: str) -> None:
+        """Stop a listed container and the work it runs.
+
+        A container that runs a known lllm2 call is stopped by cancelling that
+        call, so the provider does not run it again elsewhere. Stopping a
+        container that has already ended does nothing.
+
+        Args:
+            container_id: An identifier that ``containers`` listed.
+
+        Raises:
+            ValueError: The identifier is not a safe container id.
+            ProviderError: The provider cannot stop containers, or the request
+                failed.
+        """
+        raise ProviderError(
+            f"{self.name} cannot stop containers that lllm2 did not start."
+        )
 
 
 PROVIDERS: dict[str, Callable[[], RemoteProvider]] = {}
@@ -681,6 +746,19 @@ class ProbeCache:
             return GpuProbe(entry["name"], int(entry["total_mib"]), entry["engine"])
         except (KeyError, TypeError, ValueError):
             return None
+
+    def providers(self):
+        """Return the providers that have at least one saved probe.
+
+        A probe ran a container, so it shows that this workstation has used
+        the provider. Reading the file needs no provider request.
+
+        Returns:
+            The provider names, sorted.
+        """
+        with self._lock:
+            keys = self._read()
+        return sorted({key.split("|", 1)[0] for key in keys if "|" in key})
 
     def put(self, provider, gpu, probe):
         """Save a probe for a GPU type.
@@ -1145,21 +1223,12 @@ def describe_calls(provider, records=None, owned=(), now=None):
             status = "active"
         gpu = call.gpu or record.get("gpu")
         started = call.started if call.started is not None else record.get("started")
-        elapsed = max(0.0, now - started) if started is not None else None
-        try:
-            price = gpu_type(provider.name, gpu).usd_per_hour if gpu else None
-        except ValueError:
-            price = None
         rows.append(
             {
                 "id": call.id,
                 "gpu": gpu,
                 "started": call.started,
-                "elapsed_seconds": elapsed,
-                "usd_per_hour": price,
-                "estimated_cost_usd": elapsed * price / 3600
-                if elapsed is not None and price is not None
-                else None,
+                **_cost(provider.name, gpu, started, now),
                 "model": (record.get("settings") or {}).get("model"),
                 "heartbeat_age": call.heartbeat_age,
                 "adoptable": "api_key" in record and status == "orphan",
@@ -1170,6 +1239,106 @@ def describe_calls(provider, records=None, owned=(), now=None):
             }
         )
     return rows
+
+
+def _cost(provider, gpu, started, now):
+    """Return the elapsed time, hourly price and estimated cost of one row.
+
+    Args:
+        provider: The provider name, which is also its GPU table name.
+        gpu: The GPU type, or None when unknown.
+        started: The start time as Unix seconds, or None while pending.
+        now: The current Unix time.
+
+    Returns:
+        A dict with ``elapsed_seconds``, ``usd_per_hour`` and
+        ``estimated_cost_usd``. Each is None when it cannot be known: lllm2
+        never guesses a GPU type or its price.
+    """
+    elapsed = max(0.0, now - started) if started is not None else None
+    try:
+        price = gpu_type(provider, gpu).usd_per_hour if gpu else None
+    except ValueError:
+        price = None
+    return {
+        "elapsed_seconds": elapsed,
+        "usd_per_hour": price,
+        "estimated_cost_usd": elapsed * price / 3600
+        if elapsed is not None and price is not None
+        else None,
+    }
+
+
+def describe_containers(provider, records=None, owned=(), now=None):
+    """List every running container in the provider account with its ownership.
+
+    Ownership comes from ``describe_calls``, so the heartbeat and orphan rules
+    apply unchanged: a container that runs a listed serve call takes that
+    call's row. Every other container is ``"unknown"``: lllm2 tracks no serve
+    call for it, whether it is an lllm2 probe or download, a call from an lllm2
+    version that does not name its containers, or another tool's work. A serve
+    call whose container the listing does not show keeps a row of its own, so
+    a provider that cannot enumerate containers still reports its calls.
+
+    Args:
+        provider: The ``RemoteProvider``.
+        records: The ``CallRecords``, or None for the state directory file.
+        owned: The identifiers of calls that engines in this process own.
+        now: The current Unix time, or None to read the records' clock.
+
+    Returns:
+        A dict with ``containers`` (rows, oldest first and pending last),
+        ``complete`` (False when the provider cannot enumerate beyond its serve
+        calls, or its listing failed) and ``error`` (why the listing failed, or
+        None). Each row has the ``describe_calls`` keys, where ``id`` is the
+        serve call id or None, plus ``container_id`` (None when the listing
+        does not show the call's container), ``app`` (None when the provider
+        does not say) and ``function`` (``"serve"`` for every serve call row).
+        ``status`` adds ``"unknown"``.
+
+    Raises:
+        RuntimeError: The provider could not list its serve calls.
+    """
+    if records is None:
+        records = CallRecords(config.STATE_DIR / "remote-calls.json")
+    now = records.clock() if now is None else now
+    calls = describe_calls(provider, records, owned, now)
+    try:
+        listed, error = provider.containers(), None
+    except ProviderError as e:
+        listed, error = None, str(e)
+    by_call = {row["id"]: row for row in calls}
+    rows = []
+    for container in listed or []:
+        place = {
+            "container_id": container.id,
+            "app": container.app,
+            "function": container.function,
+        }
+        call = by_call.pop(container.call_id, None) if container.call_id else None
+        if call is not None:
+            rows.append(call | place)
+            continue
+        rows.append(
+            {
+                "id": None,
+                "gpu": container.gpu,
+                "started": container.started,
+                **_cost(provider.name, container.gpu, container.started, now),
+                "model": None,
+                "heartbeat_age": None,
+                "adoptable": False,
+                "owner": None,
+                "status": "unknown",
+                **place,
+            }
+        )
+    rows += [
+        call | {"container_id": None, "app": None, "function": "serve"}
+        for call in by_call.values()
+    ]
+    rows.sort(key=lambda row: (row["started"] is None, row["started"] or 0))
+    return {"containers": rows, "complete": listed is not None, "error": error}
 
 
 class StoreDownloads:
@@ -1695,6 +1864,43 @@ class RemoteEngine(Engine):
         """
         owned = {engine.call_id for engine in list(_ENGINES)} - {None}
         return describe_calls(self.provider, self._records, owned, self.wall_clock())
+
+    def remote_containers(self):
+        """List every running container of the provider with its ownership.
+
+        Returns:
+            The ``describe_containers`` view.
+        """
+        owned = {engine.call_id for engine in list(_ENGINES)} - {None}
+        return describe_containers(
+            self.provider, self._records, owned, self.wall_clock()
+        )
+
+    def stop_listed(self, row):
+        """Stop a listed call or container that this engine does not own.
+
+        A serve call is cancelled, which stops its container without a retry,
+        and its saved record is deleted. Any other container is stopped with
+        ``RemoteProvider.stop_container``.
+
+        Args:
+            row: A ``describe_containers`` row.
+
+        Raises:
+            ValueError: This engine owns the row's call; use ``stop`` instead.
+            RuntimeError: The provider could not stop it.
+        """
+        if row["id"] is not None and row["id"] == self.call_id:
+            raise ValueError("This engine owns that call. Stop the engine instead.")
+        if row["id"] is not None:
+            self.provider.cancel(row["id"])
+            self._records.remove(self.provider.name, row["id"])
+            self.log(f"Stopped remote call {row['id']}")
+            return
+        self.provider.stop_container(row["container_id"])
+        self.log(
+            f"Stopped container {row['container_id']} ({row['app'] or 'unknown app'})"
+        )
 
     def status(self):
         call = self._call

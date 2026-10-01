@@ -23,7 +23,7 @@ import pytest
 
 from fake_remote import ENGINE, FAKE_LLAMA_SERVER, free_port
 from fake_remote import META as FAKE_META
-from lllm2 import config, discovery, engine_install, modal_app
+from lllm2 import config, discovery, engine_install, modal_app, modal_provider
 from lllm2.engine import Cancelled
 from lllm2.engine_release import CUDA_TRACKS, LLAMA_CPP_REF, asset_name
 from lllm2.gpu_tables import pricing_caveat
@@ -36,6 +36,7 @@ from lllm2.remote import (
     ModelSource,
     ProviderError,
     RemoteCall,
+    RemoteContainer,
     RemoteEngine,
     StoredModel,
     catalogue_source,
@@ -623,6 +624,189 @@ def test_serve_call_lifecycle(fake, provider):
     assert provider.calls() == []
     assert not provider.poll(call_id).running
     provider.cancel("fc-unknown")
+
+
+# The exact stdout of the real `modal container list --json` code (modal 1.5.5
+# and 1.6.0) for one lllm2 container and one pending container of another app.
+CONTAINER_LIST = """[
+  {
+    "container_id": "ta-1",
+    "app_id": "ap-LLLM2",
+    "app_name": "lllm2",
+    "start_time": "2025-10-01 07:26:40+01:00"
+  },
+  {
+    "container_id": "ta-01OTHER",
+    "app_id": "ap-OTHER",
+    "app_name": "my-batch-job",
+    "start_time": "Pending"
+  }
+]
+"""
+
+
+def cli(provider, stdout="[]\n", returncode=0, stderr="", on_run=None):
+    """Replace the provider's ``modal`` command line; return the argument lists."""
+    runs = []
+
+    def run(*args):
+        runs.append(args)
+        if on_run:
+            on_run()
+        return subprocess.CompletedProcess(
+            [sys.executable, "-m", "modal", *args], returncode, stdout, stderr
+        )
+
+    provider._cli = run
+    return runs
+
+
+def test_containers_match_lllm2_containers_to_their_calls(fake, provider):
+    fake.behaviour["serve"] = lambda *args: {"pending": 10**6}
+    call_id = provider.spawn("T4", ["llama-server"], "k", {}, {})
+    fake.state.put(
+        modal_app.container_key("ta-1"), {"function": "serve", "call_id": call_id}
+    )
+    runs = cli(provider, CONTAINER_LIST)
+    assert provider.containers() == [
+        RemoteContainer("ta-1", "lllm2", "serve", call_id, None, 1759300000.0),
+        RemoteContainer("ta-01OTHER", "my-batch-job", None, None, None, None),
+    ]
+    assert runs == [("container", "list", "--json")]
+    assert modal_app.container_key("ta-1") in fake.state
+
+
+def test_a_container_record_stays_until_its_call_ends(fake, provider):
+    """A listing that misses a live container must not lose its match."""
+    fake.behaviour["serve"] = lambda *args: {"pending": 10**6}
+    live = provider.spawn("T4", ["llama-server"], "k", {}, {})
+    ended = provider.spawn("T4", ["llama-server"], "k", {}, {})
+    fake.calls[ended].pending = 0
+    fake.calls[ended].result = {"exit_code": 0}
+    for task, call in (("ta-live", live), ("ta-ended", ended), ("ta-bare", None)):
+        fake.state.put(
+            modal_app.container_key(task), {"function": "serve", "call_id": call}
+        )
+    cli(provider)
+    assert provider.containers() == []
+    assert modal_app.container_key("ta-live") in fake.state
+    assert modal_app.container_key("ta-ended") not in fake.state
+    assert modal_app.container_key("ta-bare") not in fake.state
+    # Cancelling a serve call leaves its container record for the listing
+    # to drop once Modal no longer shows the container.
+    provider.cancel(live)
+    provider.containers()
+    assert modal_app.container_key("ta-live") not in fake.state
+
+
+def test_a_record_written_during_the_listing_survives(fake, provider):
+    def publish():
+        fake.state.put(modal_app.container_key("ta-new"), {"function": "probe"})
+
+    cli(provider, on_run=publish)
+    assert provider.containers() == []
+    assert modal_app.container_key("ta-new") in fake.state
+
+
+def test_container_listing_failures_name_the_cause(fake, provider, monkeypatch):
+    boxed = (
+        "╭─ Error ───────────────────────────────────────╮\n"
+        "│ Token missing. Could not authenticate client. │\n"
+        "╰───────────────────────────────────────────────╯\n"
+    )
+    cli(provider, "", 1, boxed)
+    with pytest.raises(ProviderError, match="modal token new"):
+        provider.containers()
+    cli(provider, "", 1, "│ Could not connect to the Modal server. │")
+    with pytest.raises(ProviderError, match="Could not connect to the Modal server"):
+        provider.containers()
+    for stdout in ("not json", '[{"x": 1}]', '{"container_id": "ta-1"}'):
+        cli(provider, stdout)
+        with pytest.raises(ProviderError, match="Unexpected output"):
+            provider.containers()
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    del provider._cli
+    monkeypatch.setattr("lllm2.modal_provider.subprocess.run", timeout)
+    with pytest.raises(ProviderError, match="modal command line failed"):
+        provider.containers()
+
+
+def test_cli_runs_the_modal_module_of_this_interpreter(provider, monkeypatch):
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen.update(kwargs, argv=argv)
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+    monkeypatch.setattr("lllm2.modal_provider.subprocess.run", run)
+    assert provider.containers() == []
+    assert seen["argv"] == [
+        sys.executable,
+        "-m",
+        "modal",
+        "container",
+        "list",
+        "--json",
+    ]
+    assert seen["timeout"] == modal_provider.CLI_TIMEOUT
+    assert seen["env"]["NO_COLOR"] == "1"
+
+
+def test_stop_container_cancels_a_known_call_and_stops_other_work(fake, provider):
+    fake.behaviour["serve"] = lambda *args: {"pending": 10**6}
+    call_id = provider.spawn("T4", ["llama-server"], "k", {}, {})
+    fake.state.put(
+        modal_app.container_key("ta-1"), {"function": "serve", "call_id": call_id}
+    )
+    runs = cli(provider)
+    provider.stop_container("ta-1")
+    # A known call is cancelled, so Modal does not run it again elsewhere.
+    assert fake.calls[call_id].cancelled and runs == []
+    assert modal_app.container_key("ta-1") not in fake.state
+    provider.stop_container("ta-2")
+    assert runs == [("container", "stop", "--yes", "--", "ta-2")]
+    cli(provider, "", 1, "Container 'ta-2' is already stopped.")
+    provider.stop_container("ta-2")
+    cli(provider, "", 1, "│ Could not connect to the Modal server. │")
+    with pytest.raises(ProviderError, match="could not stop container ta-2"):
+        provider.stop_container("ta-2")
+    runs = cli(provider)
+    for unsafe in ("-rf", "a b", "", "ta-1/../x"):
+        with pytest.raises(ValueError, match="Unsafe container id"):
+            provider.stop_container(unsafe)
+    assert runs == []
+
+
+def test_announce_names_the_container_while_its_function_runs(monkeypatch):
+    state = FakeDict()
+    with modal_app.announce(state, "serve", "fc-1", task_id="ta-1"):
+        assert state == {"container:ta-1": {"function": "serve", "call_id": "fc-1"}}
+    assert state == {}
+    with (
+        pytest.raises(RuntimeError),
+        modal_app.announce(state, "probe", "fc-2", "ta-2"),
+    ):
+        assert "container:ta-2" in state
+        raise RuntimeError("probe failed")
+    assert state == {}
+    monkeypatch.setenv("MODAL_TASK_ID", "ta-env")
+    with modal_app.announce(state, "download", None):
+        assert state == {"container:ta-env": {"function": "download", "call_id": None}}
+    monkeypatch.delenv("MODAL_TASK_ID")
+    with modal_app.announce(state, "download", None):
+        assert state == {}
+
+    class Broken(FakeDict):
+        def put(self, key, value, *, skip_if_exists=False):
+            raise OSError("state unavailable")
+
+    ran = []
+    with modal_app.announce(Broken(), "serve", "fc-3", "ta-3"):
+        ran.append(True)
+    assert ran == [True]
 
 
 def test_remote_engine_serves_and_stops_a_modal_call(fake, provider, tmp_path):

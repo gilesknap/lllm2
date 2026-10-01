@@ -51,6 +51,13 @@ def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
     try:
         engine.start(settings, threading.Event(), timeout=900)
         print(f"Ready after {time.monotonic() - started:.0f} s on {engine.hardware()}")
+        # The serve container names its call, so the listing matches it.
+        view = engine.remote_containers()
+        assert view["complete"], view["error"]
+        (row,) = [r for r in view["containers"] if r["id"] == engine.call_id]
+        assert row["container_id"] and row["function"] == "serve"
+        assert row["status"] == "owned"
+        call_id = engine.call_id
         final = engine.stream_completion(
             {"prompt": "Count from one to thirty:", "n_predict": 64, "stream": True},
             threading.Event(),
@@ -69,3 +76,10 @@ def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
     while provider.calls() and time.monotonic() < deadline:
         time.sleep(2)
     assert provider.calls() == []
+    # Modal lists a stopped container for a few seconds after it is told to stop.
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and any(
+        c.call_id == call_id for c in provider.containers() or []
+    ):
+        time.sleep(2)
+    assert all(c.call_id != call_id for c in provider.containers() or [])
