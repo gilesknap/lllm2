@@ -1,0 +1,122 @@
+on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        description: If true, pushes image to container registry
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Need this to get version number from last tag
+          fetch-depth: 0
+
+      # The image carries the CUDA 12 engine for this commit's pins: the one
+      # this run built (bump PRs, tags with a new pin), or else the published
+      # one. A pin that a bump merged to main has neither until its tag.
+      - name: Check for an engine built in this run
+        id: built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          found=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq 'any(.artifacts[]; .name == "engine-cuda12")')
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          # The Dockerfile mounts this directory as the engine-dist context.
+          mkdir -p engine-dist
+
+      - uses: actions/download-artifact@v5
+        if: steps.built.outputs.found == 'true'
+        with:
+          name: engine-cuda12
+          path: engine-dist
+
+      - name: Find the pinned engine
+        id: engines
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 .github/scripts/image_engines.py engine-dist
+
+      - name: Skip the image until the engine is published
+        if: steps.engines.outputs.available != 'true'
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::error::A release image must carry the pinned engine, and this run has neither built nor found it."
+            exit 1
+          fi
+          echo "::notice::The pinned engine is not built or published yet, so no image was built. The release tag builds and publishes it with the image."
+
+      - name: Free disk space for the engine layers
+        if: steps.engines.outputs.available == 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Set up Docker Buildx
+        id: buildx
+        if: steps.engines.outputs.available == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Docker Registry
+        if: steps.engines.outputs.available == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and export to Docker local cache
+        if: steps.engines.outputs.available == 'true'
+        uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: .
+          build-contexts: engine-dist=./engine-dist
+          # Need load and tags so we can test it below
+          load: true
+          tags: tag_for_testing
+
+      - name: Test cli works in cached runtime image
+        if: steps.engines.outputs.available == 'true'
+        run: |
+          df -h /
+          docker run --rm tag_for_testing --version
+          docker run --rm tag_for_testing engines list | tee engines.txt
+          grep -q '(matches running release)' engines.txt
+          # The image tag, the lllm2 version and its engine pin move together.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            test "$(docker run --rm tag_for_testing --version)" = "lllm2 ${GITHUB_REF_NAME#v}"
+          fi
+
+      - name: Create tags for publishing image
+        id: meta
+        if: steps.engines.outputs.available == 'true'
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
+      - name: Push cached image to container registry
+        if: steps.engines.outputs.available == 'true' && inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
+        uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        # This does not build the image again, it will find the image in the
+        # Docker cache and publish it
+        with:
+          context: .
+          build-contexts: engine-dist=./engine-dist
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
