@@ -66,12 +66,19 @@ relay for Claude and Codex.
 
 ## 3. Give the agent the tuning prompt
 
-Paste the prompt below into the agent. Replace the first line with the model
-you want to tune. The agent works through the API, adapts later rounds to the
+Paste the prompt below into the agent, then replace `<MODEL-FILENAME-SUBSTRING>`
+in its first line with part of the filename of the checkpoint you want to
+tune, such as `Qwen3.8-27B`. `lllm2 models` prints the installed filenames. If
+the placeholder is left in, or the text matches no installed checkpoint, the
+prompt tells the agent to list the installed models and ask you which one you
+meant. The agent works through the API, adapts later rounds to the
 measurements, and leaves saved settings unchanged.
 
 ````text
-Tune the lllm2 settings for the model whose filename contains "Qwen3.8-27B".
+Tune the lllm2 settings for the model whose filename contains "<MODEL-FILENAME-SUBSTRING>".
+If no installed checkpoint matches, or more than one does, list the installed
+models from the "models" field of POST /api/discover and ask me which one to
+tune. Do not download a model.
 
 Drive the local panel API at exactly http://127.0.0.1:8082; there is no browser.
 Read GET /api/status first and send its "token" as X-LLLM2-Token on every POST.
@@ -122,6 +129,10 @@ could be saved with POST /api/default/save if I later authorize it.
 ````
 
 ## Example: maximize Qwen3.8-27B context on an RTX 3090
+
+This section is only an example of what the agent reports. It does not choose
+the model for the prompt above, and your model, GPU and best settings will
+differ.
 
 On 10 September 2026 this process tested
 `Qwen3.8-27B-UD-Q4_K_S.gguf` with llama.cpp commit `662a0b0` on an NVIDIA
