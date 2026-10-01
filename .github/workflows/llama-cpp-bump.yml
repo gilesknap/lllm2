@@ -1,0 +1,98 @@
+name: Propose llama.cpp bump
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'  # Mondays, 05:23 UTC.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: llama-cpp-bump
+  cancel-in-progress: false
+
+env:
+  BRANCH: bot/llama-cpp-bump
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write       # Push the bump branch.
+      pull-requests: write  # Open or update the bump PR.
+      actions: write        # Dispatch the engine build on the bump branch.
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Pushes and PRs made with GITHUB_TOKEN do not trigger other
+          # workflows. An optional fine-grained token lets ci.yml run on the PR.
+          token: ${{ secrets.LLAMA_CPP_BUMP_TOKEN || github.token }}
+      - name: Read the latest llama.cpp release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/ggml-org/llama.cpp/releases/latest --jq .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Move the pin forward if upstream is newer
+        id: bump
+        env:
+          LATEST: ${{ steps.upstream.outputs.tag }}
+        run: python3 .github/scripts/bump_llama_cpp.py "$LATEST"
+      - name: Open or update the bump PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.LLAMA_CPP_BUMP_TOKEN || github.token }}
+          DISPATCH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.bump.outputs.current }}
+          LATEST: ${{ steps.bump.outputs.latest }}
+          BASE: ${{ github.ref_name }}
+          HAS_TOKEN: ${{ secrets.LLAMA_CPP_BUMP_TOKEN != '' }}
+        run: |
+          title="Bump llama.cpp to $LATEST"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          git commit -qam "$title"
+
+          # Push only when the proposed tree differs from the open branch, so an
+          # unchanged week neither rewrites the PR nor rebuilds the engines.
+          pushed=false
+          if git fetch -q origin "$BRANCH" 2>/dev/null &&
+             [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
+            echo "$BRANCH already proposes this change."
+          else
+            git push --force origin "HEAD:refs/heads/$BRANCH"
+            pushed=true
+          fi
+
+          checks="The engine build (\`_engines.yml\`) is dispatched on this branch."
+          if [ "$HAS_TOKEN" != true ]; then
+            checks="$checks This PR was opened with \`GITHUB_TOKEN\`, so CI does not run on it automatically: close and reopen it to start CI."
+          fi
+          cat > pr-body.md <<EOF
+          Upstream llama.cpp has a newer release than the pinned engine.
+
+          - Pin: \`$CURRENT\` -> \`$LATEST\`
+          - Upstream changes: https://github.com/ggml-org/llama.cpp/compare/$CURRENT...$LATEST
+
+          $checks
+
+          Users receive the new engine after a new lllm2 release is tagged and they run
+          \`uv tool install --upgrade lllm2\` (or \`uv tool upgrade lllm2\`).
+
+          Opened by \`.github/workflows/llama-cpp-bump.yml\`.
+          EOF
+
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$title" --body-file pr-body.md
+          else
+            gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file pr-body.md
+          fi
+
+          if [ "$pushed" = true ]; then
+            # workflow_dispatch is the one event GITHUB_TOKEN may still trigger.
+            GH_TOKEN="$DISPATCH_TOKEN" gh workflow run _engines.yml --ref "$BRANCH"
+          fi
