@@ -95,6 +95,9 @@ stage, ref, revision, cuda, release, repository = sys.argv[1:]
     repository=repository, backend='cuda', glibc='2.28', architecture='x86_64', packaging_schema=1,
 ), indent=2) + '\n')
 PY
+# Find models compares a repository's GGUF architecture with this list.
+python3.11 /repo/scripts/engine-architectures.py \
+    "$work/source/src/llama-arch.cpp" "$stage/lllm2-architectures.json"
 cp "$work/source/LICENSE" "$stage/LICENSE.llama.cpp"
 # NVIDIA runtime redistribution terms accompany the bundled libraries.
 find -L /usr/local/cuda -iname '*EULA*' -type f -exec cp '{}' "$stage/" \;

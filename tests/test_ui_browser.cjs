@@ -129,6 +129,14 @@ const assert=require('node:assert/strict');
  assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),1);
  assert.match(await run("$('find-table').querySelector('tbody').textContent"),/Show them/);
  await run("findEntries=beforeIssues;renderFind()");
+ // An unsupported architecture is explained, not hidden; unknown makes no claim.
+ await run("findEntries=[{...beforeIssues[0],id:'hf-f',architecture:'future9',arch_support:'unsupported',support_url:'https://github.com/gilesknap/lllm2/issues/new?title=t'},{...beforeIssues[1],arch_support:'unknown'}];renderFind()");
+ assert.equal(await run("$('find-table').querySelectorAll('tbody tr').length"),2);
+ assert.equal(await run("$('find-table').querySelectorAll('.find-arch-unsupported').length"),1);
+ assert.match(await run("$('find-table').querySelector('.find-arch-unsupported').textContent"),/needs a newer engine than lllm2 currently ships \(future9 architecture\)\. Request support/);
+ assert.equal(await run("$('find-table').querySelector('.find-arch-unsupported a').href"),'https://github.com/gilesknap/lllm2/issues/new?title=t');
+ assert.equal(await run("$('find-table').querySelector('[data-find-add=hf-f]').disabled"),false);
+ await run("findEntries=beforeIssues;renderFind()");
  // The catalogue and downloads panes belong to Launch, not to Find.
  assert.equal(await run("$('find-view').contains($('catalog'))||$('find-view').contains($('download-section'))"),false);
  assert.equal(await run("$('launch-view').contains($('catalog'))&&$('launch-view').contains($('download-section'))"),true);

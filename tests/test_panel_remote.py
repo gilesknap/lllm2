@@ -184,14 +184,16 @@ def test_status_hardware_follows_the_selected_backend(app):
 
 def test_find_models_uses_the_selected_gpu(app):
     class Finder:
-        def search(self, query, host, refresh=False):
-            return {"host": host}
+        def search(self, query, host, refresh=False, architectures=None):
+            return {"host": host, "architectures": architectures}
 
     app.finder = Finder()
     found = app.action(
         "/api/models/find", {"query": "", "backend": "fake", "gpu_type": "FAKE-24"}
     )
     assert found["host"]["source"] == "fake"
+    # The remote engine is not on this workstation, so its list is unknown.
+    assert found["architectures"] is None
 
 
 def test_select_takes_the_gpu_type_and_sizes_defaults_for_it(app, no_probe):

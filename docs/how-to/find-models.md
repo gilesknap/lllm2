@@ -25,8 +25,16 @@ Suitability uses total download size, including a required vision projector:
 - **Unknown / Too large:** metadata or hardware is missing, or the simple memory
   budget is exceeded.
 
-GPU memory is not summed across cards. These estimates do not predict engine
-architecture support, speed or usable context. Use **Experiments** to measure them.
+GPU memory is not summed across cards. These estimates do not predict speed or
+usable context. Use **Experiments** to measure them.
+
+Each repository's GGUF metadata names its model architecture. Release engines
+record the architectures their llama.cpp build can load, and Find models compares
+the two for the engine selected on **Launch model**. When the engine cannot load
+a model, the variant stays listed with a notice that it needs a newer engine than
+lllm2 currently ships, and a **Request support** link that opens a pre-filled
+GitHub issue. Custom engine builds, engines installed before this check existed
+and remote backends have no recorded list, so no notice is shown either way.
 
 Choose **Add to catalogue** on a specific variant, then **Queue download** in
 **My catalogue** on **Launch model**. New entries pin the HF repository

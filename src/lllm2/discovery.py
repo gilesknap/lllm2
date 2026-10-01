@@ -289,6 +289,28 @@ def probe(path):
     return _probe(**identity(p))
 
 
+def supported_architectures(binary):
+    """Return the GGUF architectures a release engine build recorded.
+
+    Args:
+        binary: A ``llama-server`` path, or empty.
+
+    Returns:
+        A frozenset of architecture names, or None when unknown: no engine,
+        a custom build or a release archive built before the list existed.
+    """
+    if not binary or not isinstance(binary, str):
+        return None
+    path = Path(binary).expanduser().resolve().with_name("lllm2-architectures.json")
+    try:
+        names = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        return None
+    return frozenset(names)
+
+
 def engines(refresh=True):
     if refresh:
         _probe.cache_clear()

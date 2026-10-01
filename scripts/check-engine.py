@@ -4,7 +4,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-from lllm2.discovery import probe
+from lllm2.discovery import probe, supported_architectures
 from lllm2.engine_install import provenance
 
 binary = Path(sys.argv[1]).resolve()
@@ -41,5 +41,9 @@ for flag in (
 ):
     assert flag in record["flags"], f"Missing panel flag: {flag}"
 assert provenance(binary)["matches_release"], provenance(binary)
+# Find models reads this list; without it every model's support is unknown.
+architectures = supported_architectures(str(binary))
+assert architectures and "llama" in architectures, "Missing supported architectures"
 print(record["version"])
+print(f"{len(architectures)} supported architectures.")
 print("Release metadata and panel engine probe passed.")

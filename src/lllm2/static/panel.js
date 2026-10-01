@@ -98,6 +98,8 @@ const money=n=>Number.isFinite(n)?'$'+n.toFixed(2):'unknown';
 const hourlyRate=n=>Number.isFinite(n)?`~${money(n)}/hour`:'an unknown hourly rate';
 const clockText=seconds=>{const t=Math.max(0,Math.floor(seconds||0)),h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=String(t%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${s}`:`${m}:${s}`;};
 const selection=()=>{const s=currentLaunch()||{};return remoteBackend(s.backend)?{backend:s.backend,gpu_type:s.gpu_type||''}:{backend:s.backend||''};};
+// Find models also checks architectures against the selected local engine.
+const findChoice=()=>{const s=currentLaunch()||{};return remoteBackend(s.backend)?selection():{...selection(),engine:s.engine||''};};
 const snapshot=()=>JSON.stringify(settings());
 const currentLaunch=()=>view==='launch'?settings():drafts.launch?.settings;
 const modelName=path=>{const m=discovered.models?.find(m=>m.path===path),c=discovered.catalog?.find(c=>c.id===m?.catalog_id)||(path?discovered.catalog?.find(c=>c.path===path):null);return c?(c.recommendation?.name||c.name):path?.split('/').slice(-2).join('/')||'No model selected';};
@@ -393,7 +395,7 @@ async function switchView(next){
   $('launch-view').hidden=true;$('experiments-view').hidden=true;$('find-view').hidden=false;
   for(const name of ['launch','experiments','find'])$('nav-'+name).setAttribute('aria-current',name===next?'page':'false');
   $('skip-content').href='#find-view';
-  await loadCatalogue();if(!findLoaded||findSelection!==JSON.stringify(selection()))await searchHF();return;
+  await loadCatalogue();if(!findLoaded||findSelection!==JSON.stringify(findChoice()))await searchHF();return;
  }
  if(resolving||scanPending){queuedView=next;return;}
  $('find-view').hidden=true;
@@ -959,6 +961,11 @@ function filteredFindEntries(ignoreSuitable=false){
   return comparison*findSort.direction||(findSort.key==='fit_rank'?(b.downloads-a.downloads||b.updated.localeCompare(a.updated)):0)||a.repo.localeCompare(b.repo)||a.file.localeCompare(b.file);
  });
 }
+// Unsupported architectures stay listed: the notice explains the failed launch
+// before a large download. An unknown engine list makes no claim either way.
+function archNotice(e){
+ return e.arch_support==='unsupported'?`<small class="find-arch-unsupported">This model needs a newer engine than lllm2 currently ships (${esc(e.architecture)} architecture). <a href="${esc(e.support_url)}" target="_blank" rel="noopener noreferrer">Request support</a></small>`:'';
+}
 function renderFind(){
  const matched=filteredFindEntries();
  // A variant with an issue cannot be added at all, so it stays out of the way
@@ -976,7 +983,7 @@ function renderFind(){
  }
  $('find-table').querySelector('tbody').innerHTML=rows.map(e=>{
   const saved=(discovered.catalog||[]).some(c=>c.repo===e.repo&&c.file===e.file);
-  return `<tr${saved?' class="find-in-catalogue"':''}><td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+'</tr>';
+  return `<tr${saved?' class="find-in-catalogue"':''}><td><button data-find-add="${esc(e.id)}" ${saved||e.issue?'disabled':''}>${saved?'In catalogue':'Add to catalogue'}</button>${e.issue?`<small>${esc(e.issue)}</small>`:''}</td>`+findColumns.map(([key])=>`<td>${key==='display_name'?`<a href="https://huggingface.co/${esc(e.repo)}" target="_blank" rel="noopener noreferrer">${esc(e.display_name)}</a>${saved?'<span class="find-catalogue-badge">In catalogue</span>':''}<small>${esc(e.file)}</small>${archNotice(e)}`:key==='fit'?`${esc(e.fit)}<small>${esc(e.reason)}</small>`:esc(key==='updated'?e.updated.slice(0,10):e[key]??'Unknown')}</td>`).join('')+'</tr>';
  }).join('')||`<tr><td colspan="11">${esc(empty)}</td></tr>`;
  $('find-count').textContent=`${rows.length} of ${findEntries.length} variants shown.`;
  const reasons=new Map();
@@ -988,9 +995,10 @@ function renderFind(){
 async function searchHF(refresh=false){
  if(findBusy)return;findBusy=true;$('find-search').disabled=$('find-refresh').disabled=true;
  $('find-status').textContent='Reading Hugging Face metadata…';
- // The server scores suitability against the selected backend and GPU type,
- // so keep the selection these rows describe and search again when it changes.
- const chosen=selection();
+ // The server scores suitability and architecture support against the selected
+ // backend, GPU type and engine, so keep the selection these rows describe and
+ // search again when it changes.
+ const chosen=findChoice();
  try{
   const result=await api('/api/models/find',{query:$('find-query').value,refresh,...chosen});
   findEntries=result.entries.sort((a,b)=>a.fit_rank-b.fit_rank||b.downloads-a.downloads||b.updated.localeCompare(a.updated)||a.repo.localeCompare(b.repo));findLoaded=true;findSelection=JSON.stringify(chosen);renderFind();
