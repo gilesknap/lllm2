@@ -12,7 +12,9 @@ NOT_MODELS = {"clip", "(unknown)"}
 def architectures(source: str) -> list[str]:
     """Read names from the LLM_ARCH_NAMES table in src/llama-arch.cpp."""
     table = re.search(r"LLM_ARCH_NAMES\s*=\s*\{(.*?)\n\};", source, re.S)
-    names = re.findall(r'\{\s*LLM_ARCH_\w+\s*,\s*"([^"]+)"\s*\}', table[1] if table else "")
+    names = re.findall(
+        r'\{\s*LLM_ARCH_\w+\s*,\s*"([^"]+)"\s*\}', table[1] if table else ""
+    )
     names = sorted(set(names) - NOT_MODELS)
     # A pin bump that moves the table must fail the build, not ship an empty list.
     if "llama" not in names:
