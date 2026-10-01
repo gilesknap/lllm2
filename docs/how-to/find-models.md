@@ -2,7 +2,8 @@
 
 Open **Find models** to search public, ungated GGUF repositories on Hugging Face.
 A blank search inspects up to 30 popular repositories; enter a model or publisher
-to narrow the search. The pane reads metadata only until you queue a download.
+to narrow the search. Searching reads metadata only. **Add to catalogue** also
+reads the start of the chosen file, and only a download fetches the weights.
 
 Click a column heading to cycle through ascending, descending and no sort
 (the original suggestion order). Results scroll within a short window, keeping
@@ -44,6 +45,22 @@ added. Downloads run
 one at a time, show progress, and can be cancelled and retried. Pending jobs
 survive panel restarts; partial files are retained for resume. Once downloaded,
 open **Launch model** or **Experiments** to use the model.
+
+Before adding a variant, lllm2 reads the start of its GGUF file from Hugging
+Face, usually 4–17 MB. This header says what the file holds, and reading it
+takes a few seconds. lllm2 refuses the variant, and says why, when the header
+shows it cannot run as a model on its own:
+
+- an adapter, such as a LoRA, or a vision projector;
+- a multi-token prediction (MTP) head or another speculative-decoding drafter;
+- an embedding, reranking or text-encoder model;
+- a speech or audio model;
+- a diffusion language model, which llama-server cannot serve.
+
+A full model that carries its own MTP head is added as usual. The next search
+lists a refused variant with the results that cannot be added, and gives the
+reason. If the header cannot be read, for example because Hugging Face is
+unreachable, the variant is added without the check.
 
 **Remove…** opens a dialog with the managed files that exist on this workstation.
 By default it removes only the catalogue entry. Check **Also permanently delete…**

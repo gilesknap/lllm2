@@ -1,0 +1,58 @@
+name: Release llama.cpp bump
+
+# Tags the next patch version when CI passes on main for the merge commit of a
+# `bot/llama-cpp-bump` PR. The tag pipeline in ci.yml then publishes the
+# engines and PyPI. Every other commit is left alone.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: llama-cpp-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Run this workflow's own script from main, not the evaluated commit:
+          # a commit from before the script existed would fail to find it.
+          fetch-depth: 0  # Read every tag and the evaluated commit.
+          # A tag pushed with GITHUB_TOKEN does not trigger the tag pipeline.
+          token: ${{ secrets.LLAMA_CPP_BUMP_TOKEN || github.token }}
+      - name: Choose the release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: python3 .github/scripts/tag_bump_release.py "$SHA"
+      - name: Push the tag
+        if: steps.release.outputs.tag != ''
+        env:
+          HAS_TOKEN: ${{ secrets.LLAMA_CPP_BUMP_TOKEN != '' }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if [ "$HAS_TOKEN" != true ]; then
+            echo "::error::Set the LLAMA_CPP_BUMP_TOKEN secret: a tag pushed with GITHUB_TOKEN would not start the release pipeline."
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -m "Release $TAG with the llama.cpp bump" "$SHA"
+          git push origin "refs/tags/$TAG"

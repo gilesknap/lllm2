@@ -25,6 +25,11 @@ Image layers: the engine layer comes before the lllm2 source layer, and Modal
 keys it only on ``install_engines``'s source text and its arguments, the release
 pins. A code change therefore rebuilds only the small source layer; the 1.8 GB
 of engine tarballs download again only when a pin changes.
+
+CI engines: a bump PR's engine exists only as the tarballs its CI run built.
+With ``LLLM2_MODAL_ENGINE_DIR`` naming a directory of those tarballs and their
+``.sha256`` files, the image copies the directory in and installs from it, with
+the same checks, instead of from a published release. Only CI sets it.
 """
 
 from __future__ import annotations
@@ -71,6 +76,10 @@ ENGINE_ROOT = "/opt/lllm2/engines"
 MODEL_ROOT = "/models"
 FILE_ROOT = "/tmp/lllm2-files"
 SERVER_PORT = 8080
+
+#: CI only: a directory of engine tarballs to build the image from.
+ENGINE_DIR_VARIABLE = "LLLM2_MODAL_ENGINE_DIR"
+LOCAL_ENGINE_ROOT = "/opt/lllm2/engine-dist"
 
 PROBE_TIMEOUT = 10 * 60
 # Hard caps. The owner heartbeat normally ends an abandoned call much sooner.
@@ -137,13 +146,17 @@ def deployment_version() -> str:
     Returns:
         The lllm2 version with a digest of the package files. A released
         package changes only with its version; a development checkout also
-        redeploys when its files change.
+        redeploys when its files change, and a CI build when its engine
+        tarballs (``ENGINE_DIR_VARIABLE``) change.
     """
     digest = hashlib.sha256()
     package = Path(__file__).parent
     for path in sorted(package.rglob("*")):
         if path.is_file() and "__pycache__" not in path.parts:
             digest.update(path.relative_to(package).as_posix().encode() + b"\0")
+            digest.update(path.read_bytes())
+    if engines := os.environ.get(ENGINE_DIR_VARIABLE):
+        for path in sorted(Path(engines).glob("*.sha256")):
             digest.update(path.read_bytes())
     return f"{__version__}+{digest.hexdigest()[:12]}"
 
@@ -171,7 +184,9 @@ def store_directory(name: str, files: list[str] | tuple[str, ...]) -> PurePosixP
     return PurePosixPath(name[: -len(files[0]) - 1])
 
 
-def install_engines(ref: str, tracks: dict[str, str], root: str) -> None:
+def install_engines(
+    ref: str, tracks: dict[str, str], root: str, source: str | None = None
+) -> None:
     """Install every CUDA engine track into the image.
 
     Modal keys the image layer on this function's source and arguments, so the
@@ -183,6 +198,8 @@ def install_engines(ref: str, tracks: dict[str, str], root: str) -> None:
         ref: The pinned llama.cpp release, ``LLAMA_CPP_REF``.
         tracks: The pinned CUDA tracks, ``CUDA_TRACKS``.
         root: The engine home inside the image.
+        source: The image directory holding CI-built tarballs, or None to
+            download them from the newest published release.
 
     Raises:
         RuntimeError: The pins differ from the mounted installer's pins.
@@ -197,8 +214,36 @@ def install_engines(ref: str, tracks: dict[str, str], root: str) -> None:
     for track in tracks:
         # The build has no GPU driver to start the binary; probe checks it.
         engine_install.install(
-            "cuda", track=track, root=Path(root), check_startup=False
+            "cuda",
+            track=track,
+            root=Path(root),
+            check_startup=False,
+            source=None if source is None else Path(source),
         )
+
+
+def engine_image(modal_module: Any, engines: str | None = None) -> Any:
+    """Build the image definition: Python, the CUDA engines, then lllm2.
+
+    Args:
+        modal_module: The ``modal`` module, or a replacement in tests.
+        engines: A local directory of CI-built engine tarballs to install, or
+            None to install from published releases.
+
+    Returns:
+        The ``modal.Image``.
+    """
+    image = modal_module.Image.debian_slim(python_version=PYTHON_VERSION).apt_install(
+        "ca-certificates"
+    )
+    args: tuple = (LLAMA_CPP_REF, dict(CUDA_TRACKS), ENGINE_ROOT)
+    if engines:
+        # The copied files key this layer, so new tarballs rebuild the engines.
+        image = image.add_local_dir(engines, LOCAL_ENGINE_ROOT, copy=True)
+        args += (LOCAL_ENGINE_ROOT,)
+    return image.run_function(install_engines, args=args).add_local_python_source(
+        "lllm2", copy=True, ignore=["**/__pycache__", "**/__pycache__/**"]
+    )
 
 
 def engine_binary(root: str = ENGINE_ROOT) -> str:
@@ -829,16 +874,7 @@ def deploy() -> None:
 if modal is not None:
     app = modal.App(APP_NAME)
     volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
-    image = (
-        modal.Image.debian_slim(python_version=PYTHON_VERSION)
-        .apt_install("ca-certificates")
-        .run_function(
-            install_engines, args=(LLAMA_CPP_REF, dict(CUDA_TRACKS), ENGINE_ROOT)
-        )
-        .add_local_python_source(
-            "lllm2", copy=True, ignore=["**/__pycache__", "**/__pycache__/**"]
-        )
-    )
+    image = engine_image(modal, os.environ.get(ENGINE_DIR_VARIABLE))
 
     def _state():
         return modal.Dict.from_name(STATE_NAME, create_if_missing=True)

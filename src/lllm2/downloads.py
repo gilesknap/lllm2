@@ -12,15 +12,17 @@ import http.client
 import queue
 import shutil
 import ssl
+import struct
 import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
-from . import config
+from . import config, gguf
 from .catalogue import files, local_paths
 from .tls import download_context
 
@@ -35,6 +37,15 @@ RETRY_ATTEMPTS = 5
 RETRY_BACKOFF = (2.0, 4.0, 8.0, 16.0, 30.0)
 #: Seconds between cancel and heartbeat checks while backing off.
 RETRY_POLL = 0.5
+
+#: Bytes of a remote header to read before giving up on it. Measured headers
+#: run from 173 B to 15.8 MB (Gemma 4's 262k vocabulary); this is twice that.
+HEADER_LIMIT = 32 << 20
+#: Seconds to spend on one remote header before giving up on it.
+HEADER_SECONDS = 30.0
+#: Bytes per range request. It matches the GGUF reader's read size, so the
+#: first request answers its first read.
+HEADER_RANGE = 4 << 20
 
 
 def retry_delay(stalled: int, backoff: tuple[float, ...] = RETRY_BACKOFF) -> float:
@@ -201,6 +212,132 @@ def _size_of(repo: str, file: str, revision: str = "main") -> int:
         return 0
 
 
+class HeaderReadError(Exception):
+    """A remote GGUF header could not be read; nothing is known about the file."""
+
+
+class _RemoteFile:
+    """A file on a web server, read with range requests for :func:`gguf.parse`.
+
+    Only the bytes the parse asks for are fetched, so an 18 GB model costs the
+    few megabytes of its header. The read is bounded twice: by
+    :data:`HEADER_LIMIT` bytes, because a hostile header can claim any length,
+    and by :data:`HEADER_SECONDS`, because the panel is waiting on it.
+
+    Hugging Face answers a ``resolve`` URL with a redirect to its CDN. urllib
+    follows it and keeps the ``Range`` header, and the CDN answers 206.
+    """
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        # Read at call time rather than bound as defaults, so tests can patch.
+        self.limit = HEADER_LIMIT
+        self.deadline = time.monotonic() + HEADER_SECONDS
+        self.pos = 0
+        self.size = 0
+        self.first = self._get(0, min(HEADER_RANGE, self.limit))
+
+    def _remaining(self) -> float:
+        """Seconds left before the deadline; raises once it has passed."""
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("reading the header took too long")
+        return left
+
+    def _get(self, start: int, length: int) -> bytes:
+        """Up to ``length`` bytes from ``start``; fewer at the end of the file."""
+        request = urllib.request.Request(
+            self.url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Range": f"bytes={start}-{start + length - 1}",
+            },
+        )
+        timeout = min(15.0, self._remaining())
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=download_context()
+        ) as response:
+            ranged = response.headers.get("Content-Range", "")
+            total = complete_length(ranged)
+            # Checked before the body is read: a server that ignores Range is
+            # sending the whole file, which must not be streamed.
+            if (
+                response.status != 206
+                or total is None
+                or not ranged.startswith(f"bytes {start}-")
+            ):
+                raise ValueError("the server did not answer the range request")
+            self.size = total
+            pieces, got = [], 0
+            while got < length:
+                # One system call at most, so a slow link is noticed after
+                # each read rather than after the whole range.
+                piece = response.read1(min(1 << 20, length - got))
+                if not piece:
+                    break
+                pieces.append(piece)
+                got += len(piece)
+                self._remaining()
+        return b"".join(pieces)
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        self.pos = (0, self.pos, self.size)[whence] + offset
+        return self.pos
+
+    def read(self, size: int, /) -> bytes:
+        if self.pos >= self.limit:
+            raise ValueError(f"the header is larger than {self.limit >> 20} MiB")
+        # A short read is fine: the parse fails only when it gets fewer bytes
+        # than it actually needs.
+        size = max(0, min(size, self.size - self.pos, self.limit - self.pos))
+        held = self.first[self.pos : self.pos + size]
+        rest = b""
+        if len(held) < size:
+            rest = self._get(self.pos + len(held), size - len(held))
+        self.pos += len(held) + len(rest)
+        return held + rest
+
+
+def remote_header(
+    repo: str, file: str, revision: str = "main"
+) -> tuple[dict[str, Any], list[str]]:
+    """A Hugging Face file's GGUF metadata and tensor names, from its header alone.
+
+    Reads the header with HTTP range requests at the pinned revision and stops
+    at the end of the tensor table, so an 18 GB model costs a few megabytes.
+
+    Args:
+        repo: The repository, as ``owner/name``.
+        file: The file's path in the repository.
+        revision: The commit to read it at.
+
+    Returns:
+        What :func:`gguf.parse` returns.
+
+    Raises:
+        HeaderReadError: The network, the server or the file failed.
+    """
+    try:
+        return gguf.parse(_RemoteFile(url_for(repo, file, revision)))
+    except urllib.error.HTTPError as error:
+        error.close()  # an HTTP status is a response too; drop it properly
+        raise HeaderReadError(f"HTTP {error.code}") from error
+    except (
+        OSError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+        MemoryError,
+        struct.error,
+        http.client.HTTPException,
+        gguf.Malformed,
+    ) as error:
+        # OSError covers URLError, timeouts, TLS and refused connections;
+        # HTTPException covers a truncated or garbled response. RecursionError
+        # is a header that nests arrays deeper than the parse can follow.
+        raise HeaderReadError(str(error) or type(error).__name__) from error
+
+
 def _attempt(
     dl: Download, file: str, part: Path, base: int, resume: int
 ) -> bool | None:
@@ -317,8 +454,6 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
             dl.state = "cancelled"
             dl.detail = "cancelled; part file kept for resume"
             return False
-    from . import gguf
-
     gguf.header(part)
     part.rename(target)
     return True
@@ -356,8 +491,6 @@ def _run(dl: Download) -> None:
                 dl.state = "cancelled"
                 return
             if target.exists():
-                from . import gguf
-
                 gguf.header(target)
                 base += target.stat().st_size
                 dl.done = base

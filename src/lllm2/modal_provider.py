@@ -438,10 +438,20 @@ class ModalProvider(RemoteProvider):
                 list(argv), api_key, dict(env), dict(files)
             ),
         )
-        self._state.put(
-            modal_app.call_key(call.object_id), {"gpu": gpu, "started": time.time()}
-        )
-        self._beat(call.object_id)
+        try:
+            self._state.put(
+                modal_app.call_key(call.object_id),
+                {"gpu": gpu, "started": time.time()},
+            )
+            self._beat(call.object_id)
+        except BaseException:
+            # Nothing would know of this call: no caller gets its id and
+            # ``calls`` would not list it. Stop its GPU now.
+            try:
+                call.cancel(terminate_containers=True)
+            except Exception:
+                pass  # The container stops itself once heartbeats cease.
+            raise
         return call.object_id
 
     @_translated

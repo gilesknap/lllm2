@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 
 from . import config
 from .engine_release import LLAMA_CPP_REF, RELEASE_REPOSITORY
+from .gguf import not_a_model
 from .tls import download_context
 
 
@@ -181,8 +182,9 @@ def metadata_get(path, params=None):
 # tokenizers and per-layer bundles beside the weights; none runs as a model.
 # For MTP match only the sidecar shapes (an ``mtp-`` basename, an ``MTP/``
 # folder): ``…-NVFP4-MTP.gguf`` is a real model whose weights embed the MTP
-# tensors, so a bare ``-mtp`` token is left for a header check. ``eagle`` must
-# carry a version (``eagle3-…``) so RWKV ``Eagle-7B`` stays listed.
+# tensors, so a bare ``-mtp`` token is left to the header check in
+# ``Finder.refusal``. ``eagle`` must carry a version (``eagle3-…``) so RWKV
+# ``Eagle-7B`` stays listed.
 SIDECAR_NAME = re.compile(
     r"mtp-.*|.*ngram.*|.*(?<![a-z0-9])(eagle\d|lora(?![a-z0-9])).*|layer-\d+\.gguf"
     r"|(tokenizer|embeddings?|output|common|metadata|final-norm)\.gguf"
@@ -341,6 +343,9 @@ class Finder:
     def __init__(self, store):
         self.store = store
         self.lock = threading.Lock()
+        #: Why variants were refused when added, by id. An id pins the
+        #: repository revision, so a header's verdict never goes stale.
+        self.refused = {}
 
     def search(self, query, host, refresh=False, architectures=None):
         query = str(query).strip()[:160]
@@ -414,10 +419,38 @@ class Finder:
                     **e,
                     **suitability(e.get("size_bytes"), host),
                     **arch_support(e, architectures),
+                    # A variant refused when added is listed with the reason.
+                    **(
+                        {"issue": self.refused[e["id"]]}
+                        if e["id"] in self.refused
+                        else {}
+                    ),
                 }
                 for e in result["entries"]
             ],
         }
+
+    def refusal(self, entry):
+        """Why the variant's own header says it is not a model, or None.
+
+        Reads the header of the variant's first file from Hugging Face at its
+        pinned revision. A header that cannot be read is also None: the check
+        saves a pointless download, so a network failure adds the variant as
+        before rather than blocking it.
+        """
+        if entry["id"] in self.refused:
+            return self.refused[entry["id"]]
+        # downloads imports this module, so it is imported where it is used.
+        from .downloads import HeaderReadError, remote_header
+
+        try:
+            meta, names = remote_header(entry["repo"], entry["file"], entry["revision"])
+        except HeaderReadError:
+            return None
+        reason = not_a_model(meta, names)
+        if reason:
+            self.refused[entry["id"]] = reason
+        return reason
 
     def candidate(self, key):
         for result in self.store.list("hf-search"):
@@ -425,5 +458,9 @@ class Finder:
             if entry:
                 if entry.get("issue"):
                     raise ValueError(entry["issue"])
+                reason = self.refusal(entry)
+                if reason:
+                    name = PurePosixPath(entry["file"]).name
+                    raise ValueError(f"Cannot add {name}. {reason}")
                 return entry
         raise ValueError("Search again to select this model.")

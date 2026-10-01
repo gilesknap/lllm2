@@ -223,6 +223,7 @@ def install(
     progress: InstallProgress | None = None,
     track: str | None = None,
     check_startup: bool = True,
+    source: Path | None = None,
 ) -> Path:
     """Verify, stage, probe and atomically publish a release engine.
 
@@ -238,6 +239,11 @@ def install(
         check_startup: Run ``llama-server --help`` before publishing. The
             binary needs the NVIDIA driver library to start, so an image build
             without a GPU skips this and checks the engine on a GPU later.
+        source: A directory holding the engine tarball and its ``.sha256``
+            file under their release asset names, such as the tarballs a CI
+            run built for a Modal image. They get the same checksum and
+            archive checks. None downloads them from the newest published
+            release that carries them.
 
     Returns:
         The installed ``llama-server`` path.
@@ -292,13 +298,21 @@ def install(
             f"Engine already exists: {target}. Choose another --name; existing engines are never overwritten."
         )
     asset = asset_name(track)
-    report("Finding published engine", 0, None)
-    url, checksum_url = _release_asset_urls(asset)
+    if source is None:
+        report("Finding published engine", 0, None)
+        url, checksum_url = _release_asset_urls(asset)
     with tempfile.TemporaryDirectory(prefix=f".{name}-", dir=root) as temporary:
         work = Path(temporary)
         archive, checksum, staged = work / asset, work / "checksum", work / "installed"
-        report("Downloading checksum", 0, None)
-        _download(checksum_url, checksum)
+        if source is None:
+            report("Downloading checksum", 0, None)
+            _download(checksum_url, checksum)
+        else:
+            archive, checksum = source / asset, source / (asset + ".sha256")
+            if not archive.is_file() or not checksum.is_file():
+                raise RuntimeError(
+                    f"{source} does not contain {asset} and its checksum."
+                )
         fields = checksum.read_text().split()
         if (
             len(fields) != 2
@@ -306,8 +320,9 @@ def install(
             or fields[1] != asset
         ):
             raise RuntimeError("Invalid engine checksum file.")
-        report("Downloading engine", 0, None)
-        _download(url, archive, progress=progress)
+        if source is None:
+            report("Downloading engine", 0, None)
+            _download(url, archive, progress=progress)
         report("Verifying checksum", 0, None)
         with archive.open("rb") as downloaded:
             digest = hashlib.file_digest(downloaded, "sha256").hexdigest()
