@@ -139,18 +139,34 @@ def metadata_get(path, params=None):
     return json.loads(raw)
 
 
-# Repos ship imatrix data, drafters, MTP heads and n-gram tables beside the
-# weights; none runs as a model. For MTP and n-grams match only the sidecar
-# shapes (an ``mtp-`` basename, an ``MTP/`` folder, ``ngrams`` in the basename):
-# a quant named ``…-NVFP4-MTP.gguf`` is a real model whose weights embed the
-# MTP tensors and must stay listed.
+# Repos ship imatrix data, drafters, MTP heads, n-gram tables, LoRA adapters,
+# tokenizers and per-layer bundles beside the weights; none runs as a model.
+# For MTP match only the sidecar shapes (an ``mtp-`` basename, an ``MTP/``
+# folder): ``…-NVFP4-MTP.gguf`` is a real model whose weights embed the MTP
+# tensors, so a bare ``-mtp`` token is left for a header check. ``eagle`` must
+# carry a version (``eagle3-…``) so RWKV ``Eagle-7B`` stays listed.
+SIDECAR_NAME = re.compile(
+    r"mtp-.*|.*ngram.*|.*(?<![a-z0-9])(eagle\d|lora(?![a-z0-9])).*|layer-\d+\.gguf"
+    r"|(tokenizer|embeddings?|output|common|metadata|final-norm)\.gguf"
+)
+
+
 def is_sidecar(file):
     path = PurePosixPath(file.lower())
     return (
-        path.name.startswith("mtp-")
-        or "mtp" in path.parts[:-1]
-        or "ngrams" in path.name
+        bool(SIDECAR_NAME.fullmatch(path.name))
+        or bool({"mtp", "lora", "layers"} & set(path.parts[:-1]))
         or any(t in str(path) for t in ("imatrix", "draft", "dflash"))
+    )
+
+
+def is_projector(file):
+    """Vision projectors; some repos call theirs a vision encoder."""
+    name = PurePosixPath(file.lower()).name
+    return (
+        "mmproj" in file.lower()
+        or "vision-encoder" in name
+        or name.endswith("-vision.gguf")
     )
 
 
@@ -192,7 +208,7 @@ def variants(info):
         for s in info.get("siblings", [])
         if s.get("rfilename", "").lower().endswith(".gguf")
     }
-    projectors = sorted(f for f in siblings if "mmproj" in f.lower())
+    projectors = sorted(f for f in siblings if is_projector(f))
     projector = pick_projector(projectors)
     tags = info.get("tags") or []
     task = info.get("pipeline_tag") or "Unknown"
