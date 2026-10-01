@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ['*']
   pull_request:
+  workflow_dispatch:  # Runs the GPU smoke test on any branch.
 
 permissions:
   contents: read
@@ -86,10 +87,94 @@ jobs:
     uses: ./.github/workflows/_dist.yml
 
   engines:
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    # Tags publish the engines. A llama.cpp bump PR or a manual run builds them
+    # for the GPU smoke test; a pin that is already released is reused.
+    if: >-
+      (github.event_name == 'push' && github.ref_type == 'tag') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.head_ref == 'bot/llama-cpp-bump' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/_engines.yml
     permissions:
       contents: write
+
+  gpu-smoke:
+    # Real-GPU end-to-end test of the engine on Modal: download a model, serve
+    # it on a T4, stream a completion and stop. It runs in the lllm2-ci Modal
+    # environment, kept for CI, and passes without touching Modal when the
+    # MODAL_TOKEN_ID secret is absent (forks and contributors).
+    needs: [engines]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.head_ref == 'bot/llama-cpp-bump' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # One run at a time: the sweep stops everything in the environment.
+    concurrency:
+      group: modal-lllm2-ci
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    env:
+      MODAL_ENVIRONMENT: lllm2-ci
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      HAS_MODAL: ${{ secrets.MODAL_TOKEN_ID != '' }}
+    steps:
+      - name: Skip without Modal credentials
+        if: env.HAS_MODAL != 'true'
+        run: echo "::notice::MODAL_TOKEN_ID is not set, so the GPU smoke test did not run."
+      - uses: actions/checkout@v5
+        if: env.HAS_MODAL == 'true'
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        if: env.HAS_MODAL == 'true'
+        with:
+          python-version: '3.12'
+      - if: env.HAS_MODAL == 'true'
+        run: uv sync --locked --extra modal
+      - name: Check for engines built in this run
+        id: engines
+        if: env.HAS_MODAL == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          found=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq 'any(.artifacts[]; .name | startswith("engine-cuda"))')
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v5
+        if: steps.engines.outputs.found == 'true'
+        with:
+          pattern: engine-cuda*
+          merge-multiple: true
+          path: engine-dist
+      - name: Install this run's engines in the Modal image
+        if: steps.engines.outputs.found == 'true'
+        run: echo "LLLM2_MODAL_ENGINE_DIR=$PWD/engine-dist" >> "$GITHUB_ENV"
+      - name: Stop anything an earlier run left in the CI environment
+        if: env.HAS_MODAL == 'true'
+        run: uv run --locked --extra modal python .github/scripts/modal_sweep.py "$MODAL_ENVIRONMENT"
+      - name: Download, serve and stream on a T4
+        if: env.HAS_MODAL == 'true'
+        timeout-minutes: 40
+        env:
+          LLLM2_MODAL_INTEGRATION: '1'
+        run: uv run --locked --extra modal pytest tests/test_modal_integration.py -s
+      - name: Check that lllm2 stopped its own containers
+        if: env.HAS_MODAL == 'true'
+        run: uv run --locked --extra modal python .github/scripts/modal_sweep.py "$MODAL_ENVIRONMENT" --check
+      # Runs after failures, timeouts and cancellation too. It fails the job if
+      # anything in the environment is still running afterwards.
+      - name: Stop every app and container in the CI environment
+        if: ${{ always() && env.HAS_MODAL == 'true' }}
+        timeout-minutes: 5
+        run: uv run --locked --extra modal python .github/scripts/modal_sweep.py "$MODAL_ENVIRONMENT"
 
   release:
     needs: [lint, test, browser, docs-build, dist, engines]

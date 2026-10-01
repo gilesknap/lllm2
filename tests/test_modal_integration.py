@@ -5,6 +5,10 @@ example through ``MODAL_CONFIG_PATH``. CI never sets the variable, so the test
 is skipped there. ``LLLM2_MODAL_GPU`` (default ``T4``) and
 ``LLLM2_MODAL_MODEL`` (a catalogue id, default ``qwen3-8b``) choose what runs.
 The model stays in the Volume afterwards, so a repeat run skips the download.
+
+The ``gpu-smoke`` CI job runs it on llama.cpp bump PRs in the ``lllm2-ci``
+Modal environment (``MODAL_ENVIRONMENT``), with the PR's engine through
+``LLLM2_MODAL_ENGINE_DIR``, then checks that no container is left running.
 """
 
 import json
@@ -48,8 +52,11 @@ def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
     settings = Settings(model=str(config.MODELS_DIR / source.name), context=4096)
     started = time.monotonic()
     arrivals = []
+    call_id = ""
     try:
         engine.start(settings, threading.Event(), timeout=900)
+        call_id = engine.call_id or ""
+        assert call_id
         print(f"Ready after {time.monotonic() - started:.0f} s on {engine.hardware()}")
         final = engine.stream_completion(
             {"prompt": "Count from one to thirty:", "n_predict": 64, "stream": True},
@@ -65,7 +72,12 @@ def test_download_serve_stream_and_stop(tmp_path, monkeypatch):
     finally:
         print("\n".join(engine.logs(40)))
         engine.stop()
+    # ``calls`` lists recorded calls, and stopping drops the record at once, so
+    # also ask Modal whether the serve call itself has ended.
     deadline = time.monotonic() + 60
-    while provider.calls() and time.monotonic() < deadline:
+    while (provider.calls() or provider.poll(call_id).running) and (
+        time.monotonic() < deadline
+    ):
         time.sleep(2)
     assert provider.calls() == []
+    assert not provider.poll(call_id).running
