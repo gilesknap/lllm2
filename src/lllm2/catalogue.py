@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 from . import config
+from .engine_release import LLAMA_CPP_REF, RELEASE_REPOSITORY
 from .tls import download_context
 
 
@@ -125,6 +126,43 @@ def suitability(size, host):
     }
 
 
+def request_support_url(architecture, repo):
+    """A pre-filled issue asking for an engine that loads this architecture."""
+    title = f"Support the {architecture} model architecture"
+    body = (
+        f"Find models reports that the engine cannot load `{repo}`.\n\n"
+        f"- Architecture: `{architecture}`\n"
+        f"- Repository: https://huggingface.co/{repo}\n"
+        f"- Current llama.cpp pin: `{LLAMA_CPP_REF}`\n"
+    )
+    query = urllib.parse.urlencode(
+        {"title": title, "body": body}, quote_via=urllib.parse.quote
+    )
+    return f"https://github.com/{RELEASE_REPOSITORY}/issues/new?{query}"
+
+
+def arch_support(entry, supported):
+    """Compare a variant's GGUF architecture with the engine's recorded list.
+
+    Args:
+        entry: A Find models variant with an optional ``architecture``.
+        supported: The engine's architecture names, or None when unknown.
+
+    Returns:
+        ``arch_support`` of ``"supported"``, ``"unsupported"`` or ``"unknown"``;
+        an unsupported variant also carries a ``support_url``.
+    """
+    architecture = entry.get("architecture")
+    if not architecture or supported is None:
+        return {"arch_support": "unknown"}
+    if architecture in supported:
+        return {"arch_support": "supported"}
+    return {
+        "arch_support": "unsupported",
+        "support_url": request_support_url(architecture, entry["repo"]),
+    }
+
+
 def metadata_get(path, params=None):
     url = "https://huggingface.co/api/models" + path
     if params:
@@ -230,6 +268,7 @@ def variants(info):
             "updated": info.get("lastModified") or info.get("last_modified") or "",
             "license": str(license_name),
             "max_ctx": gguf.get("context_length"),
+            "architecture": gguf.get("architecture"),
             "issue": issue,
             "source": "huggingface",
         }
@@ -248,13 +287,13 @@ class Finder:
         self.store = store
         self.lock = threading.Lock()
 
-    def search(self, query, host, refresh=False):
+    def search(self, query, host, refresh=False, architectures=None):
         query = str(query).strip()[:160]
         key = hashlib.sha256(query.encode()).hexdigest()
         with self.lock:
             cached = self.store.get("hf-search", key)
             if cached and not refresh and time.time() - cached["fetched_at"] < 3600:
-                return self.present(cached, host)
+                return self.present(cached, host, architectures)
             try:
                 repos = metadata_get(
                     "",
@@ -298,7 +337,7 @@ class Finder:
                     "repositories": len(repos),
                 }
                 self.store.put("hf-search", key, result)
-                return self.present(result, host)
+                return self.present(result, host, architectures)
             except (OSError, ValueError) as error:
                 if cached:
                     return self.present(
@@ -307,14 +346,20 @@ class Finder:
                             "warning": f"HF unavailable; showing cached results. {error}",
                         },
                         host,
+                        architectures,
                     )
                 raise ValueError(f"HF discovery unavailable: {error}") from error
 
-    def present(self, result, host):
+    def present(self, result, host, architectures=None):
+        # Searches are cached, so score them for the hardware and engine asked about.
         return {
             **result,
             "entries": [
-                {**e, **suitability(e.get("size_bytes"), host)}
+                {
+                    **e,
+                    **suitability(e.get("size_bytes"), host),
+                    **arch_support(e, architectures),
+                }
                 for e in result["entries"]
             ],
         }

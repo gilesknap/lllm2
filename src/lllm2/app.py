@@ -15,7 +15,7 @@ from .backends import create_engine, engine_kind, engine_serves
 from .bench import WORKLOADS, Bench
 from .catalogue import Catalogue, Finder, local_paths, suitability
 from .defaults import starting_defaults
-from .discovery import engines, hardware
+from .discovery import engines, hardware, supported_architectures
 from .engine import Cancelled, LocalEngine
 from .gpu_tables import GPU_TABLES, gpu_types, pricing_caveat, table_hardware
 from .launch import choose_launch, installed_models
@@ -570,10 +570,13 @@ class App:
             threading.Thread(target=start, daemon=True).start()
             return {"ok": True}
         if path == "/api/models/find":
+            # Remote engines are not on this workstation; their list is unknown.
+            local = data.get("backend", "") in ("", *LOCAL_BACKENDS)
             return self.finder.search(
                 data.get("query", ""),
                 self.selected_hardware(data),
                 data.get("refresh") is True,
+                supported_architectures(data.get("engine")) if local else None,
             )
         if path == "/api/catalogue":
             return {"entries": self.catalogue_view(data)}
