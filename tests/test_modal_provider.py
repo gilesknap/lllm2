@@ -1898,6 +1898,77 @@ def test_run_server_publishes_the_tunnel_and_logs(tmp_path):
     assert logs.partitions["fc-1"] == ["key secret yes", "template hello"]
 
 
+def pinned_build(root, track):
+    return f"{root}/llama-{LLAMA_CPP_REF}-cuda{CUDA_TRACKS[track]}/llama-server"
+
+
+def test_serve_binary_chooses_the_build_for_its_own_driver(monkeypatch):
+    root = "/opt/engines"
+    tracks = []
+
+    def cuda_track():
+        tracks.append(1)
+        return "12"
+
+    monkeypatch.setattr(engine_install, "cuda_track", cuda_track)
+    # The probe ran on a host whose driver took the CUDA 13 build; this one
+    # takes the CUDA 12 build.
+    binary, note = modal_app.serve_binary(pinned_build(root, "13"), root)
+    assert binary == pinned_build(root, "12")
+    assert note and binary in note
+    assert modal_app.serve_binary(pinned_build(root, "12"), root) == (binary, None)
+    # Only a pinned build is chosen again, so other paths skip the driver check.
+    tracks.clear()
+    for other in ("/usr/bin/llama-server", pinned_build("/elsewhere", "13")):
+        assert modal_app.serve_binary(other, root) == (other, None)
+    assert tracks == []
+
+
+def test_serve_binary_keeps_the_probed_build_when_the_driver_check_fails(
+    monkeypatch,
+):
+    def cuda_track():
+        raise RuntimeError("nvidia-smi is missing")
+
+    monkeypatch.setattr(engine_install, "cuda_track", cuda_track)
+    probed = pinned_build("/opt/engines", "13")
+    binary, note = modal_app.serve_binary(probed, "/opt/engines")
+    assert binary == probed
+    assert note and "nvidia-smi is missing" in note
+
+
+def test_run_server_runs_the_build_for_its_own_driver(tmp_path, monkeypatch):
+    for track in CUDA_TRACKS:
+        server = Path(pinned_build(tmp_path, track))
+        server.parent.mkdir()
+        server.write_text(f'#!/bin/sh\necho "cuda {track}" "$@"\n')
+        server.chmod(0o755)
+    monkeypatch.setattr(engine_install, "cuda_track", lambda: "12")
+
+    @contextmanager
+    def forward(port):
+        yield SimpleNamespace(tls_socket=("abc.modal.host", 443))
+
+    logs = FakeQueue()
+    result = modal_app.run_server(
+        [pinned_build(tmp_path, "13"), "--model", "m.gguf"],
+        "k",
+        {},
+        {},
+        call_id="fc-1",
+        state=FakeDict(),
+        logs=logs,
+        forward=forward,
+        file_root=str(tmp_path / "files"),
+        engine_root=str(tmp_path),
+        heartbeat=0.05,
+    )
+    assert result == {"exit_code": 0, "error": None}
+    note, output = logs.partitions["fc-1"]
+    assert pinned_build(tmp_path, "12") in note
+    assert output == "cuda 12 --model m.gguf"
+
+
 def test_engine_layer_installs_each_pinned_track_without_a_gpu(monkeypatch, tmp_path):
     from lllm2 import engine_install
     from lllm2.engine_release import CUDA_TRACKS, LLAMA_CPP_REF
