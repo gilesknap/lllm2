@@ -16,7 +16,10 @@ Set environment variables before starting the workbench or a client wrapper.
 
 The panel defaults to `127.0.0.1:8082`. Its controls use `/api/*`; model
 clients connect to the separate llama.cpp server on port 1920. Protocol
-support depends on the selected engine build.
+support depends on the selected engine build. With the Helm chart's
+`ingress.auth: oidc`, an oauth2-proxy sidecar listens on port 4180 and
+forwards signed-in users to the panel (see
+[Deploy on Kubernetes](../how-to/deploy-on-kubernetes.md#sign-in-with-keycloak)).
 
 The [container image](../how-to/run-container.md) sets `LLLM2_MODELS_DIR=/models`,
 `LLLM2_STATE_DIR=/data/state`, `LLLM2_ENGINE_HOME=/data/engines`,

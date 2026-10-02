@@ -33,11 +33,11 @@ driver's does not resolve on this base.
 
 **Panel exposure.** The panel has no login or TLS. Its Host check stops DNS
 rebinding but is not authentication, and anyone who reaches it can point the
-engine setting at any program in the pod and run it. So it listens on the pod's
-loopback address and is reached with `kubectl port-forward`, which Kubernetes
-RBAC controls. `panel.host: 0.0.0.0` adds it to the Service, for an
-authenticating proxy. There is no Ingress. The model API is a ClusterIP Service
-on port 1920, with no API key.
+engine setting at any program in the pod and run it. So by default it listens
+on the pod's loopback address and is reached with `kubectl port-forward`, which
+Kubernetes RBAC controls. An optional Ingress, which signs users in first, is
+in [ADR 5](0005-ingress-with-a-sign-in-sidecar.md). The model API is a
+ClusterIP Service on port 1920, with no API key.
 
 **Storage.** Two ReadWriteOnce claims, models at `/models` and state plus
 extra engines at `/data`, each with an `existingClaim` option. Both are kept on
@@ -73,7 +73,8 @@ engine, so `main` builds no image and CI stays green for the bump release.
 - The `main` image lags a bump merge until its release tag.
 - `container / build` and `helm / package` should become required checks once
   the bump branch has the new jobs.
-- The panel is reached through port-forward unless a proxy is set up.
+- The panel is reached through port-forward unless the optional Ingress is
+  turned on.
 - Copier updates will conflict in `Dockerfile`, `_container.yml` and `ci.yml`;
   the [template adoption decision](0002-switched-to-python-copier-template.md)
   lists what to keep.
