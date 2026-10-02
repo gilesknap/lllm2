@@ -75,6 +75,20 @@ ENGINE = {
     "cache_kernel": {"reason": "Probed remotely.", "library": None},
     "environment": {},
 }
+# The other build of the release, which a probe on a newer driver prefers.
+CUDA13_ENGINE = ENGINE | {
+    "path": "/opt/fake/llama-b10850-cuda13.3.1/llama-server",
+    "cuda_track": "13.3.1",
+    "sha256": "1" * 64,
+    "cache_kernel": {
+        "reason": "Probed remotely.",
+        "library": {
+            "path": "/opt/fake/llama-b10850-cuda13.3.1/libggml-cuda.so",
+            "size": 1,
+            "sha256": "2" * 64,
+        },
+    },
+}
 META = {
     "architecture": "fake",
     "name": "fake",
@@ -240,6 +254,11 @@ class FakeProvider(RemoteProvider):
         downloads: The store names downloaded, in order.
         spawned: One dict per spawn with ``gpu``, ``argv``, ``env`` and ``files``.
         clock: The wall clock that stamps call starts and heartbeats.
+        engine: The engine record that a probe reports.
+        builds: The other builds that a probe reports, keyed by path.
+        runs: None, or a callable that receives a spawn's command line and
+            returns the binary its container reports running, as a Modal
+            container whose driver cannot run the launched build does.
     """
 
     name = "fake"
@@ -276,6 +295,9 @@ class FakeProvider(RemoteProvider):
         self.server_env = dict(server_env or {})
         self.download_seconds = download_seconds
         self.fail_downloads = fail_downloads
+        self.engine = ENGINE
+        self.builds = {}
+        self.runs = None
         self.probes = []
         self.downloads = []
         self.spawned = []
@@ -286,7 +308,12 @@ class FakeProvider(RemoteProvider):
 
     def probe(self, gpu):
         self.probes.append(gpu)
-        return GpuProbe(name="Fake GPU 24GB (probed)", total_mib=23028, engine=ENGINE)
+        return GpuProbe(
+            name="Fake GPU 24GB (probed)",
+            total_mib=23028,
+            engine=self.engine,
+            builds=self.builds,
+        )
 
     def ensure_model(self, source, progress, cancel):
         target = self.root / "volume" / source.name
@@ -345,6 +372,7 @@ class FakeProvider(RemoteProvider):
             "gpu": gpu,
             "started": self.clock(),
             "heartbeat": self.clock(),
+            "binary": self.runs(argv) if self.runs else argv[0],
         }
         self._write_record(call_id, record)
         with self._lock:
@@ -363,13 +391,14 @@ class FakeProvider(RemoteProvider):
         if any("listening" in line for line in lines):
             self._listening.add(call_id)
         running = self._alive(call_id, record)
+        # Like a Modal tunnel record, the address and the binary come together.
+        listening = running and call_id in self._listening
         return ServeStatus(
             running=running,
-            upstream=Upstream("127.0.0.1", record["port"])
-            if running and call_id in self._listening
-            else None,
+            upstream=Upstream("127.0.0.1", record["port"]) if listening else None,
             logs=tuple(lines),
             error=None if running else "llama-server exited",
+            engine=record.get("binary") if listening else None,
         )
 
     def cancel(self, call_id):

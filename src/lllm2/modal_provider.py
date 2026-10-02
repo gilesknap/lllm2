@@ -204,6 +204,7 @@ class ModalProvider(RemoteProvider):
             name=result["name"],
             total_mib=int(result["total_mib"]),
             engine=result["engine"],
+            builds=result.get("builds") or {},
         )
 
     @_translated
@@ -509,16 +510,19 @@ class ModalProvider(RemoteProvider):
         lines = tuple(
             self._logs.get_many(modal_app.LOG_BATCH, False, partition=call_id)
         )
-        upstream = None
+        upstream = engine = None
         if running:
             tunnel = self._state.get(modal_app.tunnel_key(call_id))
             if tunnel:
                 upstream = Upstream(
                     tunnel["host"], int(tunnel["port"]), bool(tunnel["tls"])
                 )
+                engine = tunnel.get("engine")
         else:
             self._forget(call_id)
-        return ServeStatus(running=running, upstream=upstream, logs=lines, error=error)
+        return ServeStatus(
+            running=running, upstream=upstream, logs=lines, error=error, engine=engine
+        )
 
     @_translated
     def cancel(self, call_id):

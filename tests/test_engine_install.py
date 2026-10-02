@@ -548,6 +548,67 @@ class InstallTests(unittest.TestCase):
         lookup.assert_not_called()
         download.assert_not_called()
 
+    def test_supported_tracks_put_the_preferred_one_first(self):
+        for version, capability, expected in (
+            ("12.9", "8.6", ["12"]),
+            ("13.2", "8.6", ["12"]),
+            ("13.3", "7.0", ["12"]),
+            ("13.3", "7.5", ["13", "12"]),
+            ("14.0", "8.6\n12.0", ["13", "12"]),
+        ):
+            with (
+                self.subTest(version=version, capability=capability),
+                patch.object(
+                    installer.subprocess,
+                    "run",
+                    side_effect=lambda command, version=version, capability=capability, **kwargs: (
+                        subprocess.CompletedProcess(
+                            command,
+                            0,
+                            stdout=f"CUDA Version: {version}"
+                            if len(command) == 1
+                            else capability,
+                        )
+                    ),
+                ),
+            ):
+                # Every list holds the CUDA 12 build, so a serve container
+                # never needs to swap it for the CUDA 13 build.
+                self.assertEqual(installer.supported_tracks(), expected)
+                # The installer takes the first, as it always has.
+                self.assertEqual(installer.cuda_track(), expected[0])
+
+    def test_supported_tracks_reuse_a_version_already_read(self):
+        with patch.object(
+            installer.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="8.6"),
+        ) as run:
+            self.assertEqual(installer.supported_tracks((13, 3)), ["13", "12"])
+            self.assertEqual(installer.supported_tracks((13, 0)), ["12"])
+        # Only the compute capability query ran, and only for the 13.3 driver.
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][1], "--query-gpu=compute_cap")
+        with self.assertRaisesRegex(
+            RuntimeError, "Update or install the NVIDIA driver"
+        ):
+            installer.supported_tracks((12, 8))
+
+    def test_driver_cuda_version_reads_nvidia_smi(self):
+        with patch.object(
+            installer.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout="CUDA UMD Version: 13.0"
+            ),
+        ):
+            self.assertEqual(installer.driver_cuda_version(), (13, 0))
+        with (
+            patch.object(installer.subprocess, "run", side_effect=FileNotFoundError),
+            self.assertRaisesRegex(RuntimeError, "Update or install the NVIDIA driver"),
+        ):
+            installer.driver_cuda_version()
+
     def test_old_gpu_on_cuda13_driver_uses_cuda12(self):
         for capability, expected in (
             ("5.2", "12"),

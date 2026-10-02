@@ -24,7 +24,7 @@ from unittest.mock import Mock, patch
 import pytest
 from typer.testing import CliRunner
 
-from fake_remote import ENGINE, FakeProvider, free_port
+from fake_remote import CUDA13_ENGINE, ENGINE, FakeProvider, free_port
 from lllm2 import cli, config, harness, modal_app, remote
 from lllm2.app import App
 from lllm2.backends import create_engine, engine_serves
@@ -360,6 +360,59 @@ def test_bench_results_record_the_remote_hardware(bench_run, provider):
     assert sample["peak_engine_rss_mib"] is None
     assert sample["peak_total_gpu_used_mib"] is None
     assert provider.downloads == ["example/model.gguf"]
+
+
+def test_bench_results_name_the_builds_their_starts_ran(bench_run, provider):
+    provider.engine, provider.builds = CUDA13_ENGINE, {ENGINE["path"]: ENGINE}
+    launched = []
+
+    def runs(argv):
+        # The first container's driver runs the launched build; the second
+        # container's driver runs only the CUDA 12 build.
+        launched.append(argv[0])
+        return argv[0] if len(launched) == 1 else ENGINE["path"]
+
+    provider.runs = runs
+    snapshot, result = bench_run({"mode": "baseline", "repeats": 2})
+    assert snapshot["status"] == "complete", result.get("error")
+    assert launched == [CUDA13_ENGINE["path"]] * 2
+    assert result["engine"]["sha256"] == ENGINE["sha256"]
+    assert result["cache_settings"]["kernel"] == ENGINE["cache_kernel"]
+    assert result["argv"][0] == ENGINE["path"]
+    # The result says that its samples ran on two builds.
+    assert [build["sha256"] for build in result["engine_builds"]] == [
+        CUDA13_ENGINE["sha256"],
+        ENGINE["sha256"],
+    ]
+
+
+def test_a_result_names_the_build_that_ran_rather_than_the_probed_one(
+    bench_run, provider
+):
+    provider.engine, provider.builds = CUDA13_ENGINE, {ENGINE["path"]: ENGINE}
+    provider.runs = lambda argv: ENGINE["path"]
+    snapshot, result = bench_run({"mode": "baseline", "repeats": 2})
+    assert snapshot["status"] == "complete", result.get("error")
+    # Every start ran the CUDA 12 build, so the probed build is not listed.
+    assert result["engine"]["sha256"] == ENGINE["sha256"]
+    assert result["cache_settings"]["kernel"] == ENGINE["cache_kernel"]
+    assert all(
+        sample["cache_settings"]["kernel"] == ENGINE["cache_kernel"]
+        for sample in result["samples"]
+    )
+    assert "engine_builds" not in result
+
+
+def test_warm_conversation_names_the_build_that_ran(bench_run, provider):
+    provider.engine, provider.builds = CUDA13_ENGINE, {ENGINE["path"]: ENGINE}
+    provider.runs = lambda argv: ENGINE["path"]
+    snapshot, result = bench_run({"mode": "warm-conversation"})
+    assert snapshot["status"] == "complete", result.get("error")
+    assert result["engine"]["sha256"] == ENGINE["sha256"]
+    assert all(
+        sample["cache_settings"]["kernel"] == ENGINE["cache_kernel"]
+        for sample in result["samples"]
+    )
 
 
 def test_warm_conversation_runs_on_a_remote_engine(bench_run):

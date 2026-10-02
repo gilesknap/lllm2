@@ -53,10 +53,28 @@ so it never starts a container.
 The remote container installs the same lllm2 CUDA engine release as
 `lllm2 engines install cuda`, pinned by version, so a remote and a local
 engine for the same lllm2 version come from the same build. It installs both
-CUDA tracks and picks one by the installer's driver rule. Modal does not run
-every container of a GPU type on the same NVIDIA driver, so each serve
-container picks again for its own driver rather than run the track the probe
-picked. When the two differ, the engine log says which build ran.
+CUDA tracks. The probe picks one by the installer's driver rule. When its
+driver supports both builds, the probe also describes the other one.
+
+Modal does not run every container of a GPU type on the same NVIDIA driver. A
+serve container runs the launched build when its own driver supports it, and
+otherwise the build its driver prefers. Every driver that passes the check
+supports the CUDA 12 build, so a swap only happens when a CUDA 13 build lands
+on an older driver. On a T4, for example, the CUDA 13.3.1 build needs a driver
+that reports CUDA 13.3 or later. The engine log then names the build that ran
+and the CUDA version the driver reports.
+
+The serve container names the build it runs in its tunnel record. When that is
+not the launched build, lllm2 takes the probe's record of that build as the
+GPU type's engine record, and saves it in `remote-probes.json`. Results,
+recommendations and later launches then name and run that build, so later
+containers keep it. A bench result whose starts ran more than one build lists
+each of them under `engine_builds`. A probe saved by an older lllm2 has no
+record of the other build. The engine log then says so, results still name the
+probed build, and `lllm2 modal probe` probes again.
+
+A remote GPU's hardware record has no driver version. The probe container's
+driver would not describe the serve containers, which can run other drivers.
 
 ## Proxy
 

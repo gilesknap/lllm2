@@ -24,34 +24,76 @@ from .tls import download_context
 InstallProgress = Callable[[str, int, int | None], None]
 
 
-def cuda_track() -> str:
-    """Select an artifact supported by both the NVIDIA driver and its GPUs."""
+def _cuda_floors() -> dict[str, tuple[int, ...]]:
+    """Return the driver CUDA version that each track needs."""
     # PTX targets require a driver supporting the toolkit's major/minor version.
     # Derive the floors from the build pins so future pin bumps stay consistent.
-    required = {
+    return {
         track: tuple(int(part) for part in version.split(".")[:2])
         for track, version in CUDA_TRACKS.items()
     }
-    floor = ".".join(str(part) for part in required["12"])
-    message = (
+
+
+def _outdated_driver() -> str:
+    floor = ".".join(str(part) for part in _cuda_floors()["12"])
+    return (
         f"Update or install the NVIDIA driver: nvidia-smi must report CUDA {floor} "
         "or newer for the available engine bundles. No CUDA toolkit is required."
     )
+
+
+def driver_cuda_version() -> tuple[int, int]:
+    """Read the CUDA version that the NVIDIA driver supports from nvidia-smi.
+
+    Returns:
+        The major and minor version.
+
+    Raises:
+        RuntimeError: nvidia-smi failed or reported no CUDA version.
+    """
     try:
         result = subprocess.run(
             ["nvidia-smi"], capture_output=True, text=True, timeout=15, check=True
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(message) from error
+        raise RuntimeError(_outdated_driver()) from error
     match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
     if not match:
         raise RuntimeError(
             "Could not read the NVIDIA driver's supported CUDA version from nvidia-smi."
         )
-    if (int(match[1]), int(match[2])) < required["12"]:
-        raise RuntimeError(message)
-    if (int(match[1]), int(match[2])) < required["13"]:
-        return "12"
+    return int(match[1]), int(match[2])
+
+
+def cuda_track() -> str:
+    """Select an artifact supported by both the NVIDIA driver and its GPUs."""
+    return supported_tracks()[0]
+
+
+def supported_tracks(version: tuple[int, int] | None = None) -> list[str]:
+    """List the artifacts that both the NVIDIA driver and its GPUs support.
+
+    The CUDA 12 artifact needs only the driver floor, so every list holds it.
+    The CUDA 13 artifact comes first when the driver and the GPUs support it.
+
+    Args:
+        version: The driver's CUDA version from ``driver_cuda_version``. None
+            reads it.
+
+    Returns:
+        ``CUDA_TRACKS`` keys, the preferred one first.
+
+    Raises:
+        RuntimeError: The driver is missing or too old, or it could not
+            report its CUDA version or the GPUs' compute capability.
+    """
+    required = _cuda_floors()
+    if version is None:
+        version = driver_cuda_version()
+    if version < required["12"]:
+        raise RuntimeError(_outdated_driver())
+    if version < required["13"]:
+        return ["12"]
     # R580 reports CUDA 13 even on Pascal/Volta. Those GPUs need the CUDA 12
     # artifact: CUDA 13's compiler dropped targets below compute capability 7.5.
     try:
@@ -76,7 +118,7 @@ def cuda_track() -> str:
         capabilities.append((int(capability[1]), int(capability[2])))
     if not capabilities:
         raise RuntimeError("The NVIDIA driver could not report GPU compute capability.")
-    return "12" if min(capabilities) < (7, 5) else "13"
+    return ["12"] if min(capabilities) < (7, 5) else ["13", "12"]
 
 
 def matches_engine(record: dict, track: str | None = None) -> bool:
