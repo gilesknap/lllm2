@@ -1,6 +1,6 @@
 """Release engine contract, shared by the installer and container builder."""
 
-LLAMA_CPP_REF = "b10850"
+LLAMA_CPP_REF = "b11327"
 REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
 RELEASE_REPOSITORY = "gilesknap/lllm2"
 CUDA_TRACKS = {"13": "13.3.1", "12": "12.9.1"}
