@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from lllm2 import config
 from lllm2.settings import Settings, build_launch_args, launch_args
 
 FLAGS = [
@@ -154,6 +155,31 @@ class LaunchBuilderTests(unittest.TestCase):
         self.assertEqual(local[local.index("--model") + 1], MODEL)
         self.assertEqual(local[local.index("--host") + 1], "127.0.0.1")
         self.assertEqual(local[local.index("--cache-type-k") + 1], "q8_0")
+
+    def test_local_wrapper_binds_the_configured_engine_host(self):
+        s = Settings(model=MODEL, flash="on", cache="q8_0")
+        with (
+            patch.object(config, "ENGINE_HOST", "0.0.0.0"),
+            patch("lllm2.settings.probe", return_value=ENGINE),
+            patch("lllm2.settings.metadata", return_value=META),
+        ):
+            local = launch_args(s, 1920)
+        self.assertEqual(local[local.index("--host") + 1], "0.0.0.0")
+        self.assertEqual(local[local.index("--port") + 1], "1920")
+
+    def test_engine_host_is_loopback_or_every_interface(self):
+        for environ in ({}, {"LLLM2_ENGINE_HOST": " "}):
+            self.assertEqual(config.engine_host(environ), "127.0.0.1")
+        self.assertEqual(
+            config.engine_host({"LLLM2_ENGINE_HOST": " 0.0.0.0 "}), "0.0.0.0"
+        )
+        # lllm2 reaches its engine through 127.0.0.1, so no other address works.
+        for value in ("10.0.0.5", "localhost", "::"):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "LLLM2_ENGINE_HOST"),
+            ):
+                config.engine_host({"LLLM2_ENGINE_HOST": value})
 
 
 if __name__ == "__main__":

@@ -154,7 +154,7 @@ class HeaderPlanningFactsTests(unittest.TestCase):
 class UncataloguedPlanTests(unittest.TestCase):
     """A quantisation the catalogue never listed still gets a planned context."""
 
-    def resolve(self, model, meta, host):
+    def resolve(self, model, meta, host, command=lambda *_args: (0, "512")):
         selection = Settings.parse(
             {"model": model, "backend": "modal", "gpu_type": "RTX-PRO-6000"}
             if host.get("source") == "modal"
@@ -164,7 +164,7 @@ class UncataloguedPlanTests(unittest.TestCase):
             patch.object(defaults, "hardware", return_value=host),
             patch.object(defaults, "probe", return_value=ENGINE),
             patch.object(defaults, "metadata", return_value=meta),
-            patch.object(defaults, "command", return_value=(0, "512")),
+            patch.object(defaults, "command", side_effect=command),
             patch.object(defaults, "measured_defaults", return_value=(None, [])),
         ):
             result = defaults.starting_defaults(selection, host, ENGINE, meta)
@@ -249,6 +249,40 @@ class UncataloguedPlanTests(unittest.TestCase):
         self.assertLessEqual(s.context, meta["context"] * s.slots)
         self.assertGreaterEqual(s.slots, 1)
         self.assertIn("calibrated planner", " ".join(result["notes"]))
+
+    def test_a_container_without_systemctl_asks_the_driver_about_a_desktop(self):
+        """The image has no systemd, so the card's display decides the reserve."""
+        host = {
+            "source": "local",
+            "gpus": [
+                {"name": "NVIDIA GeForce RTX 3090", "total_mib": 24576, "uuid": "gpu"}
+            ],
+            "ram": {"available_gib": 48},
+        }
+        meta = dict(Q8_META, size=19_000_000_000, mtp=False)
+
+        def plan(systemctl, display):
+            def command(args, _timeout):
+                if args[0] == "systemctl":
+                    return systemctl
+                if "--query-gpu=display_active" in args:
+                    self.assertIn("--id=gpu", args)
+                    return display
+                return (0, "512")
+
+            s, _ = self.resolve(
+                "/models/Homemade/Homemade-Q6_K.gguf", meta, host, command
+            )
+            return s.context * s.slots
+
+        missing = (-1, "[Errno 2] No such file or directory: 'systemctl'")
+        workstation = plan((0, "active\n"), (0, "Enabled\n"))
+        headless = plan((3, "inactive\n"), (0, "Enabled\n"))
+        self.assertGreater(headless, workstation)
+        self.assertEqual(plan(missing, (0, "Disabled\n")), headless)
+        self.assertEqual(plan(missing, (0, "Enabled\n")), workstation)
+        # Without an answer, keep the desktop's share.
+        self.assertEqual(plan(missing, (9, "driver failure")), workstation)
 
     def test_unplannable_checkpoint_is_clamped_and_says_so(self):
         host = table_hardware("modal", "RTX-PRO-6000")

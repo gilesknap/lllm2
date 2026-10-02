@@ -96,6 +96,29 @@ def gpu_processes(output):
     return desktop, competing
 
 
+def owned_process(pid, owned_pid):
+    """Return whether a GPU process row belongs to this app's running engine.
+
+    In a container, nvidia-smi can report a process by its PID on the host,
+    which this PID namespace has no ``/proc`` entry for. A container gets the
+    GPU to itself, so while the owned engine runs such a process is that
+    engine. On a host every running process has an entry, so this only skips
+    a process that exited after nvidia-smi listed it.
+
+    Args:
+        pid: The PID text from an nvidia-smi compute-process row.
+        owned_pid: The running owned engine's PID, or None.
+
+    Returns:
+        True when the row is the owned engine.
+    """
+    if owned_pid is None:
+        return False
+    if pid == str(owned_pid):
+        return True
+    return pid.isdigit() and not (Path("/proc") / pid).exists()
+
+
 def process_memory(process):
     """Sample the resident memory of an owned engine process from /proc.
 
@@ -672,7 +695,7 @@ class LocalEngine(Engine):
         processes = "\n".join(
             line
             for line in processes.splitlines()
-            if line.split(",", 1)[0].strip() != str(owned_pid)
+            if not owned_process(line.split(",", 1)[0].strip(), owned_pid)
         )
         desktop, competing = gpu_processes(processes)
         if competing:
@@ -690,7 +713,9 @@ class LocalEngine(Engine):
         with socket.socket() as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                sock.bind(("127.0.0.1", config.ENGINE_PORT))
+                # The address llama-server binds, so a listener on any address
+                # it needs is found here rather than in the engine log.
+                sock.bind((config.ENGINE_HOST, config.ENGINE_PORT))
             except OSError as e:
                 raise ResourceConflict(
                     f"Port {config.ENGINE_PORT} is occupied by another process. Stop it yourself or change LLLM2_ENGINE_PORT."

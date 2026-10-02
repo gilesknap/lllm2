@@ -989,6 +989,50 @@ def unconfirmed_reason(row):
     )
 
 
+def host_allowed(header, allowed, names=frozenset()):
+    """Say whether a request's ``Host`` header names this panel.
+
+    The check stops DNS rebinding: a page on another site cannot point its own
+    name at this panel and read the answers. It is not authentication.
+
+    Args:
+        header: The request's ``Host`` header.
+        allowed: The panel's own ``name:port`` forms, in lower case.
+        names: Extra host names, from ``LLLM2_PANEL_ALLOWED_HOSTS``, accepted
+            with any port or none, as a proxy or Ingress passes them on.
+
+    Returns:
+        True when the header is one of ``allowed``, or one of ``names`` with
+        or without a port.
+    """
+    header = header.lower()
+    if header in allowed:
+        return True
+    name, colon, port = header.partition(":")
+    return name in names and (not colon or (port.isascii() and port.isdigit()))
+
+
+def origin_allowed(origin, host):
+    """Say whether a POST's ``Origin`` header is this panel's own page.
+
+    A browser behind a TLS proxy or Ingress sends ``https://`` with the same
+    host, so both schemes are accepted. The session token is the CSRF defence;
+    this check adds a second one.
+
+    Args:
+        origin: The request's ``Origin`` header, or None if it has none.
+        host: The request's ``Host`` header, already checked.
+
+    Returns:
+        True when there is no ``Origin``, or it is ``http://`` or ``https://``
+        followed by ``host``.
+    """
+    if not origin:
+        return True
+    host = host.lower()
+    return origin.lower() in (f"http://{host}", f"https://{host}")
+
+
 def serve(host="127.0.0.1", port=8082):
     config.STATE_DIR.mkdir(parents=True, exist_ok=True)
     lock = (config.STATE_DIR / "panel.lock").open("w")
@@ -1025,9 +1069,17 @@ def serve(host="127.0.0.1", port=8082):
             # The accepted socket identifies the local interface used by this
             # request, including LAN addresses on multi-interface workstations.
             local_host = f"{self.connection.getsockname()[0]}:{port}"
-            if self.headers.get("Host", "").lower() not in allowed_hosts | {local_host}:
+            if not host_allowed(
+                self.headers.get("Host", ""),
+                allowed_hosts | {local_host},
+                config.PANEL_ALLOWED_HOSTS,
+            ):
                 self.send(
-                    403, {"error": "Use this workstation’s panel address or hostname."}
+                    403,
+                    {
+                        "error": "Use this workstation’s panel address or "
+                        "hostname, or add the name to LLLM2_PANEL_ALLOWED_HOSTS."
+                    },
                 )
                 return False
             return True
@@ -1077,10 +1129,8 @@ def serve(host="127.0.0.1", port=8082):
         def do_POST(self):
             if not self.valid_host():
                 return
-            origin = self.headers.get("Origin")
-            if self.headers.get("X-LLLM2-Token") != app.token or (
-                origin
-                and origin.lower() != f"http://{self.headers.get('Host', '').lower()}"
+            if self.headers.get("X-LLLM2-Token") != app.token or not origin_allowed(
+                self.headers.get("Origin"), self.headers.get("Host", "")
             ):
                 self.send(403, {"error": "Reload the panel to renew its session."})
                 return
@@ -1117,6 +1167,11 @@ def serve(host="127.0.0.1", port=8082):
         )
         print(
             "LAN access has no login or TLS: anyone who can reach this port can control the workbench. Use only on a trusted network.",
+            flush=True,
+        )
+    if config.PANEL_ALLOWED_HOSTS:
+        print(
+            "Panel also answers to: " + ", ".join(sorted(config.PANEL_ALLOWED_HOSTS)),
             flush=True,
         )
     try:

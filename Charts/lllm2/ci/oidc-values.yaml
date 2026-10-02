@@ -1,0 +1,50 @@
+# The Ingress with the oauth2-proxy sign-in sidecar, for CI's lint and render.
+# It is separate from all-features-values.yaml because auth oidc needs
+# panel.host 127.0.0.1, and that file sets 0.0.0.0.
+ingress:
+  enabled: true
+  className: nginx
+  auth: oidc
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "200"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 16k
+  hosts:
+    - host: lllm2.example.com
+    - host: gpu1.lllm2.example.com
+  tls:
+    - secretName: lllm2-tls
+      hosts: [lllm2.example.com, gpu1.lllm2.example.com]
+  oidc:
+    provider: keycloak-oidc
+    issuerURL: https://keycloak.example.com/realms/lab
+    clientID: lllm2
+    existingSecret: site-oidc
+    clientSecretKey: lllm2-client-secret
+    cookieSecretKey: lllm2-cookie-secret
+    allowedGroups: [/lllm2-users, /gpu-admins]
+    allowedRoles: ["lllm2:operator"]
+    emailDomains: [example.com]
+    caConfigMap: site-ca
+    extraArgs: [--cookie-expire=12h]
+    env:
+      - name: HTTPS_PROXY
+        value: http://proxy.example.com:3128
+      - name: NO_PROXY
+        value: .example.com
+    image:
+      repository: registry.example.com/mirror/oauth2-proxy
+      pullPolicy: Always
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: "1"
+        memory: 256Mi
+networkPolicy:
+  enabled: true
+  from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx

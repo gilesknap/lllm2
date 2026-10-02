@@ -1,0 +1,108 @@
+name: Package Helm chart
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        description: Push charts to GHCR on a release tag
+
+# No permissions key: a called workflow can only lower the caller's token, so
+# naming any scope here would drop the packages: write that helm push needs.
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install Helm
+        uses: Azure/setup-helm@v5
+        with:
+          version: 3.17.1
+      - name: Chart version from the tag
+        id: version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        # appVersion is the image tag, which is the Git tag. The chart version
+        # must be SemVer, so a PEP 440 pre-release such as 0.11.0rc1 becomes
+        # 0.11.0-rc.1. Any other tag form publishes no chart.
+        run: |
+          version=${TAG#v}
+          if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)((a|b|rc)([0-9]+))?$ ]]; then
+            case "${BASH_REMATCH[3]}" in
+              a) version="${BASH_REMATCH[1]}-alpha.${BASH_REMATCH[4]}" ;;
+              b) version="${BASH_REMATCH[1]}-beta.${BASH_REMATCH[4]}" ;;
+              rc) version="${BASH_REMATCH[1]}-rc.${BASH_REMATCH[4]}" ;;
+            esac
+            echo "Chart $version, appVersion $TAG"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Tag $TAG is not X.Y.Z or a pre-release such as X.Y.ZrcN, so no chart is published for it."
+          fi
+      - name: Install kubeconform
+        env:
+          VERSION: v0.8.0
+          SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${SHA256}  kubeconform-linux-amd64.tar.gz" | sha256sum -c
+          mkdir kubeconform
+          tar xzf kubeconform-linux-amd64.tar.gz -C kubeconform --no-same-owner
+          echo "$RUNNER_TEMP/kubeconform" >> "$GITHUB_PATH"
+      - name: Lint and render charts
+        # Each ci/*-values.yaml renders the chart with more features on.
+        # kubeconform checks every object against the Kubernetes API schema,
+        # so a field the API server would refuse fails here.
+        run: |
+          set -euo pipefail
+          check() { kubeconform -strict -summary -kubernetes-version 1.33.0; }
+          for chart in Charts/*/; do
+            helm lint "${chart%/}"
+            helm template test "${chart%/}" | check
+            for values in "${chart}"ci/*-values.yaml; do
+              [ -e "$values" ] || continue
+              helm lint "${chart%/}" -f "$values"
+              helm template test "${chart%/}" -f "$values" | check
+            done
+          done
+      - name: Package charts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          mkdir -p charts
+          for chart in Charts/*/; do
+            if [ -n "$VERSION" ]; then
+              helm package -d charts --version "$VERSION" \
+                --app-version "$TAG" "${chart%/}"
+            else
+              # Checks packaging only; the chart keeps appVersion main.
+              helm package -d charts --version 0.0.0 "${chart%/}"
+            fi
+          done
+      - name: Upload Helm chart values schemas
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart-schemas
+          path: schemas/*
+      - name: Log in to GHCR
+        if: inputs.publish && steps.version.outputs.version != ''
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push charts
+        if: inputs.publish && steps.version.outputs.version != ''
+        run: |
+          set -eu
+          for chart in charts/*.tgz; do
+            helm push "$chart" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+          done

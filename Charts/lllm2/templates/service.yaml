@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lllm2.fullname" . }}
+  labels:
+    {{- include "lllm2.labels" . | nindent 4 }}
+spec:
+  # The model API, for clients inside the cluster. It has no API key.
+  type: ClusterIP
+  {{- if include "lllm2.oidc" . }}
+  # A pod is ready only when the sign-in sidecar is. Keep its address while
+  # the sidecar starts or fails, so the model API stays reachable.
+  publishNotReadyAddresses: true
+  {{- end }}
+  selector:
+    {{- include "lllm2.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: engine
+      port: 1920
+      targetPort: engine
+    {{- if include "lllm2.panelExposed" . }}
+    # The panel has no login and accepts only its own address and the names in
+    # LLLM2_PANEL_ALLOWED_HOSTS as Host, so it suits only an Ingress or proxy
+    # that authenticates.
+    - name: panel
+      port: 8082
+      targetPort: panel
+    {{- end }}
+    {{- if include "lllm2.oidc" . }}
+    # The oauth2-proxy sidecar signs users in, then forwards to the panel,
+    # which listens only on 127.0.0.1 in the pod.
+    - name: auth
+      port: 4180
+      targetPort: auth
+    {{- end }}
