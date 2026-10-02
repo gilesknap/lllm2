@@ -21,8 +21,13 @@ Engine selection: the image installs both CUDA engine tarballs that
 pins, from the same release lookup and with the same checksum and archive
 checks, so the engine sha256 matches a local install. Released and development
 versions follow the same rule: the newest published release that carries the
-pinned tarball. A container then selects a tarball with ``cuda_track``, the
-driver rule the local installer uses.
+pinned tarball. The probe container selects a tarball with
+``supported_tracks``, the driver rule the local installer uses, and also
+describes the other builds its driver supports. Modal does not run every
+container of a GPU type on the same NVIDIA driver, so a serve container keeps
+the launched build only when its own driver supports it, and otherwise runs
+the build its driver prefers (see ``serve_binary``). It names the build it
+runs in its tunnel record, so the client can record that build.
 
 Image layers: the engine layer comes before the lllm2 source layer, and Modal
 keys it only on ``install_engines``'s source text and its arguments, the release
@@ -250,33 +255,108 @@ def engine_image(modal_module: Any, engines: str | None = None) -> Any:
     )
 
 
-def engine_binary(root: str = ENGINE_ROOT) -> str:
-    """Return the llama-server path that suits the container's driver.
+def build_binary(track: str, root: str = ENGINE_ROOT) -> str:
+    """Return the llama-server path of one pinned engine build.
 
     Args:
+        track: A ``CUDA_TRACKS`` key.
         root: The engine home inside the image.
 
     Returns:
         The absolute binary path.
     """
-    track = engine_install.cuda_track()
     return f"{root}/llama-{LLAMA_CPP_REF}-cuda{CUDA_TRACKS[track]}/llama-server"
 
 
-def probe_container(binary: str | None = None) -> dict:
+def serve_binary(binary: str, root: str = ENGINE_ROOT) -> tuple[str, str | None]:
+    """Return the pinned engine build to run in this serve container.
+
+    The probe and each serve call run in containers of their own, and Modal
+    does not run every host of a GPU type on the same NVIDIA driver. The build
+    a probe chose can need a newer driver than a later serve container has: on
+    a T4 the CUDA 13.3.1 build's kernels are PTX that the driver compiles, and
+    a driver older than CUDA 13.3 stops llama-server at its first kernel. So a
+    serve container keeps the launched build when its driver and GPU support
+    it, and otherwise runs the build that ``supported_tracks`` prefers. Every
+    driver that passes the check supports the CUDA 12 build, so only a CUDA 13
+    build is ever swapped, for the CUDA 12 one.
+
+    Args:
+        binary: The llama-server path from the launch command, usually the
+            build that the probe chose.
+        root: The engine home inside the image.
+
+    Returns:
+        The path to run and a note for the engine log, or None when the path
+        is unchanged. A path that is not a pinned build, such as a test's,
+        stays as it is. So does a pinned build when the driver check fails,
+        as the note then says.
+    """
+    pinned = {build_binary(track, root): track for track in CUDA_TRACKS}
+    if binary not in pinned:
+        return binary, None
+    try:
+        version = engine_install.driver_cuda_version()
+        tracks = engine_install.supported_tracks(version)
+    except RuntimeError as error:
+        return binary, f"lllm2: keeping {binary}; the driver check failed: {error}"
+    if pinned[binary] in tracks:
+        return binary, None
+    chosen = build_binary(tracks[0], root)
+    driver = ".".join(str(part) for part in version)
+    return chosen, (
+        f"lllm2: running {chosen} instead of {binary}; this container's driver "
+        f"reports CUDA {driver}, and it or the GPU cannot run the launched build"
+    )
+
+
+def engine_record(binary: str) -> dict:
+    """Describe an engine build the way the client records it.
+
+    Args:
+        binary: The llama-server path.
+
+    Returns:
+        The engine record in the ``discovery.probe()`` shape plus the
+        ``cuda_track``, ``requested_ref``, ``cuda_graph``, ``cache_kernel`` and
+        ``environment`` keys.
+    """
+    engine = dict(discovery.probe(binary))
+    # Name the build the container really ran. The compiler version in the
+    # engine's own version text reads like a CUDA version otherwise.
+    record = engine_install.provenance(Path(binary))
+    engine["cuda_track"] = record.get("cuda_track")
+    engine["requested_ref"] = record.get("requested_ref")
+    engine["cuda_graph"] = discovery.cuda_graph_support(binary)
+    engine["cache_kernel"] = discovery.cache_kernel_support(binary, "CUDA")
+    environment = discovery.engine_environment(binary)
+    # Report only the variables that affect the engine, not container secrets.
+    engine["environment"] = {
+        key: value
+        for key, value in environment.items()
+        if key.startswith(("GGML_", "CUDA_", "NVIDIA_")) or key == "LD_LIBRARY_PATH"
+    }
+    return engine
+
+
+def probe_container(binary: str | None = None, root: str = ENGINE_ROOT) -> dict:
     """Inspect the GPU and the engine in this container.
 
     Args:
-        binary: The llama-server path. None selects it with ``engine_binary``.
+        binary: The llama-server path. None selects the pinned build that
+            ``supported_tracks`` prefers.
+        root: The engine home inside the image, used when ``binary`` is None.
 
     Returns:
-        A dict with ``name`` and ``total_mib`` of the first GPU and ``engine``,
-        the engine record in the ``discovery.probe()`` shape plus the
-        ``cuda_track``, ``requested_ref``, ``cuda_graph``, ``cache_kernel`` and
-        ``environment`` keys.
+        A dict with ``name`` and ``total_mib`` of the first GPU, ``engine``,
+        the ``engine_record`` of the binary, and ``builds``, the
+        ``engine_record`` of each other pinned build this driver supports,
+        keyed by path. A serve container whose driver cannot run ``engine``
+        runs one of those builds instead (see ``serve_binary``). ``builds``
+        is empty when ``binary`` is given.
 
     Raises:
-        RuntimeError: nvidia-smi failed.
+        RuntimeError: nvidia-smi failed, or the driver check failed.
     """
     try:
         result = subprocess.run(
@@ -295,23 +375,17 @@ def probe_container(binary: str | None = None) -> dict:
         )
     except (OSError, subprocess.SubprocessError, IndexError, ValueError) as error:
         raise RuntimeError(f"nvidia-smi could not describe the GPU: {error}") from error
-    binary = binary or engine_binary()
-    engine = dict(discovery.probe(binary))
-    # Name the build the container really ran. The compiler version in the
-    # engine's own version text reads like a CUDA version otherwise.
-    record = engine_install.provenance(Path(binary))
-    engine["cuda_track"] = record.get("cuda_track")
-    engine["requested_ref"] = record.get("requested_ref")
-    engine["cuda_graph"] = discovery.cuda_graph_support(binary)
-    engine["cache_kernel"] = discovery.cache_kernel_support(binary, "CUDA")
-    environment = discovery.engine_environment(binary)
-    # Report only the variables that affect the engine, not container secrets.
-    engine["environment"] = {
-        key: value
-        for key, value in environment.items()
-        if key.startswith(("GGML_", "CUDA_", "NVIDIA_")) or key == "LD_LIBRARY_PATH"
+    others: list[str] = []
+    if binary is None:
+        binary, *others = (
+            build_binary(track, root) for track in engine_install.supported_tracks()
+        )
+    return {
+        "name": name,
+        "total_mib": int(total),
+        "engine": engine_record(binary),
+        "builds": {other: engine_record(other) for other in others},
     }
-    return {"name": name, "total_mib": int(total), "engine": engine}
 
 
 def fetch_model(
@@ -743,6 +817,7 @@ def run_server(
     forward: Callable[[int], Any],
     port: int = SERVER_PORT,
     file_root: str = FILE_ROOT,
+    engine_root: str = ENGINE_ROOT,
     heartbeat: float = HEARTBEAT_SECONDS,
     grace: float = OWNER_GRACE_SECONDS,
 ) -> dict:
@@ -752,8 +827,14 @@ def run_server(
     silent for ``grace`` seconds. The owner check stops billing when the lllm2 process that spawned the call
     crashes, loses its network or its machine shuts down.
 
+    The tunnel record also names the binary that runs, under ``engine``. It
+    differs from the launch command's when this container's driver cannot run
+    that build, and the client then records the build that ran.
+
     Args:
-        argv: The llama-server command line, binary first.
+        argv: The llama-server command line, binary first. A pinned engine
+            build that this container's driver cannot run is swapped for one
+            it can (see ``serve_binary``).
         api_key: The key llama-server requires, passed as ``LLAMA_API_KEY``.
         env: Extra environment variables for llama-server.
         files: Text files to write under ``file_root``, keyed by file name.
@@ -764,6 +845,7 @@ def run_server(
             whose tunnel has ``tls_socket``.
         port: llama-server's port.
         file_root: The directory for ``files``.
+        engine_root: The engine home inside the image.
         heartbeat: Seconds between tunnel record refreshes and owner checks.
         grace: Seconds without an owner heartbeat before llama-server stops.
 
@@ -777,6 +859,14 @@ def run_server(
     directory.mkdir(parents=True, exist_ok=True)
     for file_name, text in files.items():
         (directory / PurePosixPath(file_name).name).write_text(text)
+    binary, note = serve_binary(argv[0], engine_root)
+    if note:
+        # The client logged its own command line, so say what really runs.
+        # Like LogPump, a queue failure drops the line, not the launch.
+        print(note, flush=True)
+        with contextlib.suppress(Exception):
+            logs.put_many([note], False, partition=call_id)
+    argv = [binary, *argv[1:]]
     process = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
@@ -802,6 +892,7 @@ def run_server(
                         "port": tunnel_port,
                         "tls": True,
                         "heartbeat": time.time(),
+                        "engine": binary,
                     },
                 )
                 try:

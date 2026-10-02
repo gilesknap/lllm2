@@ -21,7 +21,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, config
@@ -75,11 +75,17 @@ class GpuProbe:
             shape, with ``path`` set to the binary path inside the container.
             It also carries the ``cuda_graph``, ``cache_kernel`` and
             ``environment`` keys that ``settings.capabilities`` accepts.
+        builds: Engine records, in the same shape, of the other builds that a
+            container of this GPU type can run instead of ``engine``, keyed by
+            path. A container whose driver cannot run ``engine``'s build runs
+            one of them and reports it in ``ServeStatus.engine``. Empty when
+            the provider always runs ``engine``.
     """
 
     name: str
     total_mib: int
     engine: dict
+    builds: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -144,12 +150,16 @@ class ServeStatus:
             provider has opened it.
         logs: Log lines produced since the previous poll of this call.
         error: Why the call ended, or None.
+        engine: The llama-server path the call runs, or None when the provider
+            does not report it. It differs from the launch command's binary
+            when the container ran another build (see ``GpuProbe.builds``).
     """
 
     running: bool
     upstream: Upstream | None = None
     logs: tuple[str, ...] = ()
     error: str | None = None
+    engine: str | None = None
 
 
 @dataclass(frozen=True)
@@ -755,8 +765,14 @@ class ProbeCache:
         with self._lock:
             entry = self._read().get(self._key(provider, gpu))
         try:
-            return GpuProbe(entry["name"], int(entry["total_mib"]), entry["engine"])
-        except (KeyError, TypeError, ValueError):
+            builds = entry.get("builds") or {}
+            return GpuProbe(
+                entry["name"],
+                int(entry["total_mib"]),
+                entry["engine"],
+                builds if isinstance(builds, dict) else {},
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
             return None
 
     def providers(self):
@@ -786,6 +802,7 @@ class ProbeCache:
                 "name": probe.name,
                 "total_mib": probe.total_mib,
                 "engine": probe.engine,
+                "builds": probe.builds,
                 "probed": time.time(),
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1562,6 +1579,10 @@ class _Call:
         self.upstream = None
         self.done = threading.Event()
         self.heartbeat = clock()
+        # The launch command's binary, and whether the provider has said
+        # which binary the call runs.
+        self.binary = None
+        self.reported = False
 
 
 _ENGINES: "weakref.WeakSet[RemoteEngine]" = weakref.WeakSet()
@@ -2014,6 +2035,7 @@ class RemoteEngine(Engine):
                 call = _Call(
                     call_id, api_key, proxy, self.wall_clock(), *self._clocks()
                 )
+                call.binary = argv[0]
                 proxy = None
                 self._own(call, s)
             self._serve(call, s, cancel, timeout)
@@ -2094,6 +2116,7 @@ class RemoteEngine(Engine):
                     record["started"],
                     *self._clocks(),
                 )
+                call.binary = next(iter(record["argv"] or ()), None)
                 self._own(call, s)
                 self._phase = "loading model"
         try:
@@ -2340,6 +2363,10 @@ class RemoteEngine(Engine):
                 self.log(line)
             if call.done.is_set():
                 return
+            if state.engine is not None and not call.reported:
+                # Before the upstream, so a start returns with the build named.
+                call.reported = True
+                self._ran(call, state.engine)
             if state.upstream is not None:
                 call.upstream = state.upstream
             if not state.running:
@@ -2348,6 +2375,53 @@ class RemoteEngine(Engine):
             if self._idle_remaining(call) == 0 and self._idle_stop(call):
                 return
             call.done.wait(self.poll_interval)
+
+    def _ran(self, call, path):
+        """Record the build a call runs when it is not the launched one.
+
+        A container whose driver cannot run the launched build runs another
+        build of the same release (see ``GpuProbe.builds``). Its record then
+        replaces the GPU type's engine record, in this session and in the
+        probe cache, so results and recommendations name the build that ran
+        and later launches run it too.
+
+        Args:
+            call: The call that reported its binary.
+            path: The llama-server path the call runs.
+        """
+        if call.binary is None or path == call.binary:
+            return
+        with self.guard:
+            if self._call is not call:
+                return
+            probed = self._known(self.gpu)
+            if probed.engine.get("path") != path:
+                engine = probed.builds.get(path)
+                if engine is None:
+                    self.log(
+                        f"The remote container runs {path} instead of "
+                        f"{call.binary}, the build its driver supports. lllm2 has "
+                        f"no probe of that build, so results still name "
+                        f"{probed.engine.get('path')}. Run `lllm2 "
+                        f"{self.provider.name} probe --gpu {self.gpu}` to probe "
+                        "again."
+                    )
+                    return
+                builds = {k: v for k, v in probed.builds.items() if k != path}
+                builds[probed.engine.get("path")] = probed.engine
+                probed = dataclasses.replace(probed, engine=engine, builds=builds)
+                self._probes[self.gpu] = probed
+                try:
+                    self._probe_cache.put(self.provider.name, self.gpu, probed)
+                except OSError as e:
+                    self.log(f"Could not save the GPU probe: {e}")
+            if self.argv and self.argv[0] == call.binary:
+                self.argv = [path, *self.argv[1:]]
+            self.log(
+                f"The remote container runs {path} instead of {call.binary}, the "
+                f"build its driver supports. Results name that build, and later "
+                f"{self.gpu} launches use it."
+            )
 
     def _heartbeat(self, call):
         now = self.clock()

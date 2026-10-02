@@ -114,7 +114,9 @@ The launch goes through these steps:
 1. **Probe.** On the first launch with a GPU type, a short container reports the
    GPU's real memory and the engine's capabilities. lllm2 saves the result in
    `remote-probes.json` in the state directory and does not probe again until
-   lllm2 or its engine release changes.
+   lllm2 or its engine release changes. If a later container's driver cannot
+   run the probed engine build, it runs the other build, and lllm2 records and
+   launches that build from then on.
 2. **Download.** If the model is not in the `lllm2-models` Volume, Modal
    downloads it from Hugging Face into the Volume. The download runs in Modal,
    not over your connection, and later launches reuse the file.

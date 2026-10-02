@@ -167,13 +167,15 @@ def run_conversation(bench, s, opts, result):
     def save():
         bench.store.put("result", result["id"], result)
 
-    kernel = bench.engine.probe(s).get("cache_kernel")
     for repetition in range(1, opts["repeats"] + 1):
         if bench.cancel.is_set():
             raise Cancelled()
         bench.update(phase=f"Warm conversation {repetition}/{opts['repeats']}: loading")
         bench.engine.start(s, bench.cancel, opts["timeout"])
         result["argv"] = bench.engine.argv
+        bench.record_engine(result, s)
+        # Read after the start, which can change the build (see record_engine).
+        kernel = bench.engine.probe(s).get("cache_kernel")
         base, provenance = bench.prompt(
             s, "long-code", opts["prompt_tokens"], opts["timeout"]
         )
@@ -208,6 +210,7 @@ def run_conversation(bench, s, opts, result):
             repetition=repetition,
             batches=batches,
             provenance=provenance,
+            kernel=kernel,
         ):
             if bench.cancel.is_set():
                 raise Cancelled()

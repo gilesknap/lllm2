@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fake_remote import ENGINE, FAKE_LLAMA_SERVER, free_port
+from fake_remote import CUDA13_ENGINE, ENGINE, FAKE_LLAMA_SERVER, free_port
 from fake_remote import META as FAKE_META
 from lllm2 import config, discovery, engine_install, modal_app, modal_provider
 from lllm2.engine import Cancelled
@@ -349,10 +349,10 @@ def test_probe_hashes_the_binary_that_a_local_install_hashes(tmp_path, monkeypat
     smi.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
 
-    binary = modal_app.engine_binary(str(image))
+    binary = modal_app.build_binary("13", str(image))
     # The probe reads the build the container installed, whatever track a
     # driver would pick now, so the reported build follows the binary.
-    monkeypatch.setattr(engine_install, "cuda_track", lambda: "12")
+    monkeypatch.setattr(engine_install, "supported_tracks", lambda: ["12"])
     probed = modal_app.probe_container(binary)
 
     expected = hashlib.sha256(server).hexdigest()
@@ -361,6 +361,41 @@ def test_probe_hashes_the_binary_that_a_local_install_hashes(tmp_path, monkeypat
     assert (probed["name"], probed["total_mib"]) == ("NVIDIA L4", 23034)
     assert probed["engine"]["cuda_track"] == CUDA_TRACKS["13"]
     assert probed["engine"]["requested_ref"] == LLAMA_CPP_REF
+    assert probed["builds"] == {}
+
+
+def test_probe_describes_every_build_this_driver_supports(tmp_path, monkeypatch):
+    root = tmp_path.resolve() / "engines"
+    for track in CUDA_TRACKS:
+        server = Path(pinned_build(root, track))
+        server.parent.mkdir(parents=True)
+        server.write_text("#!/bin/sh\nexit 0\n")
+        server.chmod(0o755)
+        (server.parent / "lllm2-engine.json").write_text(
+            json.dumps({"cuda_track": CUDA_TRACKS[track]})
+        )
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    smi = tools / "nvidia-smi"
+    smi.write_text("#!/bin/sh\necho 'Tesla T4, 15360'\n")
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
+
+    # A driver that runs both builds runs the CUDA 13 one and describes the
+    # other, which a serve container on an older driver runs instead.
+    monkeypatch.setattr(engine_install, "supported_tracks", lambda: ["13", "12"])
+    probed = modal_app.probe_container(root=str(root))
+    assert probed["engine"]["path"] == pinned_build(root, "13")
+    assert probed["engine"]["cuda_track"] == CUDA_TRACKS["13"]
+    other = pinned_build(root, "12")
+    assert list(probed["builds"]) == [other]
+    assert probed["builds"][other]["path"] == other
+    assert probed["builds"][other]["cuda_track"] == CUDA_TRACKS["12"]
+    # A driver that runs only the CUDA 12 build has no other build to offer.
+    monkeypatch.setattr(engine_install, "supported_tracks", lambda: ["12"])
+    probed = modal_app.probe_container(root=str(root))
+    assert probed["engine"]["path"] == other
+    assert probed["builds"] == {}
 
 
 def test_a_deleted_app_is_redeployed(fake, provider, deploys):
@@ -385,6 +420,15 @@ def test_probe_runs_on_the_requested_gpu(fake, provider):
     }
     assert provider.probe("L4") == GpuProbe("NVIDIA L4", 23034, engine)
     assert fake.remote_calls == [("probe", "L4", ())]
+    # The other builds the probe container's driver supports come along.
+    builds = {"/opt/lllm2/engines/y/llama-server": {"path": "y"}}
+    fake.behaviour["probe"] = lambda: {
+        "name": "NVIDIA L4",
+        "total_mib": 23034,
+        "engine": engine,
+        "builds": builds,
+    }
+    assert provider.probe("L4") == GpuProbe("NVIDIA L4", 23034, engine, builds)
 
 
 def test_download_reports_progress_then_reuses_the_stored_model(fake, provider):
@@ -996,6 +1040,13 @@ def test_serve_call_lifecycle(fake, provider):
     status = provider.poll(call_id)
     assert status.running and status.logs == ("loading model",)
     assert status.upstream == Upstream("abc.modal.host", 443, True)
+    # A tunnel record from an app that predates the field names no binary.
+    assert status.engine is None
+    fake.state.put(
+        modal_app.tunnel_key(call_id),
+        {"host": "abc.modal.host", "port": 443, "tls": True, "engine": "/b/server"},
+    )
+    assert provider.poll(call_id).engine == "/b/server"
 
     provider.cancel(call_id)
     assert call.cancelled
@@ -1273,6 +1324,71 @@ def test_remote_engine_serves_and_stops_a_modal_call(fake, provider, tmp_path):
         assert fake.calls[call_id].cancelled
         assert provider.calls() == []
         assert not engine.alive()
+    finally:
+        engine.shutdown()
+        for server in servers:
+            server.kill()
+            server.wait()
+
+
+def test_remote_engine_records_the_build_a_modal_container_ran(
+    fake, provider, tmp_path
+):
+    """The probe's other build replaces the probed one once a container runs it."""
+    script = tmp_path / "fake_llama_server.py"
+    script.write_text(FAKE_LLAMA_SERVER)
+    servers = []
+
+    def serve(argv, key, env, files):
+        argv = list(argv)
+        argv[argv.index("--port") + 1] = str(port := free_port())
+        servers.append(
+            subprocess.Popen(
+                [sys.executable, str(script), *argv[1:]],
+                env={**os.environ, "LLAMA_API_KEY": key},
+            )
+        )
+        # This container's driver runs only the CUDA 12 build.
+        fake.state.put(
+            modal_app.tunnel_key(f"fc-{len(fake.calls) + 1}"),
+            {"host": "127.0.0.1", "port": port, "tls": False, "engine": ENGINE["path"]},
+        )
+        return {"pending": 10**6}
+
+    fake.behaviour["probe"] = lambda: {
+        "name": "Tesla T4",
+        "total_mib": 15360,
+        "engine": CUDA13_ENGINE,
+        "builds": {ENGINE["path"]: ENGINE},
+    }
+    fake.behaviour["serve"] = serve
+    fake.store.files["example/model.gguf"] = 3000
+    fake.state.put(
+        modal_app.meta_key("example/model.gguf"), {"size": 3000, "meta": FAKE_META}
+    )
+    engine = RemoteEngine(
+        provider,
+        "T4",
+        port=free_port(),
+        poll_interval=0.05,
+        records=tmp_path / "calls.json",
+        probes=tmp_path / "probes.json",
+        sources=lambda path: ModelSource("example/model.gguf"),
+    )
+    s = Settings(model="/models/example/model.gguf")
+    try:
+        engine.start(s, threading.Event(), 30)
+        assert fake.calls[engine.call_id].args[0][0] == CUDA13_ENGINE["path"]
+        assert engine.probe(s) == ENGINE
+        assert engine.argv[0] == ENGINE["path"]
+        assert any(
+            line.startswith(f"The remote container runs {ENGINE['path']} instead")
+            for line in engine.logs()
+        )
+        (saved,) = json.loads((tmp_path / "probes.json").read_text()).values()
+        assert saved["engine"] == ENGINE
+        assert saved["builds"] == {CUDA13_ENGINE["path"]: CUDA13_ENGINE}
+        engine.stop()
     finally:
         engine.shutdown()
         for server in servers:
@@ -1894,8 +2010,151 @@ def test_run_server_publishes_the_tunnel_and_logs(tmp_path):
         443,
         True,
     )
+    # A path that is not a pinned build runs as launched.
+    assert record["engine"] == sys.executable
     assert "tunnel:fc-1" not in state
     assert logs.partitions["fc-1"] == ["key secret yes", "template hello"]
+
+
+def pinned_build(root, track):
+    return modal_app.build_binary(track, str(root))
+
+
+def driver(monkeypatch, version, tracks):
+    """Give this container a driver that reports a CUDA version and tracks.
+
+    Returns:
+        The versions passed to ``supported_tracks``, one per driver check.
+    """
+    checks = []
+
+    def supported(reported=None):
+        checks.append(reported)
+        return tracks
+
+    monkeypatch.setattr(engine_install, "driver_cuda_version", lambda: version)
+    monkeypatch.setattr(engine_install, "supported_tracks", supported)
+    return checks
+
+
+def test_serve_binary_keeps_a_launched_build_this_driver_supports(monkeypatch):
+    root = "/opt/engines"
+    checks = driver(monkeypatch, (13, 3), ["13", "12"])
+    # The CUDA 12 build stays even where the driver would prefer CUDA 13, so
+    # the container runs what the client launched and recorded.
+    for track in CUDA_TRACKS:
+        binary = pinned_build(root, track)
+        assert modal_app.serve_binary(binary, root) == (binary, None)
+    # The track check reuses the CUDA version that the note needs.
+    assert checks == [(13, 3), (13, 3)]
+
+
+def test_serve_binary_swaps_cuda13_for_cuda12_on_an_older_driver(monkeypatch):
+    root = "/opt/engines"
+    checks = driver(monkeypatch, (13, 0), ["12"])
+    # The probe ran on a host whose driver took the CUDA 13 build; this one
+    # runs only the CUDA 12 build.
+    launched = pinned_build(root, "13")
+    binary, note = modal_app.serve_binary(launched, root)
+    assert binary == pinned_build(root, "12")
+    assert note == (
+        f"lllm2: running {binary} instead of {launched}; this container's driver "
+        "reports CUDA 13.0, and it or the GPU cannot run the launched build"
+    )
+    assert modal_app.serve_binary(binary, root) == (binary, None)
+    # Only a pinned build is checked, so other paths skip the driver check.
+    checks.clear()
+    for other in ("/usr/bin/llama-server", pinned_build("/elsewhere", "13")):
+        assert modal_app.serve_binary(other, root) == (other, None)
+    assert checks == []
+
+
+def test_serve_binary_never_swaps_cuda12_for_cuda13(monkeypatch):
+    """Every driver that passes the real check runs the CUDA 12 build."""
+    root = "/opt/engines"
+    launched = pinned_build(root, "12")
+    for version in ("12.9", "13.0", "13.3", "14.0"):
+        for capability in ("6.1", "7.5", "8.6\n7.0", "12.0"):
+
+            def run(command, version=version, capability=capability, **kwargs):
+                output = f"CUDA Version: {version}" if len(command) == 1 else capability
+                return subprocess.CompletedProcess(command, 0, stdout=output)
+
+            monkeypatch.setattr(engine_install.subprocess, "run", run)
+            assert "12" in engine_install.supported_tracks()
+            assert modal_app.serve_binary(launched, root) == (launched, None)
+
+
+def test_serve_binary_keeps_the_launched_build_when_the_driver_check_fails(
+    monkeypatch,
+):
+    def missing():
+        raise RuntimeError("nvidia-smi is missing")
+
+    def unreadable(version=None):
+        raise RuntimeError("The NVIDIA driver could not report GPU compute capability.")
+
+    launched = pinned_build("/opt/engines", "13")
+    monkeypatch.setattr(engine_install, "driver_cuda_version", missing)
+    binary, note = modal_app.serve_binary(launched, "/opt/engines")
+    assert binary == launched
+    assert (
+        note
+        == f"lllm2: keeping {launched}; the driver check failed: nvidia-smi is missing"
+    )
+    monkeypatch.setattr(engine_install, "driver_cuda_version", lambda: (13, 3))
+    monkeypatch.setattr(engine_install, "supported_tracks", unreadable)
+    binary, note = modal_app.serve_binary(launched, "/opt/engines")
+    assert binary == launched
+    assert note and "compute capability" in note
+
+
+def test_run_server_runs_and_names_the_build_for_its_own_driver(tmp_path, monkeypatch):
+    root = tmp_path.resolve() / "engines"
+    for track in CUDA_TRACKS:
+        server = Path(pinned_build(root, track))
+        server.parent.mkdir(parents=True)
+        # Print the library path's first entry, which engine_environment adds.
+        server.write_text(
+            f'#!/bin/sh\necho "cuda {track}" "$@" "${{LD_LIBRARY_PATH%%:*}}"\n'
+            "sleep 0.3\n"
+        )
+        server.chmod(0o755)
+    driver(monkeypatch, (13, 0), ["12"])
+    published = []
+
+    class State(FakeDict):
+        def put(self, key, value, **kwargs):
+            published.append((key, value))
+            return super().put(key, value)
+
+    @contextmanager
+    def forward(port):
+        yield SimpleNamespace(tls_socket=("abc.modal.host", 443))
+
+    logs = FakeQueue()
+    result = modal_app.run_server(
+        [pinned_build(root, "13"), "--model", "m.gguf"],
+        "k",
+        {},
+        {},
+        call_id="fc-1",
+        state=State(),
+        logs=logs,
+        forward=forward,
+        file_root=str(tmp_path / "files"),
+        engine_root=str(root),
+        heartbeat=0.05,
+    )
+    assert result == {"exit_code": 0, "error": None}
+    chosen = pinned_build(root, "12")
+    note, output = logs.partitions["fc-1"]
+    assert chosen in note and "CUDA 13.0" in note
+    # The libraries come from the build that runs, not the launched one.
+    assert output == f"cuda 12 --model m.gguf {Path(chosen).parent}"
+    # The tunnel record names that build, so the client can record it.
+    tunnels = [value for key, value in published if key == "tunnel:fc-1"]
+    assert tunnels and all(value["engine"] == chosen for value in tunnels)
 
 
 def test_engine_layer_installs_each_pinned_track_without_a_gpu(monkeypatch, tmp_path):
