@@ -43,17 +43,32 @@ jobs:
           else
             echo "::warning::Tag $TAG is not X.Y.Z or a pre-release such as X.Y.ZrcN, so no chart is published for it."
           fi
-      - name: Lint and render charts
-        # Each ci/*-values.yaml renders the chart with more features on.
+      - name: Install kubeconform
+        env:
+          VERSION: v0.8.0
+          SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
         run: |
           set -eu
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${SHA256}  kubeconform-linux-amd64.tar.gz" | sha256sum -c
+          mkdir kubeconform
+          tar xzf kubeconform-linux-amd64.tar.gz -C kubeconform --no-same-owner
+          echo "$RUNNER_TEMP/kubeconform" >> "$GITHUB_PATH"
+      - name: Lint and render charts
+        # Each ci/*-values.yaml renders the chart with more features on.
+        # kubeconform checks every object against the Kubernetes API schema,
+        # so a field the API server would refuse fails here.
+        run: |
+          set -euo pipefail
+          check() { kubeconform -strict -summary -kubernetes-version 1.33.0; }
           for chart in Charts/*/; do
             helm lint "${chart%/}"
-            helm template test "${chart%/}" > /dev/null
+            helm template test "${chart%/}" | check
             for values in "${chart}"ci/*-values.yaml; do
               [ -e "$values" ] || continue
               helm lint "${chart%/}" -f "$values"
-              helm template test "${chart%/}" -f "$values" > /dev/null
+              helm template test "${chart%/}" -f "$values" | check
             done
           done
       - name: Package charts

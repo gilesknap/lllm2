@@ -33,6 +33,21 @@ jobs:
       - uses: Azure/setup-helm@v5
         with:
           version: 3.17.1
+      # It also runs the sign-in sidecar's rendered arguments through
+      # oauth2-proxy --config-test. Keep VERSION equal to the chart's
+      # ingress.oidc.image.tag: the test checks that they match.
+      - name: Install oauth2-proxy
+        env:
+          VERSION: v7.15.5
+          SHA256: f63f94bf72c5f46ab002a0a275aa8b3cf19b4d828aed08a13978cb9a62c3a1fd
+        run: |
+          set -eu
+          name="oauth2-proxy-${VERSION}.linux-amd64"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/oauth2-proxy/oauth2-proxy/releases/download/${VERSION}/${name}.tar.gz"
+          echo "${SHA256}  ${name}.tar.gz" | sha256sum -c
+          tar xzf "${name}.tar.gz" --no-same-owner
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - run: uv sync --locked
       - run: uv run --locked tox -e tests
 
