@@ -15,9 +15,14 @@ spec:
       {{- include "lllm2.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
-    # The model API stays open to the cluster, as without the policy.
+    # The model API, open to the cluster as without the policy unless
+    # engineFrom lists its clients.
     - ports:
         - port: 1920
+      {{- with .Values.networkPolicy.engineFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- if $port }}
     # Only these peers reach the panel, or its sign-in sidecar.
     - from:

@@ -99,10 +99,12 @@ ingress:
         memory: 128Mi
 
 networkPolicy:
-  # @schema description: Add a NetworkPolicy that lets only networkPolicy.from reach the panel through the Service, on port 8082 or, with ingress.auth oidc, on the sign-in port 4180. The model API on port 1920 stays open to the cluster. It needs a network plugin that enforces NetworkPolicy.
+  # @schema description: Add a NetworkPolicy that lets only networkPolicy.from reach the panel through the Service, on port 8082 or, with ingress.auth oidc, on the sign-in port 4180. The model API on port 1920 stays open to the cluster unless engineFrom lists its clients. It needs a network plugin that enforces NetworkPolicy.
   enabled: false
   # @schema item: object; itemProperties: {podSelector: {type: object, additionalProperties: true}, namespaceSelector: {type: object, additionalProperties: true}, ipBlock: {type: object, additionalProperties: true}}; description: Peers that may reach the panel, as in a NetworkPolicy rule's from list. Usually the ingress controller's pods, or an ipBlock for a controller on the host network.
   from: []
+  # @schema item: object; itemProperties: {podSelector: {type: object, additionalProperties: true}, namespaceSelector: {type: object, additionalProperties: true}, ipBlock: {type: object, additionalProperties: true}}; description: Peers that may reach the model API on port 1920, as in a NetworkPolicy rule's from list. Empty leaves it open to the whole cluster, as without the policy.
+  engineFrom: []
 
 persistence:
   models:

@@ -541,6 +541,19 @@ def test_the_network_policy_admits_only_the_listed_peers_to_the_panel():
 
 
 @needs_helm
+def test_the_network_policy_can_limit_the_model_api_too():
+    client = {"podSelector": {"matchLabels": {"app": "coding-agent"}}}
+    objects = render(
+        "--set",
+        "networkPolicy.enabled=true",
+        "--set-json",
+        f"networkPolicy.engineFrom=[{json.dumps(client)}]",
+    )
+    policy = objects["NetworkPolicy", "lllm2"]["spec"]
+    assert policy["ingress"] == [{"ports": [{"port": 1920}], "from": [client]}]
+
+
+@needs_helm
 def test_a_network_policy_without_a_panel_port_keeps_only_the_model_api():
     objects = render("--set", "networkPolicy.enabled=true")
     policy = objects["NetworkPolicy", "lllm2"]["spec"]
