@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 MODELS_DIR = Path(
@@ -45,6 +46,44 @@ def engine_host(environ=os.environ):
 
 
 ENGINE_HOST = engine_host()
+
+_HOST_NAME = re.compile(r"[a-z0-9]([-a-z0-9.]*[a-z0-9])?")
+
+
+def panel_allowed_hosts(environ=os.environ):
+    """Read extra panel host names from ``LLLM2_PANEL_ALLOWED_HOSTS``.
+
+    The panel refuses a ``Host`` header that is not its own address, to stop
+    DNS rebinding. A proxy or Kubernetes Ingress passes on the browser's
+    ``Host``, so its public names must be listed here. A listed name is
+    accepted with any port, or none.
+
+    Args:
+        environ: The environment mapping to read.
+
+    Returns:
+        A frozenset of lower-case host names. It is empty when the variable is
+        unset or blank.
+
+    Raises:
+        ValueError: An entry has a scheme, port, wildcard or other character
+            that a host name cannot have.
+    """
+    names = set()
+    for entry in environ.get("LLLM2_PANEL_ALLOWED_HOSTS", "").split(","):
+        name = entry.strip().lower()
+        if not name:
+            continue
+        if not _HOST_NAME.fullmatch(name):
+            raise ValueError(
+                f"LLLM2_PANEL_ALLOWED_HOSTS: {entry.strip()!r} is not a host name; "
+                "give names only, with no scheme, port or wildcard."
+            )
+        names.add(name)
+    return frozenset(names)
+
+
+PANEL_ALLOWED_HOSTS = panel_allowed_hosts()
 
 
 def update_check_enabled(environ=os.environ):

@@ -54,6 +54,7 @@ class ServiceTests(unittest.TestCase):
                     "PATH": "/bin:/a b",
                     "LLLM2_MODELS_DIR": '/data/"models"/%literal/$HOME',
                     "LLLM2_ENGINE_HOST": "0.0.0.0",
+                    "LLLM2_PANEL_ALLOWED_HOSTS": "lllm2.example.com",
                     "SECRET_TOKEN": "private",
                 },
                 clear=True,
@@ -65,6 +66,7 @@ class ServiceTests(unittest.TestCase):
             'Environment="LLLM2_MODELS_DIR=/data/\\"models\\"/%%literal/$HOME"', unit
         )
         self.assertIn('Environment="LLLM2_ENGINE_HOST=0.0.0.0"', unit)
+        self.assertIn('Environment="LLLM2_PANEL_ALLOWED_HOSTS=lllm2.example.com"', unit)
         self.assertNotIn("SECRET_TOKEN", unit)
         with self.assertRaises(ValueError):
             service.render_unit("localhost\nExecStart=bad", 8082)
