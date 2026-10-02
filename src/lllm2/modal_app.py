@@ -22,10 +22,7 @@ pins, from the same release lookup and with the same checksum and archive
 checks, so the engine sha256 matches a local install. Released and development
 versions follow the same rule: the newest published release that carries the
 pinned tarball. A container then selects a tarball with ``cuda_track``, the
-driver rule the local installer uses. Modal does not run every container of a
-GPU type on the same NVIDIA driver, so a serve container selects again for its
-own driver rather than run the build that the probe container chose (see
-``serve_binary``).
+driver rule the local installer uses.
 
 Image layers: the engine layer comes before the lllm2 source layer, and Modal
 keys it only on ``install_engines``'s source text and its arguments, the release
@@ -264,42 +261,6 @@ def engine_binary(root: str = ENGINE_ROOT) -> str:
     """
     track = engine_install.cuda_track()
     return f"{root}/llama-{LLAMA_CPP_REF}-cuda{CUDA_TRACKS[track]}/llama-server"
-
-
-def serve_binary(binary: str, root: str = ENGINE_ROOT) -> tuple[str, str | None]:
-    """Return the pinned engine build that suits this container's driver.
-
-    The probe and each serve call run in containers of their own, and Modal
-    does not run every host of a GPU type on the same NVIDIA driver. The build
-    a probe chose can need a newer driver than a later serve container has: on
-    a T4 the CUDA 13.3.1 build's kernels are PTX that the driver compiles, and
-    a driver older than CUDA 13.3 stops llama-server at its first kernel. So a
-    serve container chooses the track again with ``engine_binary``.
-
-    Args:
-        binary: The llama-server path from the launch command, usually the
-            build that the probe chose.
-        root: The engine home inside the image.
-
-    Returns:
-        The path to run and a note for the engine log, or None when the path
-        is unchanged. A path that is not a pinned build, such as a test's,
-        stays as it is. So does a pinned build when the driver check fails,
-        as the note then says.
-    """
-    pinned = {
-        f"{root}/llama-{LLAMA_CPP_REF}-cuda{version}/llama-server"
-        for version in CUDA_TRACKS.values()
-    }
-    if binary not in pinned:
-        return binary, None
-    try:
-        chosen = engine_binary(root)
-    except RuntimeError as error:
-        return binary, f"lllm2: keeping {binary}; the driver check failed: {error}"
-    if chosen == binary:
-        return binary, None
-    return chosen, f"lllm2: running {chosen}, the build for this container's driver"
 
 
 def probe_container(binary: str | None = None) -> dict:
@@ -782,7 +743,6 @@ def run_server(
     forward: Callable[[int], Any],
     port: int = SERVER_PORT,
     file_root: str = FILE_ROOT,
-    engine_root: str = ENGINE_ROOT,
     heartbeat: float = HEARTBEAT_SECONDS,
     grace: float = OWNER_GRACE_SECONDS,
 ) -> dict:
@@ -793,9 +753,7 @@ def run_server(
     crashes, loses its network or its machine shuts down.
 
     Args:
-        argv: The llama-server command line, binary first. A pinned engine
-            build is swapped for the one this container's driver suits (see
-            ``serve_binary``).
+        argv: The llama-server command line, binary first.
         api_key: The key llama-server requires, passed as ``LLAMA_API_KEY``.
         env: Extra environment variables for llama-server.
         files: Text files to write under ``file_root``, keyed by file name.
@@ -806,7 +764,6 @@ def run_server(
             whose tunnel has ``tls_socket``.
         port: llama-server's port.
         file_root: The directory for ``files``.
-        engine_root: The engine home inside the image.
         heartbeat: Seconds between tunnel record refreshes and owner checks.
         grace: Seconds without an owner heartbeat before llama-server stops.
 
@@ -820,14 +777,6 @@ def run_server(
     directory.mkdir(parents=True, exist_ok=True)
     for file_name, text in files.items():
         (directory / PurePosixPath(file_name).name).write_text(text)
-    binary, note = serve_binary(argv[0], engine_root)
-    if note:
-        # The client logged its own command line, so say what really runs.
-        # Like LogPump, a queue failure drops the line, not the launch.
-        print(note, flush=True)
-        with contextlib.suppress(Exception):
-            logs.put_many([note], False, partition=call_id)
-        argv = [binary, *argv[1:]]
     process = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,

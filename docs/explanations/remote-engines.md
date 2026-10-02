@@ -52,11 +52,7 @@ so it never starts a container.
 
 The remote container installs the same lllm2 CUDA engine release as
 `lllm2 engines install cuda`, pinned by version, so a remote and a local
-engine for the same lllm2 version come from the same build. It installs both
-CUDA tracks and picks one by the installer's driver rule. Modal does not run
-every container of a GPU type on the same NVIDIA driver, so each serve
-container picks again for its own driver rather than run the track the probe
-picked. When the two differ, the engine log says which build ran.
+engine for the same lllm2 version come from the same build.
 
 ## Proxy
 
