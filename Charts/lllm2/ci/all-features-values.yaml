@@ -30,6 +30,32 @@ env:
     value: "0"
 panel:
   host: 0.0.0.0
+ingress:
+  enabled: true
+  className: nginx
+  auth: external
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: lllm2-basic-auth
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "200"
+  hosts:
+    - host: lllm2.example.com
+    - host: gpu1.lllm2.example.com
+  tls:
+    - secretName: lllm2-tls
+      hosts: [lllm2.example.com]
+networkPolicy:
+  enabled: true
+  from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    - ipBlock:
+        cidr: 10.0.0.0/24
 persistence:
   models:
     existingClaim: shared-models

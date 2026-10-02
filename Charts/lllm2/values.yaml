@@ -38,8 +38,71 @@ podSecurityContext:
 env: []
 
 panel:
-  # @schema enum: [127.0.0.1, 0.0.0.0]; description: Address the panel listens on. It has no login and runs any engine path it is given, so 127.0.0.1 keeps it to kubectl port-forward. 0.0.0.0 adds it to the Service on port 8082 for an authenticating proxy.
+  # @schema enum: [127.0.0.1, 0.0.0.0]; description: Address the panel listens on. It has no login and runs any engine path it is given, so 127.0.0.1 keeps it to kubectl port-forward and, with ingress.auth oidc, to the sign-in sidecar. 0.0.0.0 adds it to the Service on port 8082 for an Ingress or proxy that authenticates.
   host: 127.0.0.1
+
+ingress:
+  # @schema description: Serve the panel through an Ingress at path /. It needs at least one host and an ingress.auth choice.
+  enabled: false
+  # @schema description: IngressClass of the controller, such as nginx or traefik. Empty uses the cluster's default class.
+  className: ""
+  # @schema additionalProperties: {type: string}; description: Annotations for the controller, such as a cert-manager issuer, timeouts and, with auth external, its authentication. Quote numbers, as values must be strings.
+  annotations: {}
+  # @schema enum: ["", oidc, external, none]; description: Who signs panel users in, as the panel has no login. oidc: an oauth2-proxy sidecar signs users in with an OpenID Connect provider such as Keycloak, set in ingress.oidc, and the panel stays on 127.0.0.1. external: the controller, or a proxy in front of it, authenticates every request, and the panel needs panel.host 0.0.0.0. none: anyone who reaches a host controls the workbench and can run programs in the pod, and the panel needs panel.host 0.0.0.0. Empty refuses to render the Ingress.
+  auth: ""
+  # @schema item: object; itemProperties: {host: {type: string, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"}}; description: DNS names that serve the panel, one per entry. The chart also tells the panel to accept them. Wildcards and IP addresses are not supported.
+  hosts: []
+  # @schema item: object; itemProperties: {secretName: {type: string}, hosts: {type: array, items: {type: string}}}; description: TLS for the hosts, as in the Ingress spec. Leave it empty if a load balancer in front of the controller terminates TLS.
+  tls: []
+  oidc:
+    # @schema enum: [oidc, keycloak-oidc]; description: The oauth2-proxy provider. oidc works with any OpenID Connect provider. keycloak-oidc also reads Keycloak roles, which allowedRoles needs.
+    provider: oidc
+    # @schema pattern: ^(https?://[^/\s]+(/[^\s]*[^/\s])?)?$; description: The issuer URL exactly as the provider's discovery document gives it, with no trailing slash. For Keycloak 17 or later, https://<keycloak host>/realms/<realm>.
+    issuerURL: ""
+    # @schema description: Client ID of the confidential client registered for lllm2 at the issuer.
+    clientID: ""
+    # @schema description: Name of a Secret in the release namespace that holds the client secret and the cookie secret. The chart never creates it.
+    existingSecret: ""
+    # @schema description: Key in existingSecret that holds the client secret.
+    clientSecretKey: client-secret
+    # @schema description: Key in existingSecret that holds the cookie secret, 32 random bytes in URL-safe base64.
+    cookieSecretKey: cookie-secret
+    # @schema item: string; description: Only members of one of these groups can sign in, named as in the token's groups claim. Keycloak's Group Membership mapper gives full paths such as /lllm2-users by default.
+    allowedGroups: []
+    # @schema item: string; description: Only users with one of these Keycloak roles can sign in. A realm role by name, a client role as <client ID>:<role>. Needs provider keycloak-oidc.
+    allowedRoles: []
+    # @schema item: string; description: Only users whose verified email is in one of these domains can sign in. ["*"] admits every user of the issuer. Empty admits any domain once allowedGroups or allowedRoles restricts sign-in.
+    emailDomains: []
+    # @schema description: ConfigMap whose ca.crt key holds the CA that signed the issuer's TLS certificate, for a private CA. Empty trusts the image's public CAs.
+    caConfigMap: ""
+    # @schema item: object; itemProperties: {name: {type: string}, value: {type: string}, valueFrom: {type: object, additionalProperties: true}}; description: Environment variables for the sidecar, such as HTTPS_PROXY and NO_PROXY when the pod reaches the issuer through a proxy. The top-level env reaches only the lllm2 container.
+    env: []
+    # @schema item: string; description: More oauth2-proxy arguments, placed after the chart's, so a repeated flag overrides the chart's value. Never put secrets here, as arguments show in the pod spec.
+    extraArgs: []
+    image:
+      # @schema description: oauth2-proxy image repository. Use a mirror for an air-gapped cluster.
+      repository: quay.io/oauth2-proxy/oauth2-proxy
+      # @schema description: oauth2-proxy image tag. The chart's arguments are checked against this release.
+      tag: v7.15.5
+      # @schema enum: [Always, IfNotPresent, Never]; description: When the kubelet pulls the oauth2-proxy image.
+      pullPolicy: IfNotPresent
+    resources:
+      # @schema additionalProperties: true; description: CPU and memory requests for the oauth2-proxy sidecar.
+      requests:
+        # @schema type: [string, number]
+        cpu: 10m
+        # @schema type: [string, number]
+        memory: 32Mi
+      # @schema additionalProperties: true; description: CPU and memory limits for the oauth2-proxy sidecar.
+      limits:
+        # @schema type: [string, number]
+        memory: 128Mi
+
+networkPolicy:
+  # @schema description: Add a NetworkPolicy that lets only networkPolicy.from reach the panel through the Service, on port 8082 or, with ingress.auth oidc, on the sign-in port 4180. The model API on port 1920 stays open to the cluster. It needs a network plugin that enforces NetworkPolicy.
+  enabled: false
+  # @schema item: object; itemProperties: {podSelector: {type: object, additionalProperties: true}, namespaceSelector: {type: object, additionalProperties: true}, ipBlock: {type: object, additionalProperties: true}}; description: Peers that may reach the panel, as in a NetworkPolicy rule's from list. Usually the ingress controller's pods, or an ipBlock for a controller on the host network.
+  from: []
 
 persistence:
   models:

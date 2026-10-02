@@ -1,0 +1,36 @@
+{{- if .Values.ingress.enabled }}
+{{- include "lllm2.checkIngress" . }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "lllm2.fullname" . }}
+  labels:
+    {{- include "lllm2.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  # The panel's pages and API use absolute paths, so it serves only at /.
+  # With auth oidc, the sign-in sidecar answers first, on the auth port.
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "lllm2.fullname" $ }}
+                port:
+                  name: {{ ternary "auth" "panel" (eq $.Values.ingress.auth "oidc") }}
+    {{- end }}
+{{- end }}

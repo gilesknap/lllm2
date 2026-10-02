@@ -1,26 +1,90 @@
 {{- $name := include "lllm2.fullname" . }}
-{{- if include "lllm2.panelExposed" . }}
+{{- $ns := .Release.Namespace }}
+{{- $ingress := .Values.ingress }}
+{{- $oidc := include "lllm2.oidc" . }}
+{{- $exposed := include "lllm2.panelExposed" . }}
+{{- if $ingress.enabled }}
+{{- $tlsHosts := list }}
+{{- range $ingress.tls }}{{ $tlsHosts = concat $tlsHosts (.hosts | default list) }}{{ end }}
+The panel is served through the Ingress at:
+{{ range $ingress.hosts }}
+  {{ ternary "https" "http" (or (has .host $tlsHosts) (not (empty $oidc))) }}://{{ .host }}
+{{- end }}
+{{- if $oidc }}
+
+An oauth2-proxy sidecar signs users in with {{ $ingress.oidc.issuerURL }}
+before any request reaches the panel, which listens only inside the pod.
+Register these redirect URIs with the client {{ $ingress.oidc.clientID }}:
+{{ range $ingress.hosts }}
+  https://{{ .host }}/oauth2/callback
+{{- end }}
+
+If signing in fails, read the sidecar's log:
+
+  kubectl logs -n {{ $ns }} deploy/{{ $name }} -c oauth2-proxy
+{{- else if eq $ingress.auth "external" }}
+
+lllm2 has no login of its own, so the Ingress must sign users in. The chart
+cannot check that: open the address in a private window and confirm that it
+asks you to sign in before you use the panel.
+{{- else }}
+
+WARNING: ingress.auth is none. Anyone who reaches the addresses above
+controls the workbench and can run any program in the pod.
+{{- end }}
+{{- range $ingress.hosts }}
+{{- if not (has .host $tlsHosts) }}
+
+No TLS on {{ .host }} in this Ingress: unless something in front of the
+controller terminates TLS, {{ if $oidc }}sign-in fails, because the session cookie
+is sent only over https{{ else }}passwords and session cookies cross the
+network in clear{{ end }}.
+{{- end }}
+{{- end }}
+{{- else if $exposed }}
 The panel listens on the pod address and on the {{ $name }} Service, port
 8082. It has no login or TLS, and anyone who reaches it can run programs in
-the pod, so put an authenticating proxy in front of it. You can still reach
-it from your workstation with:
+the pod, so put an authenticating proxy in front of it.
+{{- end }}
+{{- if and $exposed .Values.networkPolicy.enabled }}
+
+A NetworkPolicy lets only networkPolicy.from reach the panel on the
+{{ $name }} Service, port 8082.
+{{- else if $exposed }}
+
+Any pod in the cluster can reach the panel on the {{ $name }} Service, port
+8082, without signing in. To allow only the ingress controller or your
+proxy, set networkPolicy.enabled and list it in networkPolicy.from.
+{{- end }}
+{{- if $ingress.enabled }}
+
+You can still reach the panel from your workstation, without signing in,
+if you have rights in this namespace:
+{{- else if $exposed }}
+
+You can still reach it from your workstation with:
 {{- else }}
 The panel has no login or TLS, so it listens only inside the pod. Reach it
 from your workstation with:
 {{- end }}
 
-  kubectl port-forward -n {{ .Release.Namespace }} deploy/{{ $name }} 8082:8082
+  kubectl port-forward -n {{ $ns }} deploy/{{ $name }} 8082:8082
 
 then open http://127.0.0.1:8082. Keep local port 8082: the panel accepts
 only its own port in the browser's address.
 
 Clients in the cluster reach the model API, which has no API key, at:
 
-  http://{{ $name }}.{{ .Release.Namespace }}.svc.cluster.local:1920/v1
+  http://{{ $name }}.{{ $ns }}.svc.cluster.local:1920/v1
+{{- if and (not $ingress.enabled) (or $ingress.auth $ingress.hosts $ingress.oidc.issuerURL $ingress.oidc.clientID $ingress.oidc.existingSecret) }}
+
+ingress.enabled is false, so the chart made no Ingress or sign-in sidecar,
+and the other ingress settings have no effect.
+{{- end }}
 {{- if has (include "lllm2.tag" .) (list "main" "latest") }}
 
 The image tag {{ include "lllm2.tag" . }} moves, so the pod pulls it each time it
 starts. Restart it to run a newer build:
 
-  kubectl rollout restart -n {{ .Release.Namespace }} deploy/{{ $name }}
+  kubectl rollout restart -n {{ $ns }} deploy/{{ $name }}
 {{- end }}

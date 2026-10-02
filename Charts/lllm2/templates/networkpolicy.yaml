@@ -1,0 +1,28 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $port := include "lllm2.panelPort" . }}
+{{- if and $port (not .Values.networkPolicy.from) }}
+{{- fail (printf "networkPolicy.from is empty, so nothing could reach the panel on port %s, the Ingress included. List the ingress controller's pods, or an ipBlock for a controller on the host network. See https://gilesknap.github.io/lllm2/how-to/deploy-on-kubernetes.html#limit-who-reaches-the-panel-in-the-cluster" $port) }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lllm2.fullname" . }}
+  labels:
+    {{- include "lllm2.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lllm2.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    # The model API stays open to the cluster, as without the policy.
+    - ports:
+        - port: 1920
+    {{- if $port }}
+    # Only these peers reach the panel, or its sign-in sidecar.
+    - from:
+        {{- toYaml .Values.networkPolicy.from | nindent 8 }}
+      ports:
+        - port: {{ $port }}
+    {{- end }}
+{{- end }}
