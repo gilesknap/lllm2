@@ -159,6 +159,8 @@ class Bench:
         self.cancel = threading.Event()
         self.active = False
         self.progress = {"status": "idle"}
+        # The engine builds that the current result's starts ran.
+        self.builds = []
 
     def snapshot(self):
         with self.lock:
@@ -167,6 +169,30 @@ class Bench:
     def update(self, **values):
         with self.lock:
             self.progress.update(values)
+
+    def record_engine(self, r, s):
+        """Record the engine build that the start which just returned ran.
+
+        A remote container can run another build than its launch command
+        names, and the engine's record then names the build that ran (see
+        ``RemoteEngine``). So ``r["engine"]`` and the kernel evidence in
+        ``r["cache_settings"]`` follow the latest start's build. When a
+        result's starts ran more than one build, ``engine_builds`` lists each
+        of them in the order they first ran.
+
+        Args:
+            r: The result.
+            s: The settings the engine started with.
+        """
+        engine = engine_record(self.engine, s)
+        if engine not in self.builds:
+            self.builds.append(engine)
+        if len(self.builds) > 1:
+            r["engine_builds"] = list(self.builds)
+        r["engine"] = engine
+        r["cache_settings"] = cache_settings(
+            s, self.engine.probe(s).get("cache_kernel")
+        )
 
     def use(self, engine):
         """Make an engine current, stopping the previous one.
@@ -340,6 +366,7 @@ class Bench:
                 if self.cancel.is_set():
                     raise Cancelled()
                 self.engine.prepare(s)
+                self.builds = []
                 r = {
                     "id": str(uuid.uuid4()),
                     "group": group,
@@ -404,6 +431,7 @@ class Bench:
                                 )
                                 self.engine.start(s, self.cancel, opts["timeout"])
                                 r["argv"] = self.engine.argv
+                                self.record_engine(r, s)
                                 sample = self.measure(
                                     s,
                                     workload,
@@ -710,6 +738,7 @@ class Bench:
             candidate = replace(s, context=attempt * s.slots)
             try:
                 self.engine.start(candidate, self.cancel, context_timeout)
+                self.record_engine(r, candidate)
                 started = max(started, attempt)
                 if kind == "workload":
                     entry["sample"] = self.measure(

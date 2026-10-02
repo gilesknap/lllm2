@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from fake_remote import ENGINE, FakeProvider, free_port
+from fake_remote import CUDA13_ENGINE, ENGINE, FakeProvider, free_port
 from lllm2 import config
 from lllm2.engine import Cancelled, ResourceConflict
 from lllm2.remote import (
@@ -260,6 +260,53 @@ def test_cold_start_reports_phases_and_reuses_probe_and_model(
     assert provider.downloads == ["example/model.gguf"]
     assert [m.name for m in provider.models()] == ["example/model.gguf"]
     assert len(provider.calls()) == 1
+
+
+def test_a_call_that_runs_another_build_records_that_build(model, providers, engines):
+    """A container whose driver cannot run the probed build runs another one."""
+    provider = providers()
+    provider.engine, provider.builds = CUDA13_ENGINE, {ENGINE["path"]: ENGINE}
+    provider.runs = lambda argv: ENGINE["path"]
+    engine = engines(provider)
+    s = Settings(model=model)
+    engine.start(s, threading.Event(), timeout=30)
+
+    assert provider.spawned[0]["argv"][0] == CUDA13_ENGINE["path"]
+    # Results, bench and recommendations read the build that ran.
+    assert engine.probe(s) == ENGINE
+    assert engine.state()["argv"][0] == ENGINE["path"]
+    switched = (
+        f"The remote container runs {ENGINE['path']} instead of "
+        f"{CUDA13_ENGINE['path']}, the build its driver supports. Results name "
+        "that build, and later FAKE-24 launches use it."
+    )
+    assert engine.logs().count(switched) == 1
+    # Later launches run that build, so later containers keep it.
+    engine.start(Settings(model=model, context=8192), threading.Event(), timeout=30)
+    assert provider.spawned[1]["argv"][0] == ENGINE["path"]
+    assert engine.logs().count(switched) == 1
+    # So does the next session, from the saved probe, without probing again.
+    later = engines(provider)
+    assert later.probe(s) == ENGINE
+    assert later.launch_args(s)[0] == ENGINE["path"]
+    assert provider.probes == ["FAKE-24"]
+
+
+def test_a_call_that_runs_an_unprobed_build_says_so(model, providers, engines):
+    provider = providers()
+    provider.engine = CUDA13_ENGINE
+    provider.runs = lambda argv: ENGINE["path"]
+    engine = engines(provider)
+    s = Settings(model=model)
+    engine.start(s, threading.Event(), timeout=30)
+    # Without a record of that build, the probed one stays, and the log says so.
+    assert engine.probe(s) == CUDA13_ENGINE
+    assert any(
+        line.startswith(f"The remote container runs {ENGINE['path']} instead of")
+        and "no probe of that build" in line
+        and "`lllm2 fake probe --gpu FAKE-24`" in line
+        for line in engine.logs()
+    )
 
 
 def test_chat_template_file_is_sent_with_the_call(model, providers, engines, tmp_path):

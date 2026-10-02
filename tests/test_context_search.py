@@ -15,8 +15,10 @@ def run_search(behaviour, selected=32768, max_context=131072, confirm=False, log
     the return value is "ok", "fail" or "timeout".
     """
     bench = Bench.__new__(Bench)
+    bench.builds = []
     bench.engine = Mock()
     bench.engine.metadata.return_value = {"context": 262144}
+    bench.engine.probe.return_value = {"sha256": "0" * 64}
     bench.engine.hardware.return_value = {"gpus": ["GPU0"], "error": None}
     bench.engine.state.return_value = {
         "logs": logs
