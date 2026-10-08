@@ -8,8 +8,11 @@ handler that started it.
 
 from __future__ import annotations
 
+import hashlib
 import http.client
+import json
 import queue
+import re
 import shutil
 import ssl
 import struct
@@ -23,7 +26,7 @@ from typing import Any
 from urllib.parse import quote
 
 from . import config, gguf
-from .catalogue import files, local_paths
+from .catalogue import files, local_paths, metadata_get
 from .tls import download_context
 
 CHUNK = 4 * 1024 * 1024
@@ -159,6 +162,8 @@ class Download:
     #: Files that belong with the weights -- a multimodal projector. Fetched
     #: after them, into the same directory, under the same cancel flag.
     extras: list[str] = field(default_factory=list)
+    #: Metadata at the pinned repository commit, shared by all files in a job.
+    source: dict = field(default_factory=dict, repr=False)
     started: float = field(default_factory=time.time)
     _cancel: threading.Event = field(default_factory=threading.Event, repr=False)
 
@@ -210,6 +215,39 @@ def _size_of(repo: str, file: str, revision: str = "main") -> int:
         if isinstance(error, urllib.error.HTTPError):
             error.close()
         return 0
+
+
+def _pin(dl: Download) -> None:
+    """Resolve a mutable reference once, before trusting any partial bytes."""
+    if dl.source:
+        return
+    info = metadata_get(
+        f"/{quote(dl.repo, safe='/')}/revision/{quote(dl.revision, safe='')}",
+        {"blobs": "true"},
+    )
+    revision = info.get("sha", "")
+    if not isinstance(revision, str) or not re.fullmatch(r"[a-fA-F0-9]{40}", revision):
+        raise ValueError("Cannot establish an immutable download revision.")
+    if (
+        re.fullmatch(r"[a-fA-F0-9]{40}", dl.revision)
+        and revision.lower() != dl.revision.lower()
+    ):
+        raise ValueError("Download metadata does not match the requested revision.")
+    source = {}
+    for sibling in info.get("siblings", []):
+        lfs = sibling.get("lfs") or {}
+        size = sibling.get("size") or lfs.get("size")
+        digest = lfs.get("sha256")
+        if digest is not None and (
+            not isinstance(digest, str) or not re.fullmatch(r"[a-fA-F0-9]{64}", digest)
+        ):
+            raise ValueError("Invalid published download hash.")
+        source[sibling["rfilename"]] = {"size": size, "sha256": digest}
+    for file in [dl.file, *dl.extras]:
+        size = source.get(file, {}).get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            raise ValueError(f"Cannot establish the download size for {file}.")
+    dl.revision, dl.source = revision, source
 
 
 class HeaderReadError(Exception):
@@ -421,6 +459,24 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_suffix(target.suffix + ".part")
     part.parent.mkdir(parents=True, exist_ok=True)
+    _pin(dl)
+    identity = {
+        "repo": dl.repo,
+        "revision": dl.revision,
+        "file": file,
+        **dl.source[file],
+    }
+    manifest = part.with_suffix(part.suffix + ".json")
+    try:
+        saved = json.loads(manifest.read_text())
+    except (OSError, ValueError):
+        saved = None
+    if saved != identity:
+        # Legacy or changed-revision bytes cannot be safely appended to.
+        part.unlink(missing_ok=True)
+    temporary = manifest.with_suffix(manifest.suffix + ".tmp")
+    temporary.write_text(json.dumps(identity))
+    temporary.replace(manifest)
     stalled = tries = 0
     while True:
         resume = part.stat().st_size if part.exists() else 0
@@ -454,8 +510,22 @@ def _fetch(dl: Download, file: str, target: Path, base: int) -> bool:
             dl.state = "cancelled"
             dl.detail = "cancelled; part file kept for resume"
             return False
+    if part.stat().st_size != identity["size"]:
+        raise ValueError(
+            f"Downloaded size does not match the published size for {file}."
+        )
+    if identity["sha256"]:
+        with part.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest.lower() != identity["sha256"].lower():
+            part.unlink()
+            manifest.unlink(missing_ok=True)
+            raise ValueError(
+                f"Downloaded SHA-256 does not match the published hash for {file}."
+            )
     gguf.header(part)
     part.rename(target)
+    manifest.unlink(missing_ok=True)
     return True
 
 
@@ -472,7 +542,8 @@ def _run(dl: Download) -> None:
             dl.started = time.time()
         # Size the whole job up front: a bar that resets when the projector
         # starts reads as a fault rather than as the second of two files.
-        dl.total = sum(_size_of(dl.repo, f, dl.revision) for f, _ in jobs)
+        _pin(dl)
+        dl.total = sum(dl.source[f]["size"] for f, _ in jobs)
         occupied = sum(
             target.stat().st_size
             if target.is_file()
@@ -595,7 +666,14 @@ def remove(entry, delete_weights=False, protected=(), other_entries=()):
             )
         paths = local_paths(entry)
         targets = [
-            p for path in paths for p in (path, path.with_suffix(path.suffix + ".part"))
+            p
+            for path in paths
+            for p in (
+                path,
+                path.with_suffix(path.suffix + ".part"),
+                path.with_suffix(path.suffix + ".part.json"),
+                path.with_suffix(path.suffix + ".part.json.tmp"),
+            )
         ]
         if delete_weights:
             resolved = {p.resolve() for p in targets}

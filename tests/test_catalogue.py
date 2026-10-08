@@ -4,6 +4,7 @@ import contextlib
 import email.message
 import http.client
 import io
+import json
 import queue
 import struct
 import tempfile
@@ -15,7 +16,6 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from lllm2 import config, discovery, downloads
-from lllm2.app import App
 from lllm2.catalogue import Catalogue, Finder, local_paths, suitability, variants
 from lllm2.store import Store
 
@@ -356,7 +356,16 @@ class CatalogueTests(unittest.TestCase):
             dl = downloads.start(self.entry)
         with (
             patch.object(downloads, "_fetch", side_effect=fetch),
-            patch.object(downloads, "_size_of", return_value=4),
+            patch.object(
+                downloads,
+                "metadata_get",
+                return_value={
+                    "sha": "a" * 40,
+                    "siblings": [
+                        {"rfilename": file, "size": 4} for file in self.entry["files"]
+                    ],
+                },
+            ),
         ):
             downloads._run(dl)
         self.assertEqual(dl.state, "complete")
@@ -372,6 +381,8 @@ class CatalogueTests(unittest.TestCase):
             thread.assert_not_called()
 
     def test_api_delete_requires_explicit_boolean_and_keeps_results(self):
+        from lllm2.app import App
+
         app = App.__new__(App)
         app.store, app.catalogue = self.store, self.catalogue
         app.bench = Mock(lock=threading.RLock(), active=False)
@@ -405,6 +416,16 @@ class LocalDownloadRetryTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         patcher = patch.object(downloads, "retry_delay", lambda *_: 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(
+            downloads,
+            "metadata_get",
+            return_value={
+                "sha": "a" * 40,
+                "siblings": [{"rfilename": "m.gguf", "size": len(self.DATA)}],
+            },
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -462,6 +483,17 @@ class LocalDownloadRetryTests(unittest.TestCase):
         target = self.root / "m.gguf"
         part = target.with_suffix(target.suffix + ".part")
         part.write_bytes(held)
+        part.with_suffix(part.suffix + ".json").write_text(
+            json.dumps(
+                {
+                    "repo": "o/r",
+                    "revision": "a" * 40,
+                    "file": "m.gguf",
+                    "size": len(self.DATA),
+                    "sha256": None,
+                }
+            )
+        )
         dl = downloads.Download(
             id="x", name="M", repo="o/r", file="m.gguf", target=target
         )

@@ -108,7 +108,16 @@ class DownloadTrustTests(unittest.TestCase):
 
     def setUp(self):
         for patcher in (
-            patch.dict(os.environ, {}, clear=True),
+            # Windows needs SYSTEMROOT for localhost name resolution.
+            patch.dict(
+                os.environ,
+                {
+                    key: value
+                    for key, value in os.environ.items()
+                    if key in {"SYSTEMROOT", "WINDIR"}
+                },
+                clear=True,
+            ),
             patch.object(tls.sys, "platform", "linux"),
             patch.object(tls, "SYSTEM_CA_BUNDLE", self.root / "server.pem"),
         ):
@@ -125,7 +134,17 @@ class DownloadTrustTests(unittest.TestCase):
     def test_model_fetch_uses_native_bundle(self):
         target = self.root / "model.gguf"
         download = downloads.Download("id", "name", "repo", "model", target)
-        with patch.object(downloads, "url_for", return_value=self.url + "model"):
+        with (
+            patch.object(downloads, "url_for", return_value=self.url + "model"),
+            patch.object(
+                downloads,
+                "metadata_get",
+                return_value={
+                    "sha": "a" * 40,
+                    "siblings": [{"rfilename": "model", "size": 24}],
+                },
+            ),
+        ):
             self.assertTrue(downloads._fetch(download, "model", target, 0))
         self.assertEqual(target.read_bytes(), struct.pack("<4sIQQ", b"GGUF", 3, 0, 0))
 
