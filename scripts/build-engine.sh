@@ -6,7 +6,9 @@ release=${2:?lllm2 release version required}
 jobs=${BUILD_JOBS:-2}
 cd /repo
 # GCC 13 avoids GCC 8 source compatibility patches and keeps the EL8 ABI.
-dnf install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ git cmake python3.11
+# Every package comes from Rocky; the image's NVIDIA repo is skipped so its
+# outages cannot fail the build, and dnf cannot touch the CUDA install.
+dnf install -y --disablerepo='cuda*' gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ git cmake python3.11
 export PATH="/opt/rh/gcc-toolset-13/root/usr/bin:$PATH"
 export CC=gcc CXX=g++
 readarray -t contract < <(python3.11 - "$track" <<'PY'
