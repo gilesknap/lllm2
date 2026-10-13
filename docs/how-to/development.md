@@ -19,6 +19,13 @@ no GPU or model download is required. `tox -p` runs pre-commit, mypy, pytest wit
 coverage, and the strict documentation build. Run one check with
 `uv run --locked tox -e tests` or `uv run --locked tox -e docs`.
 
+The pre-commit hook `helm-schema` regenerates `Charts/lllm2/values.schema.json`
+from the annotations in `values.yaml`, and `tests/test_helm_chart.py` renders
+the chart. Both need Helm 3.17.1 and the
+[helm-values-schema-json](https://github.com/losisin/helm-values-schema-json)
+plugin v2.5.0, which the devcontainer installs. Without them, the chart tests
+skip and `SKIP=helm-schema` skips the hook; CI runs both.
+
 Preview the documentation with `uv run --locked tox -e docs-autobuild`, or serve
 the built files with `uv run python -m http.server --directory build/html`.
 Install the Git hooks with `uv run pre-commit install`. A VS Code devcontainer
@@ -48,6 +55,15 @@ isolation and checks its CLI, catalogue, recommendations and UI/template assets.
 Successful `main` builds deploy documentation; version tags publish the same
 checked distribution artifacts to PyPI.
 
+Every run also builds the container image and smoke-tests its CLI and engine
+(`container / build`), and lints, renders and packages the Helm chart
+(`helm / package`). Pushes to `main` publish the image as
+`ghcr.io/gilesknap/lllm2:main`. Version tags publish the image with the tag and
+`latest`, push the chart to `oci://ghcr.io/gilesknap/charts/lllm2`, and attach
+the chart's values schema, `lllm2.schema.json`, to the GitHub release. The
+release, and so PyPI, waits for both jobs. See
+[Deploy on Kubernetes](deploy-on-kubernetes.md).
+
 Configure these once in the hosting accounts:
 
 1. In GitHub **Settings → Pages**, select **GitHub Actions** as the build source
@@ -67,6 +83,11 @@ The reusable publishing workflow is `_pypi.yml`; use that filename when
 registering the publisher. [Trusted publishing](https://docs.pypi.org/trusted-publishers/using-a-publisher/)
 uses the workflow identity, with no PyPI API token in repository secrets.
 
+4. After the first image and chart are published, make both GitHub packages,
+   `lllm2` and `charts/lllm2`, public (**Package settings > Change
+   visibility**). New packages start private, and then anonymous pulls and
+   `helm install` fail.
+
 ## Release
 
 Run the checks above and merge the changes to `main`. Tag the merged commit
@@ -83,12 +104,17 @@ git push origin refs/tags/0.1.2
 `v0.1.2` both build version `0.1.2`. There is no version string to update in
 `pyproject.toml` or `uv.lock` for a release. Builds between tags get a development
 version. It generates `src/lllm2/_version.py`, which is ignored by Git.
-CI checks that the built wheel matches the release tag. Each release
-needs a new version. Once published, users install with `uv tool install --upgrade lllm2`
+CI checks that the built wheel and the image's `lllm2 --version` match the
+release tag. Each release needs a new version. Once published, users install with `uv tool install --upgrade lllm2`
 or upgrade with `uv tool upgrade lllm2`.
 
 The tagged commit must contain the workflow changes: fixing `main` does not
 rerun an existing tag.
+
+The chart's `appVersion` is the tag, which is also the image tag. Its chart
+version is the tag as SemVer: `0.1.2` and `v0.1.2` publish chart `0.1.2`, and a
+pre-release such as `0.1.2rc1` publishes `0.1.2-rc.1`. Any other tag form
+publishes no chart, with a warning.
 
 ## CUDA release engines
 
@@ -136,10 +162,13 @@ To enable it, a maintainer:
 - Enables **Settings > General > Allow auto-merge**.
 - Protects `main` with a branch protection rule or ruleset that requires the
   CI checks to pass before merging: `lint / run`, `test (3.11)` to
-  `test (3.14)`, `browser`, `docs-build`, `dist / build` and the GPU smoke test,
-  `gpu-smoke`. A skipped check counts as passed, so `gpu-smoke` gates only the
-  PRs it runs on: bump PRs and PRs that change Modal code. Without required
-  checks, GitHub refuses to enable auto-merge on a PR that is already mergeable.
+  `test (3.14)`, `browser`, `docs-build`, `dist / build`, `container / build`,
+  `helm / package` and the GPU smoke test, `gpu-smoke`. A skipped check counts
+  as passed, so `gpu-smoke` gates only the PRs it runs on: bump PRs and PRs that
+  change Modal code. Without required checks, GitHub refuses to enable
+  auto-merge on a PR that is already mergeable. Add `container / build` and
+  `helm / package` only once the open bump PR's branch has those jobs, or that
+  PR waits for checks that never run.
 - Sets the repository variable `LLAMA_CPP_AUTO_RELEASE` to `true` (**Settings >
   Secrets and variables > Actions > Variables**). Delete it to return to
   merging and tagging by hand.
@@ -167,6 +196,16 @@ tarballs and checksums before pushing its version tag. CI reuses those assets
 as well, then adds the checked Python distributions and publishes the draft. PyPI publishing
 waits for that release. The engine workflow also supports manual dispatch from a
 selected branch for testing pin changes without publishing a release.
+
+The container image installs the CUDA 12 engine the same way. When the run's
+`engines` job built it, `_container.yml` downloads the `engine-cuda12`
+artifact and passes it to the Docker build as the `engine-dist` build context;
+otherwise the build installs the published tarball.
+`.github/scripts/image_engines.py` checks first. After a bump PR merges, no
+release has its engine until the bump's release tag, so `main` builds no image
+until then: the job passes with a notice, and CI stays green for the bump
+release. On a tag the same case fails the job, so a release never ships
+without its image.
 
 The Modal image normally installs the same published tarballs. To test an
 engine that is not released yet, such as a bump PR's, on a Modal GPU, point

@@ -37,6 +37,15 @@ Retain these project adaptations when updating the template:
 - Let Ruff format code without splitting embedded prompts and shell commands.
   Preserve existing exception names, CLI enums and download cancellation access
   through narrow lint exceptions.
+- Keep the container image's adaptations (see
+  [the Kubernetes decision](0004-kubernetes-image-and-chart.md)): Helm in the
+  developer stage, the `engine-dist` stage and the engine install in the build
+  stage, the runtime CA certificates, ldd check and environment, and the
+  `.dockerignore` entries for engine builds.
+- Keep the `container` job's engine wiring: `needs: [test, engines]`, the
+  `engine-dist` build context and the check that skips the image until the
+  pinned engine exists, pushes from `main` and tags, and the `container` and
+  `helm` jobs in the release job's `needs`.
 
 ## Consequences
 

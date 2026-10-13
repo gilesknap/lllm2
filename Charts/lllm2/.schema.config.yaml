@@ -1,0 +1,14 @@
+values:
+  - Charts/lllm2/values.yaml
+
+output: Charts/lllm2/values.schema.json
+
+bundleRoot: Charts
+bundle: false
+useHelmDocs: false
+noAdditionalProperties: true
+
+schemaRoot:
+  title: lllm2 Helm chart
+  description: Helm chart for the lllm2 workbench on a Kubernetes GPU node
+  additionalProperties: false

@@ -571,7 +571,7 @@ def launch_args(s, port):
 
     Args:
         s: Settings to launch.
-        port: Loopback port for llama-server.
+        port: Port for llama-server. It binds ``config.ENGINE_HOST``.
 
     Returns:
         The argument list, starting with the local binary path.
@@ -579,7 +579,9 @@ def launch_args(s, port):
     Raises:
         ValueError: If the binary or checkpoint cannot run these settings.
     """
-    return build_launch_args(s, port, probe(s.engine), metadata(s.model))
+    return build_launch_args(
+        s, port, probe(s.engine), metadata(s.model), host=config.ENGINE_HOST
+    )
 
 
 def build_launch_args(s, port, engine, meta, *, host="127.0.0.1", path=None):

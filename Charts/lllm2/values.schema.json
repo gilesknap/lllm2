@@ -1,0 +1,470 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "lllm2 Helm chart",
+    "description": "Helm chart for the lllm2 workbench on a Kubernetes GPU node",
+    "type": "object",
+    "properties": {
+        "env": {
+            "description": "Extra environment variables, such as HTTPS_PROXY or LLLM2_IDLE_TIMEOUT_MINUTES.",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    },
+                    "valueFrom": {
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "global": {
+            "description": "Global values shared between all subcharts",
+            "$comment": "Added automatically by 'helm schema' to allow this chart to be used as a Helm dependency, as the `additionalProperties` setting would otherwise collide with Helm's special 'global' values key.",
+            "type": [
+                "object",
+                "null"
+            ]
+        },
+        "image": {
+            "type": "object",
+            "properties": {
+                "pullPolicy": {
+                    "description": "When the kubelet pulls the image. Empty pulls the moving tags main and latest every start and others only once.",
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "Always",
+                        "IfNotPresent",
+                        "Never"
+                    ]
+                },
+                "repository": {
+                    "description": "Image repository. Use a mirror for an air-gapped cluster.",
+                    "type": "string"
+                },
+                "tag": {
+                    "description": "Image tag. Empty uses the chart's appVersion, the lllm2 release.",
+                    "type": "string"
+                }
+            },
+            "additionalProperties": false
+        },
+        "imagePullSecrets": {
+            "description": "Secrets for pulling the image from a private registry.",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "ingress": {
+            "type": "object",
+            "properties": {
+                "annotations": {
+                    "description": "Annotations for the controller, such as a cert-manager issuer, timeouts and, with auth external, its authentication. Quote numbers, as values must be strings.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "auth": {
+                    "description": "Who signs panel users in, as the panel has no login. oidc: an oauth2-proxy sidecar signs users in with an OpenID Connect provider such as Keycloak, set in ingress.oidc, and the panel stays on 127.0.0.1. external: the controller, or a proxy in front of it, authenticates every request, and the panel needs panel.host 0.0.0.0. none: anyone who reaches a host controls the workbench and can run programs in the pod, and the panel needs panel.host 0.0.0.0. Empty refuses to render the Ingress.",
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "oidc",
+                        "external",
+                        "none"
+                    ]
+                },
+                "className": {
+                    "description": "IngressClass of the controller, such as nginx or traefik. Empty uses the cluster's default class.",
+                    "type": "string"
+                },
+                "enabled": {
+                    "description": "Serve the panel through an Ingress at path /. It needs at least one host and an ingress.auth choice.",
+                    "type": "boolean"
+                },
+                "hosts": {
+                    "description": "DNS names that serve the panel, one per entry. The chart also tells the panel to accept them. Wildcards and IP addresses are not supported.",
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                },
+                "oidc": {
+                    "type": "object",
+                    "properties": {
+                        "allowedGroups": {
+                            "description": "Only members of one of these groups can sign in, named as in the token's groups claim. Keycloak's Group Membership mapper gives full paths such as /lllm2-users by default.",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "allowedRoles": {
+                            "description": "Only users with one of these Keycloak roles can sign in. A realm role by name, a client role as \u003cclient ID\u003e:\u003crole\u003e. Needs provider keycloak-oidc.",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "caConfigMap": {
+                            "description": "ConfigMap whose ca.crt key holds the CA that signed the issuer's TLS certificate, for a private CA. Empty trusts the image's public CAs.",
+                            "type": "string"
+                        },
+                        "clientID": {
+                            "description": "Client ID of the confidential client registered for lllm2 at the issuer.",
+                            "type": "string"
+                        },
+                        "clientSecretKey": {
+                            "description": "Key in existingSecret that holds the client secret.",
+                            "type": "string"
+                        },
+                        "cookieSecretKey": {
+                            "description": "Key in existingSecret that holds the cookie secret, 32 random bytes in URL-safe base64.",
+                            "type": "string"
+                        },
+                        "emailDomains": {
+                            "description": "Only users whose verified email is in one of these domains can sign in. [\"*\"] admits every user of the issuer. Empty admits any domain once allowedGroups or allowedRoles restricts sign-in.",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "env": {
+                            "description": "Environment variables for the sidecar, such as HTTPS_PROXY and NO_PROXY when the pod reaches the issuer through a proxy. The top-level env reaches only the lllm2 container.",
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string"
+                                    },
+                                    "value": {
+                                        "type": "string"
+                                    },
+                                    "valueFrom": {
+                                        "type": "object",
+                                        "additionalProperties": true
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "existingSecret": {
+                            "description": "Name of a Secret in the release namespace that holds the client secret and the cookie secret. The chart never creates it.",
+                            "type": "string"
+                        },
+                        "extraArgs": {
+                            "description": "More oauth2-proxy arguments, placed after the chart's, so a repeated flag overrides the chart's value. Never put secrets here, as arguments show in the pod spec.",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "image": {
+                            "type": "object",
+                            "properties": {
+                                "pullPolicy": {
+                                    "description": "When the kubelet pulls the oauth2-proxy image.",
+                                    "type": "string",
+                                    "enum": [
+                                        "Always",
+                                        "IfNotPresent",
+                                        "Never"
+                                    ]
+                                },
+                                "repository": {
+                                    "description": "oauth2-proxy image repository. Use a mirror for an air-gapped cluster.",
+                                    "type": "string"
+                                },
+                                "tag": {
+                                    "description": "oauth2-proxy image tag. The chart's arguments are checked against this release.",
+                                    "type": "string"
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "issuerURL": {
+                            "description": "The issuer URL exactly as the provider's discovery document gives it, with no trailing slash. For Keycloak 17 or later, https://\u003ckeycloak host\u003e/realms/\u003crealm\u003e.",
+                            "type": "string",
+                            "pattern": "^(https?://[^/\\s]+(/[^\\s]*[^/\\s])?)?$"
+                        },
+                        "provider": {
+                            "description": "The oauth2-proxy provider. oidc works with any OpenID Connect provider. keycloak-oidc also reads Keycloak roles, which allowedRoles needs.",
+                            "type": "string",
+                            "enum": [
+                                "oidc",
+                                "keycloak-oidc"
+                            ]
+                        },
+                        "resources": {
+                            "type": "object",
+                            "properties": {
+                                "limits": {
+                                    "description": "CPU and memory limits for the oauth2-proxy sidecar.",
+                                    "type": "object",
+                                    "properties": {
+                                        "memory": {
+                                            "type": [
+                                                "string",
+                                                "number"
+                                            ]
+                                        }
+                                    },
+                                    "additionalProperties": true
+                                },
+                                "requests": {
+                                    "description": "CPU and memory requests for the oauth2-proxy sidecar.",
+                                    "type": "object",
+                                    "properties": {
+                                        "cpu": {
+                                            "type": [
+                                                "string",
+                                                "number"
+                                            ]
+                                        },
+                                        "memory": {
+                                            "type": [
+                                                "string",
+                                                "number"
+                                            ]
+                                        }
+                                    },
+                                    "additionalProperties": true
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "tls": {
+                    "description": "TLS for the hosts, as in the Ingress spec. Leave it empty if a load balancer in front of the controller terminates TLS.",
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "hosts": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                }
+                            },
+                            "secretName": {
+                                "type": "string"
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
+        },
+        "networkPolicy": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Add a NetworkPolicy that lets only networkPolicy.from reach the panel through the Service, on port 8082 or, with ingress.auth oidc, on the sign-in port 4180. The model API on port 1920 stays open to the cluster unless engineFrom lists its clients. It needs a network plugin that enforces NetworkPolicy.",
+                    "type": "boolean"
+                },
+                "engineFrom": {
+                    "description": "Peers that may reach the model API on port 1920, as in a NetworkPolicy rule's from list. Empty leaves it open to the whole cluster, as without the policy.",
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ipBlock": {
+                                "type": "object",
+                                "additionalProperties": true
+                            },
+                            "namespaceSelector": {
+                                "type": "object",
+                                "additionalProperties": true
+                            },
+                            "podSelector": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                },
+                "from": {
+                    "description": "Peers that may reach the panel, as in a NetworkPolicy rule's from list. Usually the ingress controller's pods, or an ipBlock for a controller on the host network.",
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ipBlock": {
+                                "type": "object",
+                                "additionalProperties": true
+                            },
+                            "namespaceSelector": {
+                                "type": "object",
+                                "additionalProperties": true
+                            },
+                            "podSelector": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
+        },
+        "nodeSelector": {
+            "description": "Node labels the pod must match, such as a GPU product label.",
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "panel": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "description": "Address the panel listens on. It has no login and runs any engine path it is given, so 127.0.0.1 keeps it to kubectl port-forward and, with ingress.auth oidc, to the sign-in sidecar. 0.0.0.0 adds it to the Service on port 8082 for an Ingress or proxy that authenticates.",
+                    "type": "string",
+                    "enum": [
+                        "127.0.0.1",
+                        "0.0.0.0"
+                    ]
+                }
+            },
+            "additionalProperties": false
+        },
+        "persistence": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "existingClaim": {
+                            "description": "Mount this existing claim at /data, for state and extra engines, instead of creating one.",
+                            "type": "string"
+                        },
+                        "size": {
+                            "description": "Size of the data claim the chart creates. Helm keeps it on uninstall.",
+                            "type": "string"
+                        },
+                        "storageClassName": {
+                            "description": "Storage class of the data claim. Empty uses the cluster default.",
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "models": {
+                    "type": "object",
+                    "properties": {
+                        "existingClaim": {
+                            "description": "Mount this existing claim at /models instead of creating one.",
+                            "type": "string"
+                        },
+                        "size": {
+                            "description": "Size of the models claim the chart creates. Helm keeps it on uninstall.",
+                            "type": "string"
+                        },
+                        "storageClassName": {
+                            "description": "Storage class of the models claim. Empty uses the cluster default.",
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "podSecurityContext": {
+            "description": "The pod's security context. The defaults run the image as user and group 1000.",
+            "type": "object",
+            "properties": {
+                "fsGroup": {
+                    "type": "integer"
+                },
+                "fsGroupChangePolicy": {
+                    "type": "string"
+                },
+                "runAsGroup": {
+                    "type": "integer"
+                },
+                "runAsNonRoot": {
+                    "type": "boolean"
+                },
+                "runAsUser": {
+                    "type": "integer"
+                }
+            },
+            "additionalProperties": true
+        },
+        "resources": {
+            "type": "object",
+            "properties": {
+                "limits": {
+                    "description": "CPU and memory limits. The chart adds nvidia.com/gpu: 1 unless this sets it.",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "requests": {
+                    "description": "CPU and memory requests. Set them so the kubelet does not evict the pod first under memory pressure.",
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": false
+        },
+        "runtimeClassName": {
+            "description": "RuntimeClass of the NVIDIA container runtime, such as nvidia. Empty uses the node's default runtime.",
+            "type": "string"
+        },
+        "tolerations": {
+            "description": "Tolerations for taints on the GPU nodes.",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "effect": {
+                        "type": "string"
+                    },
+                    "key": {
+                        "type": "string"
+                    },
+                    "operator": {
+                        "type": "string"
+                    },
+                    "tolerationSeconds": {
+                        "type": "integer"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    },
+    "additionalProperties": false
+}
