@@ -1,0 +1,17 @@
+.venv*/
+venv*/
+.agents/worktrees/
+.claude/worktrees/
+build/
+dist/
+tmp/
+.tox/
+**/__pycache__/
+*.py[cod]
+# Engine builds and checks. CI passes its engine tarballs to the image as the
+# separate engine-dist build context, so they never land in a layer here.
+.engine-build/
+.engine-dist/
+engine-dist/
+engine-smoke/
+engine-checks/

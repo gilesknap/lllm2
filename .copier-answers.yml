@@ -5,7 +5,7 @@ author_email: giles.knap@diamond.ac.uk
 author_name: Giles Knap
 description: Local NVIDIA LLM experimentation workbench
 distribution_name: lllm2
-docker: false
+docker: true
 docs_type: sphinx
 git_platform: github.com
 github_org: gilesknap

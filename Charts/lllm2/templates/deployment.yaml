@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lllm2.fullname" . }}
+  labels:
+    {{- include "lllm2.labels" . | nindent 4 }}
+spec:
+  # The panel locks its state directory and owns the whole GPU, so the old
+  # pod must stop before a new one starts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lllm2.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lllm2.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: lllm2
+          image: "{{ .Values.image.repository }}:{{ include "lllm2.tag" . }}"
+          imagePullPolicy: {{ include "lllm2.pullPolicy" . }}
+          # The panel has no login, so by default it listens only inside the
+          # pod: reach it with kubectl port-forward, which needs rights in this
+          # namespace, or through the sign-in sidecar with ingress.auth oidc.
+          args: [panel, --host, {{ .Values.panel.host | quote }}, --port, "8082"]
+          env:
+            # The Service reaches the model API on the pod address.
+            - name: LLLM2_ENGINE_HOST
+              value: 0.0.0.0
+            {{- if .Values.ingress.enabled }}
+            # The panel refuses Host names it does not know, to stop DNS
+            # rebinding. The Ingress, and the sidecar, pass the browser's Host.
+            # An entry with this name in env replaces this one.
+            - name: LLLM2_PANEL_ALLOWED_HOSTS
+              value: {{ include "lllm2.ingressHosts" . | quote }}
+            {{- end }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: engine
+              containerPort: 1920
+            {{- if include "lllm2.panelExposed" . }}
+            - name: panel
+              containerPort: 8082
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            # One whole GPU: lllm2 plans and serves a model on a single card.
+            limits:
+              {{- merge (deepCopy .Values.resources.limits) (dict "nvidia.com/gpu" 1) | toYaml | nindent 14 }}
+            {{- with .Values.resources.requests }}
+            requests:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+            - name: data
+              mountPath: /data
+        {{- if include "lllm2.oidc" . }}
+        {{- with .Values.ingress.oidc }}
+        # Signs users in with the OpenID Connect provider, then forwards to the
+        # panel on 127.0.0.1. The panel port is never on the Service in this
+        # mode, so the Ingress and other pods reach the panel only through it.
+        - name: oauth2-proxy
+          image: "{{ .image.repository }}:{{ .image.tag }}"
+          imagePullPolicy: {{ .image.pullPolicy }}
+          args:
+            {{- include "lllm2.oidcArgs" $ | nindent 12 }}
+          env:
+            # From the Secret, so neither value shows in the pod spec.
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | quote }}
+                  key: {{ .clientSecretKey | quote }}
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | quote }}
+                  key: {{ .cookieSecretKey | quote }}
+            {{- with .env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: auth
+              containerPort: 4180
+          # Neither probe calls the provider: restarting would not mend it.
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: auth
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: auth
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .caConfigMap }}
+          volumeMounts:
+            - name: oidc-ca
+              mountPath: /etc/oauth2-proxy/ca
+              readOnly: true
+          {{- end }}
+        {{- end }}
+        {{- end }}
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ include "lllm2.claimName" (dict "root" . "name" "models") }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "lllm2.claimName" (dict "root" . "name" "data") }}
+        {{- if and (include "lllm2.oidc" .) .Values.ingress.oidc.caConfigMap }}
+        - name: oidc-ca
+          configMap:
+            name: {{ .Values.ingress.oidc.caConfigMap | quote }}
+        {{- end }}
