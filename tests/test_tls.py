@@ -1,5 +1,6 @@
 """Native CA discovery must preserve certificate and hostname verification."""
 
+import json
 import os
 import shutil
 import ssl
@@ -14,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from lllm2 import downloads, engine_install, tls
+from lllm2 import catalogue, downloads, engine_install, tls
 
 
 class ContextTests(unittest.TestCase):
@@ -46,6 +47,13 @@ class ContextTests(unittest.TestCase):
 
 class Handler(BaseHTTPRequestHandler):
     def body(self):
+        if self.path == "/metadata":
+            return json.dumps(
+                {
+                    "sha": "a" * 40,
+                    "siblings": [{"rfilename": "model", "size": 24}],
+                }
+            ).encode()
         return (
             struct.pack("<4sIQQ", b"GGUF", 3, 0, 0) if self.path == "/model" else b"[]"
         )
@@ -108,24 +116,51 @@ class DownloadTrustTests(unittest.TestCase):
 
     def setUp(self):
         for patcher in (
-            patch.dict(os.environ, {}, clear=True),
+            # Windows needs SYSTEMROOT for localhost name resolution.
+            patch.dict(
+                os.environ,
+                {
+                    key: value
+                    for key, value in os.environ.items()
+                    if key in {"SYSTEMROOT", "WINDIR"}
+                },
+                clear=True,
+            ),
             patch.object(tls.sys, "platform", "linux"),
             patch.object(tls, "SYSTEM_CA_BUNDLE", self.root / "server.pem"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def test_engine_download_and_model_head_use_native_bundle(self):
+    def test_engine_download_and_model_metadata_use_native_bundle(self):
         target = self.root / "download"
         engine_install._download(self.url, target)
         self.assertEqual(target.read_bytes(), b"[]")
-        with patch.object(downloads, "url_for", return_value=self.url):
-            self.assertEqual(downloads._size_of("repo", "model"), 2)
+        download = downloads.Download("id", "name", "repo", "model", target)
+        request = urllib.request.Request
+        with patch.object(
+            catalogue.urllib.request,
+            "Request",
+            side_effect=lambda _url, **kwargs: request(self.url + "metadata", **kwargs),
+        ):
+            self.assertTrue(downloads._pin(download))
+        self.assertEqual(download.revision, "a" * 40)
+        self.assertEqual(download.source, {"model": {"size": 24, "sha256": None}})
 
     def test_model_fetch_uses_native_bundle(self):
         target = self.root / "model.gguf"
         download = downloads.Download("id", "name", "repo", "model", target)
-        with patch.object(downloads, "url_for", return_value=self.url + "model"):
+        with (
+            patch.object(downloads, "url_for", return_value=self.url + "model"),
+            patch.object(
+                downloads,
+                "metadata_get",
+                return_value={
+                    "sha": "a" * 40,
+                    "siblings": [{"rfilename": "model", "size": 24}],
+                },
+            ),
+        ):
             self.assertTrue(downloads._fetch(download, "model", target, 0))
         self.assertEqual(target.read_bytes(), struct.pack("<4sIQQ", b"GGUF", 3, 0, 0))
 
