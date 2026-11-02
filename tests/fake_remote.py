@@ -226,6 +226,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+# Tests poll every call's port many times a second. The default backlog of 5
+# overflows under load, and the kernel then drops a connect for a second.
+ThreadingHTTPServer.request_queue_size = 128
 server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
 server.daemon_threads = True
 print("fake llama-server listening", flush=True)
