@@ -357,8 +357,7 @@ def inherited_defaults(selection, host=None, engine=None, meta=None, model=None)
         # A remote container runs no desktop, and its driver reserve is unknown.
         desktop, reserve = False, 512
         if local:
-            rc, state = command(["systemctl", "is-active", "graphical.target"], 5)
-            desktop = state.strip() != "inactive"
+            desktop = desktop_session(cards[0]["uuid"])
             rc, reserved = command(
                 [
                     "nvidia-smi",
@@ -399,6 +398,35 @@ def inherited_defaults(selection, host=None, engine=None, meta=None, model=None)
                     str(e) + " Set a smaller model or explicit settings before launch."
                 )
     return {"settings": s.dict(), "source": SOURCE, "notes": notes}
+
+
+def desktop_session(uuid):
+    """Return whether a desktop session may use a local GPU's memory.
+
+    systemd's graphical target answers on a workstation. Where ``systemctl``
+    cannot run, as in the container image, the driver says whether the card
+    drives a display. When neither answers, assume a desktop: that only
+    lowers the planned context.
+
+    Args:
+        uuid: The GPU's UUID.
+
+    Returns:
+        True when the planner should reserve memory for a desktop.
+    """
+    rc, state = command(["systemctl", "is-active", "graphical.target"], 5)
+    if rc != -1:
+        return state.strip() != "inactive"
+    rc, active = command(
+        [
+            "nvidia-smi",
+            "--id=" + uuid,
+            "--query-gpu=display_active",
+            "--format=csv,noheader",
+        ],
+        4,
+    )
+    return rc != 0 or active.strip() != "Disabled"
 
 
 def planner_obstacle(s, cards, unknown):

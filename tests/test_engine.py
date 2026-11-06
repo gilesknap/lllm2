@@ -186,6 +186,51 @@ def test_occupied_engine_port_blocks_launch(tmp_path):
         assert not engine.alive()
 
 
+def test_listener_on_another_loopback_address_blocks_a_launch_on_every_interface(
+    tmp_path,
+):
+    # 127.0.0.2 is loopback too; llama-server on 0.0.0.0 could not bind.
+    with (
+        local_launch(tmp_path) as engine,
+        patch.object(config, "ENGINE_HOST", "0.0.0.0"),
+        socket.socket() as sock,
+    ):
+        sock.bind(("127.0.0.2", config.ENGINE_PORT))
+        sock.listen()
+        with pytest.raises(ResourceConflict, match="is occupied"):
+            engine.start(Settings(model="m.gguf"), threading.Event(), timeout=20)
+        assert not engine.alive()
+
+
+def test_a_model_switch_ignores_its_own_engine_reported_by_host_pid(tmp_path):
+    # In a container nvidia-smi can list the running engine by a host PID that
+    # has no /proc entry here. A visible process still competes.
+    hidden = "4194305, llama-server\n"  # Above Linux's largest PID.
+    # This process as /proc numbers it, which some sandboxes do differently.
+    pid = Path("/proc/self").resolve().name
+    visible = f"{pid}, trainer\n"
+    with (
+        local_launch(tmp_path) as engine,
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
+        with patch("lllm2.engine.command", return_value=(0, hidden)):
+            with pytest.raises(ResourceConflict, match="4194305"):
+                engine.start(Settings(model="a.gguf"), threading.Event(), timeout=20)
+        engine.start(Settings(model="a.gguf"), threading.Event(), timeout=20)
+        first = engine.state()["pid"]
+
+        with patch("lllm2.engine.command", return_value=(0, hidden)):
+            engine.start(Settings(model="b.gguf"), threading.Event(), timeout=20)
+        assert engine.alive()
+        assert engine.state()["settings"]["model"] == "b.gguf"
+        assert engine.state()["pid"] != first
+
+        with patch("lllm2.engine.command", return_value=(0, hidden + visible)):
+            with pytest.raises(ResourceConflict, match=pid):
+                engine.start(Settings(model="c.gguf"), threading.Event(), timeout=20)
+        assert engine.state()["settings"]["model"] == "b.gguf"
+
+
 def test_engine_that_never_answers_times_out_and_is_stopped(tmp_path):
     script = "import time\nprint('loading', flush=True)\ntime.sleep(60)\n"
     with (
