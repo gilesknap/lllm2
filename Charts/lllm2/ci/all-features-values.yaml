@@ -1,0 +1,64 @@
+# Every optional feature on, for CI's lint and render.
+image:
+  repository: registry.example.com/mirror/lllm2
+  tag: "0.11.0"
+  pullPolicy: Always
+imagePullSecrets:
+  - name: mirror-pull
+runtimeClassName: nvidia
+nodeSelector:
+  nvidia.com/gpu.product: NVIDIA-L40S
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+resources:
+  requests:
+    cpu: "4"
+    memory: 32Gi
+  limits:
+    memory: 64Gi
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 2000
+  runAsGroup: 2000
+  fsGroup: 2000
+env:
+  - name: HTTPS_PROXY
+    value: http://proxy.example.com:3128
+  - name: LLLM2_IDLE_TIMEOUT_MINUTES
+    value: "0"
+panel:
+  host: 0.0.0.0
+ingress:
+  enabled: true
+  className: nginx
+  auth: external
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: lllm2-basic-auth
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "200"
+  hosts:
+    - host: lllm2.example.com
+    - host: gpu1.lllm2.example.com
+  tls:
+    - secretName: lllm2-tls
+      hosts: [lllm2.example.com]
+networkPolicy:
+  enabled: true
+  from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    - ipBlock:
+        cidr: 10.0.0.0/24
+persistence:
+  models:
+    existingClaim: shared-models
+  data:
+    size: 50Gi
+    storageClassName: fast-local

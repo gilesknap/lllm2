@@ -5,6 +5,10 @@ repos:
       - id: check-added-large-files
         exclude: ^uv.lock
       - id: check-yaml
+        # Helm templates are Go templates that happen to produce YAML; a file
+        # beginning `{{- if .Values… }}` is not parseable as YAML and never will
+        # be.
+        exclude: ^Charts/[^/]+/templates/
       - id: check-merge-conflict
       - id: end-of-file-fixer
         # Preserve model prompt templates byte for byte.
@@ -37,3 +41,10 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+
+  - repo: https://github.com/losisin/helm-values-schema-json
+    rev: v2.5.0
+    hooks:
+      - id: helm-schema
+        args: [--config, Charts/lllm2/.schema.config.yaml]
+        files: ^Charts/lllm2/(values\.yaml|\.schema\.config\.yaml|values\.schema\.json)$

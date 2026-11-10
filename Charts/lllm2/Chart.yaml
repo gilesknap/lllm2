@@ -1,0 +1,11 @@
+apiVersion: v2
+name: lllm2
+description: The lllm2 workbench and its CUDA engine on one Kubernetes GPU node
+type: application
+# CI sets both to the release tag when it packages the chart. appVersion is
+# the image tag, so a chart from a checkout of main runs the main image.
+version: 0.0.0
+appVersion: "main"
+home: https://gilesknap.github.io/lllm2/
+sources:
+  - https://github.com/gilesknap/lllm2

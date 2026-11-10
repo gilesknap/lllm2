@@ -34,6 +34,8 @@ dev = [
     "pre-commit",
     "pytest",
     "pytest-cov",
+    # tests/test_helm_chart.py reads the rendered chart.
+    "pyyaml",
     "ruff",
     "tox-uv",
 ]
